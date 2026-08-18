@@ -1,0 +1,14 @@
+venv/
+__pycache__/
+*.pyc
+.env
+downloads/
+*.db
+*.png
+*.pdf
+static/
+captcha_test.png
+kppp_page.png
+kppp_results.png
+kppp_search_form.png
+test_*.py
