@@ -14,6 +14,81 @@ from database.db import save_tender, get_all_ceo_searches, update_downloaded_fil
 from agent.learner import expand_keyword_instantly, analyze_patterns, get_search_queries
 from agent.watcher import start_watching, register_callback
 
+def check_relevance_ai(original_keyword: str, titles: list) -> list:
+    """
+    Use AI to check which tender titles are actually relevant
+    to what the CEO originally searched for.
+    Returns list of True/False matching titles list.
+    """
+    if not titles:
+        return []
+    
+    try:
+        import requests
+        import os
+        import json as json_lib
+        
+        DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+        
+        titles_numbered = "\n".join([f"{i+1}. {t}" for i, t in enumerate(titles)])
+        
+        prompt = f"""The user is looking for tenders related to: "{original_keyword}"
+
+Here is a list of tender titles found:
+{titles_numbered}
+
+For EACH numbered title, decide if it is genuinely relevant to "{original_keyword}".
+A tender is relevant if it's about the same product/service category, even if worded differently.
+A tender is NOT relevant if it's about a completely different category (e.g. food, furniture, cleaning supplies) when searching for electronics/security equipment.
+
+Respond ONLY with a JSON array of true/false values, one per title, in order.
+Example: [true, false, true, true, false]"""
+
+        response = requests.post(
+            "https://api.deepseek.com/chat/completions",
+            headers={
+                "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "deepseek-chat",
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 500
+            },
+            timeout=60
+        )
+        
+        result = response.json()["choices"][0]["message"]["content"].strip()
+        
+        if "```json" in result:
+            result = result.split("```json")[1].split("```")[0]
+        elif "```" in result:
+            result = result.split("```")[1].split("```")[0]
+        
+        flags = json_lib.loads(result)
+        
+        # Normalize all values to proper booleans (handles string 'true'/'false' too)
+        normalized_flags = []
+        for f in flags:
+            if isinstance(f, bool):
+                normalized_flags.append(f)
+            elif isinstance(f, str):
+                normalized_flags.append(f.strip().lower() == "true")
+            else:
+                normalized_flags.append(bool(f))
+        flags = normalized_flags
+        
+        # Pad or trim to match titles length
+        while len(flags) < len(titles):
+            flags.append(True)
+        
+        return flags[:len(titles)]
+        
+    except Exception as e:
+        import traceback
+        print(f"[Relevance Check] Failed: {e}")
+        traceback.print_exc()
+        return [True] * len(titles)
 _state = {
     "status": "idle",
     "last_search": None,
@@ -61,6 +136,10 @@ def on_ceo_search(keyword: str, portal: str):
     ).start()
 
 def _instant_expand_and_search(keyword: str, portal: str):
+
+    if _state.get("status") in ("searching", "expanding"):
+        log(f"⏳ Search already in progress, skipping duplicate trigger for '{keyword}'")
+        return
     with _lock:
         _state["status"] = "expanding"
     log(f"🧠 Expanding '{keyword}' with AI...")
@@ -109,10 +188,26 @@ def _search_portal(portal: str, keywords: list, category: str):
 
         found_count = 0
         for keyword in keywords[:8]:
+            if not _state["running"]:
+                log(f"🛑 [{portal}] Search stopped by user")
+                break
             try:
                 log(f"🔎 [{portal}] Searching: '{keyword}'")
                 tenders = search_fn(keyword, category)
-                for tender in tenders:
+                
+                # Batch relevance check using AI
+                if tenders:
+                    titles = [t.get("title", "") for t in tenders]
+                    relevant_flags = check_relevance_ai(keyword, titles)
+                    print(f"[Relevance] Keyword '{keyword}': {relevant_flags}")
+                else:
+                    relevant_flags = []
+                
+                for i, tender in enumerate(tenders):
+                    is_relevant = relevant_flags[i] if i < len(relevant_flags) else True
+                    if not is_relevant:
+                        continue  # skip irrelevant tender
+
                     tender_id = save_tender(tender)
                     if tender_id:
                         found_count += 1

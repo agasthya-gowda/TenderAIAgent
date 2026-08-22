@@ -158,17 +158,11 @@ async def search_gem(keyword: str, category: str = "") -> list:
             search_box = await page.query_selector("input[name='searchBid']")
 
             if search_box:
-                # Use JavaScript to fill and submit search
-                await page.evaluate(f"""
-                    var input = document.querySelector("input[name='searchBid']");
-                    if (input) {{
-                        input.value = '{keyword}';
-                        input.dispatchEvent(new Event('input', {{bubbles: true}}));
-                        input.dispatchEvent(new Event('change', {{bubbles: true}}));
-                    }}
-                    var btn = document.querySelector("button.btn-default.btn-search, .input-group-btn button");
-                    if (btn) {{ btn.click(); }}
-                """)
+                await search_box.scroll_into_view_if_needed()
+                await search_box.click()
+                await search_box.fill("")
+                await search_box.fill(keyword)
+                await search_box.press("Enter")
                 await page.wait_for_timeout(6000)
                 print(f"[GeM] Search submitted for: {keyword}")
             else:
@@ -219,6 +213,16 @@ async def search_gem(keyword: str, category: str = "") -> list:
                     )
                     if items_match:
                         items = clean(items_match.group(1))[:200]
+                    
+                    # Try to get full title from the link element instead (often not truncated)
+                    try:
+                        item_link = await card.query_selector("a[href*='searchresult'], .item-title a, a.bid-item")
+                        if item_link:
+                            full_title = await item_link.get_attribute("title") or await item_link.inner_text()
+                            if full_title and len(full_title.strip()) > len(items.replace("...", "").strip()):
+                                items = clean(full_title)[:300]
+                    except Exception:
+                        pass
 
                     # Extract Quantity
                     quantity = "Not available"
@@ -278,6 +282,17 @@ async def search_gem(keyword: str, category: str = "") -> list:
 
                     print(f"[GeM] Found bid: {bid_no}")
 
+                    # Skip if already in database — avoid re-downloading
+                    from database.db import get_conn
+                    conn = get_conn()
+                    existing = conn.execute(
+                        "SELECT id FROM tenders WHERE tender_number=?", (bid_no,)
+                    ).fetchone()
+                    conn.close()
+                    if existing:
+                        print(f"[GeM] Skipping {bid_no} — already in database")
+                        continue
+
                     # Step 4 — Download PDF 1
                     downloaded_files = []
                     pdf1_path = ""
@@ -326,6 +341,8 @@ async def search_gem(keyword: str, category: str = "") -> list:
                                     downloaded_files.append(pdf1_path)
                                     print(f"[GeM] PDF 1 downloaded via direct URL")
 
+                    # Try to get full title from PDF 1 if current title is truncated
+                   
                     # Step 5 — Read PDF 1 → find PDF 2 link
                     if pdf1_path and os.path.exists(pdf1_path):
                         bid_ref = find_pdf2_link_in_pdf1(pdf1_path)

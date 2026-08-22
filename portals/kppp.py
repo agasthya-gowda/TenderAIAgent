@@ -104,7 +104,14 @@ async def search_kppp(keyword: str, category: str = "") -> list:
                 return []
 
             # ── SEARCH ────────────────────────────────────
+                        # ── SEARCH ──────────────────────────────
             await page.wait_for_timeout(2000)
+
+            # # Type keyword into Tender Number field
+            # text_inputs = await page.query_selector_all("input[type='text']")
+            # if text_inputs:
+            #     await text_inputs[0].fill(keyword)
+            #     await page.wait_for_timeout(500)
 
             # Select Published status
             selects = await page.query_selector_all("select")
@@ -151,6 +158,17 @@ async def search_kppp(keyword: str, category: str = "") -> list:
                         deadline = "Not available"
 
                     tender_url = "https://kppp.karnataka.gov.in/#/portal/searchTender/live"
+
+                    # Skip if already in database
+                    from database.db import get_conn
+                    conn = get_conn()
+                    existing = conn.execute(
+                        "SELECT id FROM tenders WHERE tender_number=?", (tender_number,)
+                    ).fetchone()
+                    conn.close()
+                    if existing:
+                        print(f"[KPPP] Skipping {tender_number} — already in database")
+                        continue
 
                     # ── DOWNLOAD ──────────────────────────
                     # Skip download during search — just collect data

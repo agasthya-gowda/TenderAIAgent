@@ -215,6 +215,14 @@ with c5:
         st.rerun()
 
 st.markdown("<br>", unsafe_allow_html=True)
+
+# Auto-refresh while agent is actively searching
+if state.get("status") in ("searching", "expanding", "learning"):
+    st.caption("🔄 Agent is searching... dashboard will refresh automatically")
+    import time
+    time.sleep(40)
+    st.rerun()
+
 st.markdown("---")
 
 # ── SECTION CONTENT ───────────────────────────────────────
