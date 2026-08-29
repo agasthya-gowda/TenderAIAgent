@@ -18,29 +18,43 @@ def check_relevance_ai(original_keyword: str, titles: list) -> list:
     """
     Use AI to check which tender titles are actually relevant
     to what the CEO originally searched for.
+    Processes in batches of 20 to avoid response truncation.
     Returns list of True/False matching titles list.
     """
     if not titles:
         return []
-    
+
+    BATCH_SIZE = 20
+    all_flags = []
+
+    for i in range(0, len(titles), BATCH_SIZE):
+        batch = titles[i:i + BATCH_SIZE]
+        batch_flags = _check_relevance_batch(original_keyword, batch)
+        all_flags.extend(batch_flags)
+
+    return all_flags
+
+
+def _check_relevance_batch(original_keyword: str, titles: list) -> list:
+    """Check relevance for a single batch of titles (max ~20)."""
+    if not titles:
+        return []
+
     try:
         import requests
         import os
         import json as json_lib
-        
-        DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
-        
-        titles_numbered = "\n".join([f"{i+1}. {t}" for i, t in enumerate(titles)])
-        
-        prompt = f"""The user is looking for tenders related to: "{original_keyword}"
 
+        DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+
+        titles_numbered = "\n".join([f"{i+1}. {t}" for i, t in enumerate(titles)])
+
+        prompt = f"""The user is looking for tenders related to: "{original_keyword}"
 Here is a list of tender titles found:
 {titles_numbered}
-
 For EACH numbered title, decide if it is genuinely relevant to "{original_keyword}".
 A tender is relevant if it's about the same product/service category, even if worded differently.
 A tender is NOT relevant if it's about a completely different category (e.g. food, furniture, cleaning supplies) when searching for electronics/security equipment.
-
 Respond ONLY with a JSON array of true/false values, one per title, in order.
 Example: [true, false, true, true, false]"""
 
@@ -53,21 +67,20 @@ Example: [true, false, true, true, false]"""
             json={
                 "model": "deepseek-chat",
                 "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 500
+                "max_tokens": 1000
             },
             timeout=60
         )
-        
+
         result = response.json()["choices"][0]["message"]["content"].strip()
-        
+
         if "```json" in result:
             result = result.split("```json")[1].split("```")[0]
         elif "```" in result:
             result = result.split("```")[1].split("```")[0]
-        
+
         flags = json_lib.loads(result)
-        
-        # Normalize all values to proper booleans (handles string 'true'/'false' too)
+
         normalized_flags = []
         for f in flags:
             if isinstance(f, bool):
@@ -77,17 +90,14 @@ Example: [true, false, true, true, false]"""
             else:
                 normalized_flags.append(bool(f))
         flags = normalized_flags
-        
-        # Pad or trim to match titles length
+
         while len(flags) < len(titles):
             flags.append(True)
-        
+
         return flags[:len(titles)]
-        
+
     except Exception as e:
-        import traceback
-        print(f"[Relevance Check] Failed: {e}")
-        traceback.print_exc()
+        print(f"[Relevance Check] Batch failed: {e}, defaulting to keep all in this batch")
         return [True] * len(titles)
 _state = {
     "status": "idle",
@@ -124,6 +134,10 @@ def get_log():
 def on_ceo_search(keyword: str, portal: str):
     global _new_keyword_buffer
     log(f"👀 CEO searched: '{keyword}' on {portal}")
+
+    from database.db import save_ceo_search
+    save_ceo_search(keyword, portal)
+
     with _lock:
         _state["ceo_searches_count"] += 1
         _state["current_keyword"] = keyword
@@ -154,7 +168,7 @@ def _instant_expand_and_search(keyword: str, portal: str):
 
         gem_thread = threading.Thread(
             target=_search_portal,
-            args=("GeM", expanded, category),
+            args=("GeM", expanded, category, 15),
             daemon=True
         )
         kppp_thread = threading.Thread(
@@ -177,7 +191,7 @@ def _instant_expand_and_search(keyword: str, portal: str):
         with _lock:
             _state["status"] = "watching"
 
-def _search_portal(portal: str, keywords: list, category: str):
+def _search_portal(portal: str, keywords: list, category: str, max_pages: int = 5):
     try:
         if portal == "GeM":
             from portals.gem import search_gem_sync
@@ -193,7 +207,10 @@ def _search_portal(portal: str, keywords: list, category: str):
                 break
             try:
                 log(f"🔎 [{portal}] Searching: '{keyword}'")
-                tenders = search_fn(keyword, category)
+                if portal == "GeM":
+                    tenders = search_fn(keyword, category, max_pages=max_pages)
+                else:
+                    tenders = search_fn(keyword, category)
                 
                 # Batch relevance check using AI
                 if tenders:
@@ -283,7 +300,7 @@ def _scheduled_search():
 
         gem_thread = threading.Thread(
             target=_search_portal,
-            args=("GeM", gem_keywords, category),
+            args=("GeM", gem_keywords, category, 15),
             daemon=True
         )
         kppp_thread = threading.Thread(
@@ -324,7 +341,7 @@ def _run_startup_search():
     
     gem_thread = threading.Thread(
         target=_search_portal,
-        args=("GeM", gem_keywords, category),
+        args=("GeM", gem_keywords, category, 15),
         daemon=True
     )
     kppp_thread = threading.Thread(

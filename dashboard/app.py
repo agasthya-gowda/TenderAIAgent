@@ -27,6 +27,17 @@ st.set_page_config(
 st.markdown("""
 <style>
     .main { background-color: #F8F9FA; }
+    .block-container { padding-top: 1rem !important; }
+    div[data-testid="stVerticalBlock"] div:has(> div.stats-sticky) {
+        position: sticky;
+        top: 0;
+        z-index: 999;
+        background-color: #F8F9FA;
+        padding-bottom: 8px;
+    }
+    .stats-sticky {
+        background-color: #F8F9FA;
+    }
     .agent-header {
         background: linear-gradient(135deg, #2C3E50, #8E44AD);
         padding: 20px 30px;
@@ -76,6 +87,11 @@ st.markdown("""
         padding: 12px 8px;
         white-space: pre-wrap;
     }
+    div[data-testid="stButton"] button:has-text("🗑️") {
+        background-color: #E74C3C !important;
+        color: white !important;
+        border: none !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -88,14 +104,9 @@ if "active_section" not in st.session_state:
     st.session_state.active_section = "all"
 if "page_num" not in st.session_state:
     st.session_state.page_num = 1
+if "viewing_tender_id" not in st.session_state:
+    st.session_state.viewing_tender_id = None
 
-# ── HEADER ────────────────────────────────────────────────
-st.markdown("""
-<div class='agent-header'>
-    <h1>🔍 Tender Agent</h1>
-    <p>AI-powered tender discovery for GeM & KPPP portals</p>
-</div>
-""", unsafe_allow_html=True)
 
 # ── SIDEBAR ───────────────────────────────────────────────
 with st.sidebar:
@@ -141,38 +152,25 @@ with st.sidebar:
     st.markdown("### 🔽 Filter Tenders")
     portal_filter = st.selectbox("Portal", ["All", "GeM", "KPPP"])
     sort_by = st.selectbox("Sort By", ["Relevance", "Newest First", "Deadline"])
+    
 
-    st.markdown("---")
-    st.markdown("### 🔍 Search History")
-    searches = get_all_ceo_searches()
-    if searches:
-        for s in searches[:8]:
-            st.markdown(f"**{s['keyword']}** — {s['portal']} ({s['frequency']}x)")
-    else:
-        st.caption("No searches detected yet.")
+   
+# ── FILTER BAR ────────────────────────────────────────────
 
-    st.markdown("---")
-    st.markdown("### 🧠 Learned Patterns")
-    patterns = get_learned_patterns()
-    if patterns:
-        for p in patterns[:5]:
-            st.markdown(f"**{p['category']}** — weight: {p['weight']:.1f}")
-    else:
-        st.caption("Agent is still learning...")
 
-    st.markdown("---")
-    if st.button("📡 Live Agent Log", use_container_width=True):
-        st.session_state.active_section = "log"
-        st.rerun()
-
+st.markdown("<br>", unsafe_allow_html=True)
 # ── STATS ROW ─────────────────────────────────────────────
+# ── STATS ROW ─────────────────────────────────────────────
+st.markdown('<div class="stats-sticky">', unsafe_allow_html=True)
 stats = get_stats()
+active = st.session_state.active_section
 c1, c2, c3, c4, c5 = st.columns(5)
 
 with c1:
     if st.button(
         f"📋  {stats['total_tenders']}\nTotal Tenders",
-        key="btn_all", use_container_width=True
+        key="btn_all", use_container_width=True,
+        type="primary" if active == "all" else "secondary"
     ):
         st.session_state.active_section = "all"
         st.session_state.page_num = 1
@@ -181,7 +179,8 @@ with c1:
 with c2:
     if st.button(
         f"🟢  {stats['new']}\nNew Tenders",
-        key="btn_new", use_container_width=True
+        key="btn_new", use_container_width=True,
+        type="primary" if active == "new" else "secondary"
     ):
         st.session_state.active_section = "new"
         st.session_state.page_num = 1
@@ -190,7 +189,8 @@ with c2:
 with c3:
     if st.button(
         f"💾  {stats['saved']}\nSaved",
-        key="btn_saved", use_container_width=True
+        key="btn_saved", use_container_width=True,
+        type="primary" if active == "saved" else "secondary"
     ):
         st.session_state.active_section = "saved"
         st.session_state.page_num = 1
@@ -199,7 +199,8 @@ with c3:
 with c4:
     if st.button(
         f"🔎  {stats['ceo_searches']}\nSearch History",
-        key="btn_searches", use_container_width=True
+        key="btn_searches", use_container_width=True,
+        type="primary" if active == "searches" else "secondary"
     ):
         st.session_state.active_section = "searches"
         st.session_state.page_num = 1
@@ -208,13 +209,14 @@ with c4:
 with c5:
     if st.button(
         f"🧠  {stats['patterns_learned']}\nPatterns Learned",
-        key="btn_patterns", use_container_width=True
+        key="btn_patterns", use_container_width=True,
+        type="primary" if active == "patterns" else "secondary"
     ):
         st.session_state.active_section = "patterns"
         st.session_state.page_num = 1
         st.rerun()
+st.markdown('</div>', unsafe_allow_html=True)
 
-st.markdown("<br>", unsafe_allow_html=True)
 
 # Auto-refresh while agent is actively searching
 if state.get("status") in ("searching", "expanding", "learning"):
@@ -222,15 +224,11 @@ if state.get("status") in ("searching", "expanding", "learning"):
     import time
     time.sleep(40)
     st.rerun()
-
-st.markdown("---")
-
 # ── SECTION CONTENT ───────────────────────────────────────
 section = st.session_state.active_section
 
 # ── CEO SEARCHES ──────────────────────────────────────────
 if section == "searches":
-    st.markdown("### 🔍 Search History")
     searches = get_all_ceo_searches()
     if searches:
         for s in searches:
@@ -245,7 +243,6 @@ if section == "searches":
 
 # ── PATTERNS ──────────────────────────────────────────────
 elif section == "patterns":
-    st.markdown("### 🧠 Learned Patterns")
     patterns = get_learned_patterns()
     if patterns:
         for p in patterns:
@@ -286,16 +283,17 @@ elif section == "log":
         st.rerun()
 
 # ── TENDERS ───────────────────────────────────────────────
+# ── TENDERS ───────────────────────────────────────────────
 else:
     if section == "new":
         tenders = get_all_tenders("new")
-        st.markdown("### 🟢 New Tenders")
+        section_title = "🟢 New Tenders"
     elif section == "saved":
         tenders = get_all_tenders("saved")
-        st.markdown("### 💾 Saved Tenders")
+        section_title = "💾 Saved Tenders"
     else:
         tenders = get_all_tenders()
-        st.markdown("### 📋 All Tenders")
+        section_title = "📋 All Tenders"
 
     if portal_filter != "All":
         tenders = [t for t in tenders if t["portal"] == portal_filter]
@@ -307,220 +305,279 @@ else:
     else:
         tenders = sorted(tenders, key=lambda x: x.get("relevance_score", 0), reverse=True)
 
-    if not tenders:
-        st.info("🔍 No tenders found yet.")
-    else:
-        # Pagination
-        page_size = 10
-        total_pages = max(1, (len(tenders) - 1) // page_size + 1)
-
-        if st.session_state.page_num > total_pages:
-            st.session_state.page_num = 1
-
-        st.markdown(f"**{len(tenders)} tenders** — Page {st.session_state.page_num} of {total_pages}")
-        st.markdown("---")
-
-        start = (st.session_state.page_num - 1) * page_size
-        end = start + page_size
-        page_tenders = tenders[start:end]
-
-        for tender in page_tenders:
-            tid = tender["id"]
+    # ── DETAIL PAGE ───────────────────────────────────────
+    if st.session_state.viewing_tender_id is not None:
+        tid = st.session_state.viewing_tender_id
+        match = [t for t in tenders if t["id"] == tid]
+        if not match:
+            match = [t for t in get_all_tenders() if t["id"] == tid]
+        if not match:
+            st.warning("Tender not found.")
+            if st.button("◀ Back to list"):
+                st.session_state.viewing_tender_id = None
+                st.rerun()
+        else:
+            tender = match[0]
             portal = tender.get("portal", "")
-            title = tender.get("title", "Unknown")
             value = tender.get("value", "N/A")
             deadline = tender.get("deadline", "N/A")
-            score = tender.get("relevance_score", 0)
             found_via = tender.get("found_via", "")
             status_val = tender.get("status", "new")
 
-            with st.expander(
-                f"{'🟢' if status_val == 'new' else '💾' if status_val == 'saved' else '⬜'} "
-                f"{title[:80]}  |  {portal}  |  {value}  |  {deadline}  |  {int(score*100)}%"
-            ):
-                col_a, col_b = st.columns(2)
+            if st.button("◀ Back to list"):
+                st.session_state.viewing_tender_id = None
+                st.rerun()
 
-                with col_a:
-                    st.markdown("#### 📋 Tender Details")
-                    details_data = [
-                        ("Tender Title", tender.get("title")),
-                        ("Tender Number", tender.get("tender_number")),
-                        ("Portal", portal),
-                        ("Department", tender.get("department")),
-                        ("Location", tender.get("location")),
-                        ("Tender Type", tender.get("tender_type")),
-                        ("Estimated Value", value),
-                        ("EMD Amount", tender.get("emd")),
-                        ("Published Date", tender.get("published_date")),
-                        ("Submission Deadline", deadline),
-                        ("Category", tender.get("category")),
-                        ("Found Via Search", found_via),
-                    ]
-                    for label, val in details_data:
-                        if val and val not in ["", "None", "null"]:
-                            st.markdown(
-                                f"<span class='detail-label'>{label}:</span> "
-                                f"<span class='detail-value'>{val}</span>",
-                                unsafe_allow_html=True
+            st.markdown(f"### {tender.get('title', 'Unknown')}")
+            st.markdown("---")
+
+            col_a, col_b = st.columns(2)
+
+            with col_a:
+                st.markdown("#### 📋 Tender Details")
+                details_data = [
+                    ("Tender Title", tender.get("title")),
+                    ("Tender Number", tender.get("tender_number")),
+                    ("Portal", portal),
+                    ("Department", tender.get("department")),
+                    ("Location", tender.get("location")),
+                    ("Tender Type", tender.get("tender_type")),
+                    ("Estimated Value", value),
+                    ("EMD Amount", tender.get("emd")),
+                    ("Published Date", tender.get("published_date")),
+                    ("Submission Deadline", deadline),
+                    ("Category", tender.get("category")),
+                    ("Found Via Search", found_via),
+                ]
+                for label, val in details_data:
+                    if val and val not in ["", "None", "null"]:
+                        st.markdown(
+                            f"<span class='detail-label'>{label}:</span> "
+                            f"<span class='detail-value'>{val}</span>",
+                            unsafe_allow_html=True
+                        )
+
+            with col_b:
+                st.markdown("#### 🔗 Links & Downloads")
+                url = tender.get("url", "")
+                if url:
+                    st.markdown(
+                        f"🔗 <a href='{url}' target='_blank'>Open on {portal} Portal</a>",
+                        unsafe_allow_html=True
+                    )
+                st.markdown("---")
+
+                downloaded_files = tender.get("downloaded_files", [])
+                if isinstance(downloaded_files, str):
+                    try:
+                        downloaded_files = json.loads(downloaded_files)
+                    except:
+                        downloaded_files = []
+
+                if portal == "KPPP":
+                    fresh = [t for t in get_all_tenders() if t['id'] == tid]
+                    if fresh:
+                        fresh_files = fresh[0].get("downloaded_files", [])
+                        if isinstance(fresh_files, str):
+                            try:
+                                fresh_files = json.loads(fresh_files)
+                            except:
+                                fresh_files = []
+                        if fresh_files:
+                            downloaded_files = fresh_files
+
+                if not downloaded_files and portal == "KPPP":
+                    st.caption("📄 Documents will appear after analysis")
+
+                if downloaded_files:
+                    st.markdown("**📁 Downloaded Tender Files:**")
+                    for file_path in downloaded_files:
+                        if os.path.exists(file_path):
+                            filename = os.path.basename(file_path)
+                            with open(file_path, "rb") as f:
+                                file_bytes = f.read()
+                            st.download_button(
+                                label=f"⬇️ {filename}",
+                                data=file_bytes,
+                                file_name=filename,
+                                key=f"file_{tid}_{filename}_detail"
                             )
-
-                with col_b:
-                    st.markdown("#### 🔗 Links & Downloads")
-                    url = tender.get("url", "")
-                    if url:
-                        st.markdown(
-                            f"🔗 <a href='{url}' target='_blank'>Open on {portal} Portal</a>",
-                            unsafe_allow_html=True
-                        )
-                    st.markdown("---")
-
-                    downloaded_files = tender.get("downloaded_files", [])
-                    if isinstance(downloaded_files, str):
-                        try:
-                            downloaded_files = json.loads(downloaded_files)
-                        except:
-                            downloaded_files = []
-
-                    # Refresh KPPP files from DB
-                    if portal == "KPPP":
-                        fresh = [t for t in get_all_tenders() if t['id'] == tid]
-                        if fresh:
-                            fresh_files = fresh[0].get("downloaded_files", [])
-                            if isinstance(fresh_files, str):
-                                try:
-                                    fresh_files = json.loads(fresh_files)
-                                except:
-                                    fresh_files = []
-                            if fresh_files:
-                                downloaded_files = fresh_files
-
-                    if not downloaded_files and portal == "KPPP":
-                        st.caption("📄 Documents will appear after analysis")
-
-                    if downloaded_files:
-                        st.markdown("**📁 Downloaded Tender Files:**")
-                        for file_path in downloaded_files:
-                            if os.path.exists(file_path):
-                                filename = os.path.basename(file_path)
-                                with open(file_path, "rb") as f:
-                                    file_bytes = f.read()
-                                st.download_button(
-                                    label=f"⬇️ {filename}",
-                                    data=file_bytes,
-                                    file_name=filename,
-                                    key=f"file_{tid}_{filename}_{section}"
-                                )
-                    else:
-                        if portal == "GeM":
-                            st.caption("No files downloaded yet")
-
-                    st.markdown("---")
-
-                    analysis_path = tender.get("analysis_pdf_path", "")
-
-                    if analysis_path and os.path.exists(analysis_path):
-                        with open(analysis_path, "rb") as f:
-                            pdf_bytes = f.read()
-
-                        pdf_b64 = base64.b64encode(pdf_bytes).decode()
-                        html_viewer = f"""<!DOCTYPE html><html>
-                        <head><title>Tender Analysis</title></head>
-                        <body style="margin:0;padding:0;">
-                        <embed src="data:application/pdf;base64,{pdf_b64}"
-                               width="100%" height="100%"
-                               type="application/pdf"
-                               style="position:fixed;top:0;left:0;width:100%;height:100%;">
-                        </body></html>"""
-                        html_b64 = base64.b64encode(html_viewer.encode()).decode()
-                        st.markdown(
-                            f'<a href="data:text/html;base64,{html_b64}" '
-                            f'target="_blank" style="text-decoration:none;">'
-                            f'<button style="width:100%;padding:10px;background:#8E44AD;'
-                            f'color:white;border:none;border-radius:6px;cursor:pointer;'
-                            f'font-size:14px;margin-bottom:8px;">👁️ View Analysis</button></a>',
-                            unsafe_allow_html=True
-                        )
-                        st.download_button(
-                            label="⬇️ Download Analysis",
-                            data=pdf_bytes,
-                            file_name=os.path.basename(analysis_path),
-                            mime="application/pdf",
-                            key=f"analysis_{tid}_{section}",
-                        )
-                    else:
-                        if st.session_state.analyzing.get(tid):
-                            st.info("⏳ Generating analysis... please wait")
-                        else:
-                            if st.button(
-                                "📊 Get Full Analysis",
-                                key=f"analyze_{tid}_{section}_{status_val}",
-                                type="primary"
-                            ):
-                                st.session_state.analyzing[tid] = True
-                                with st.spinner("🤖 Analyzing tender documents..."):
-                                    path = analyze_tender(tender)
-                                if path and os.path.exists(path):
-                                    update_tender_pdfs(tid, analysis_path=path)
-                                    st.session_state.analyzing[tid] = False
-                                    st.success("✅ Analysis ready!")
-                                    st.rerun()
-                                else:
-                                    st.error("❌ Analysis failed. Try again.")
-                                    st.session_state.analyzing[tid] = False
+                else:
+                    if portal == "GeM":
+                        st.caption("No files downloaded yet")
 
                 st.markdown("---")
-                col_x, col_y, col_z = st.columns(3)
 
-                with col_x:
-                    if section == "saved":
-                        if st.button("🔓 Unsave", key=f"unsave_{tid}_{section}"):
+                analysis_path = tender.get("analysis_pdf_path", "")
+
+                if analysis_path and os.path.exists(analysis_path):
+                    with open(analysis_path, "rb") as f:
+                        pdf_bytes = f.read()
+
+                    pdf_b64 = base64.b64encode(pdf_bytes).decode()
+                    html_viewer = f"""<!DOCTYPE html><html>
+                    <head><title>Tender Analysis</title></head>
+                    <body style="margin:0;padding:0;">
+                    <embed src="data:application/pdf;base64,{pdf_b64}"
+                           width="100%" height="100%"
+                           type="application/pdf"
+                           style="position:fixed;top:0;left:0;width:100%;height:100%;">
+                    </body></html>"""
+                    html_b64 = base64.b64encode(html_viewer.encode()).decode()
+                    st.markdown(
+                        f'<a href="data:text/html;base64,{html_b64}" '
+                        f'target="_blank" style="text-decoration:none;">'
+                        f'<button style="width:100%;padding:10px;background:#8E44AD;'
+                        f'color:white;border:none;border-radius:6px;cursor:pointer;'
+                        f'font-size:14px;margin-bottom:8px;">👁️ View Analysis</button></a>',
+                        unsafe_allow_html=True
+                    )
+                    st.download_button(
+                        label="⬇️ Download Analysis",
+                        data=pdf_bytes,
+                        file_name=os.path.basename(analysis_path),
+                        mime="application/pdf",
+                        key=f"analysis_{tid}_detail",
+                    )
+                else:
+                    if st.session_state.analyzing.get(tid):
+                        st.info("⏳ Generating analysis... please wait")
+                    else:
+                        if st.button(
+                            "📊 Get Full Analysis",
+                            key=f"analyze_{tid}_detail_{status_val}",
+                            type="primary"
+                        ):
+                            st.session_state.analyzing[tid] = True
+                            with st.spinner("🤖 Analyzing tender documents..."):
+                                path = analyze_tender(tender)
+                            if path and os.path.exists(path):
+                                update_tender_pdfs(tid, analysis_path=path)
+                                st.session_state.analyzing[tid] = False
+                                st.success("✅ Analysis ready!")
+                                st.rerun()
+                            else:
+                                st.error("❌ Analysis failed. Try again.")
+                                st.session_state.analyzing[tid] = False
+
+            st.markdown("---")
+            col_x, col_y, col_z = st.columns(3)
+
+            with col_x:
+                if status_val == "saved":
+                    if st.button("🔓 Unsave", key=f"unsave_{tid}_detail"):
+                        update_tender_status(tid, "new")
+                        st.rerun()
+                else:
+                    if st.button("💾 Save", key=f"save_{tid}_detail"):
+                        update_tender_status(tid, "saved")
+                        st.success("Saved!")
+                        st.rerun()
+
+            with col_y:
+                if st.button("🗑️ Delete", key=f"delete_{tid}_detail"):
+                    st.session_state[f"confirm_delete_{tid}"] = True
+
+                if st.session_state.get(f"confirm_delete_{tid}"):
+                    st.warning("Are you sure you want to delete?")
+                    col_yes, col_no = st.columns(2)
+                    with col_yes:
+                        if st.button("✅ Yes Delete", key=f"yes_{tid}_detail"):
+                            delete_tender(tid)
+                            st.session_state[f"confirm_delete_{tid}"] = False
+                            st.session_state.viewing_tender_id = None
+                            st.rerun()
+                    with col_no:
+                        if st.button("❌ Cancel", key=f"no_{tid}_detail"):
+                            st.session_state[f"confirm_delete_{tid}"] = False
+                            st.rerun()
+
+            with col_z:
+                if status_val == "saved":
+                    st.success("✅ Saved")
+                elif status_val == "skipped":
+                    st.warning("⬜ Skipped")
+                else:
+                    st.info("🟢 New")
+
+    # ── TABLE LIST VIEW ───────────────────────────────────
+    else:
+        if not tenders:
+            st.info("🔍 No tenders found yet.")
+        else:
+            page_size = 10
+            total_pages = max(1, (len(tenders) - 1) // page_size + 1)
+
+            if st.session_state.page_num > total_pages:
+                st.session_state.page_num = 1
+
+            st.caption(f"{len(tenders)} tenders — Page {st.session_state.page_num} of {total_pages}")
+            st.markdown("<div style='margin-bottom:8px;'></div>", unsafe_allow_html=True)
+
+            start = (st.session_state.page_num - 1) * page_size
+            end = start + page_size
+            page_tenders = tenders[start:end]
+
+            # Table header
+            h1, h2, h3, h4, h5, h6, h7, h8, h9, h10 = st.columns([0.5, 1.5, 2.5, 1.7, 0.8, 1.2, 1.2, 0.8, 0.8, 0.8])
+            h1.markdown("**Sl No**")
+            h2.markdown("**Bid Number**")
+            h3.markdown("**Item Name**")
+            h4.markdown("**Department**")
+            h5.markdown("**Qty**")
+            h6.markdown("**Start Date**")
+            h7.markdown("**End Date**")
+            h8.markdown("")
+            h9.markdown("")
+            h10.markdown("")
+            # st.markdown("---")
+
+            for idx, tender in enumerate(page_tenders):
+                tid = tender["id"]
+                sl_no = start + idx + 1
+                bid_number = tender.get("tender_number", "N/A")
+                title = tender.get("title", "Unknown")
+                department = tender.get("department", "N/A")
+                quantity = tender.get("quantity", "N/A")
+                start_date = tender.get("published_date", "N/A")
+                end_date = tender.get("deadline", "N/A")
+
+                r1, r2, r3, r4, r5, r6, r7, r8, r9, r10 = st.columns([0.5, 1.5, 2.5, 1.7, 0.8, 1.2, 1.2, 0.8, 0.8, 0.8])
+                r1.markdown(f"{sl_no}")
+                r2.markdown(f"{bid_number}")
+                r3.markdown(f"{title[:60]}")
+                r4.markdown(f"{department[:30] if department else 'N/A'}")
+                r5.markdown(f"{quantity}")
+                r6.markdown(f"{start_date}")
+                r7.markdown(f"{end_date}")
+                with r8:
+                    if st.button("View", key=f"view_{tid}_{section}"):
+                        st.session_state.viewing_tender_id = tid
+                        st.rerun()
+                with r9:
+                    tender_status = tender.get("status", "new")
+                    if tender_status == "saved":
+                        if st.button("🔓", key=f"table_unsave_{tid}_{section}", help="Unsave this tender"):
                             update_tender_status(tid, "new")
                             st.rerun()
                     else:
-                        if st.button("💾 Save", key=f"save_{tid}_{section}"):
+                        if st.button("💾", key=f"table_save_{tid}_{section}", help="Save this tender"):
                             update_tender_status(tid, "saved")
-                            st.success("Saved!")
                             st.rerun()
+                with r10:
+                    if st.button("🗑️", key=f"table_delete_{tid}_{section}", help="Delete this tender"):
+                        delete_tender(tid)
+                        st.rerun()
 
-                with col_y:
-                    if st.button("🗑️ Delete", key=f"delete_{tid}_{section}"):
-                        st.session_state[f"confirm_delete_{tid}"] = True
-
-                    if st.session_state.get(f"confirm_delete_{tid}"):
-                        st.warning("Are you sure you want to delete?")
-                        col_yes, col_no = st.columns(2)
-                        with col_yes:
-                            if st.button("✅ Yes Delete", key=f"yes_{tid}_{section}"):
-                                delete_tender(tid)
-                                st.session_state[f"confirm_delete_{tid}"] = False
-                                st.rerun()
-                        with col_no:
-                            if st.button("❌ Cancel", key=f"no_{tid}_{section}"):
-                                st.session_state[f"confirm_delete_{tid}"] = False
-                                st.rerun()
-
-                with col_z:
-                    if status_val == "saved":
-                        st.success("✅ Saved")
-                    elif status_val == "skipped":
-                        st.warning("⬜ Skipped")
-                    else:
-                        st.info("🟢 New")
-
-
-
-                        # Bottom pagination
-        st.markdown("---")
-        _, col_prev2, col_page2, col_next2 = st.columns([5, 1, 1, 1])
-        with col_prev2:
-            if st.button("◀ Prev", disabled=st.session_state.page_num <= 1, key="prev_btn2"):
-                st.session_state.page_num -= 1
-                st.rerun()
-        with col_page2:
-            st.markdown(f"**{st.session_state.page_num}/{total_pages}**")
-        with col_next2:
-            if st.button("Next ▶", disabled=st.session_state.page_num >= total_pages, key="next_btn2"):
-                st.session_state.page_num += 1
-                st.rerun()
-                
-                
+            st.markdown("---")
+            _, col_prev2, col_page2, col_next2 = st.columns([5, 1, 1, 1])
+            with col_prev2:
+                if st.button("◀ Prev", disabled=st.session_state.page_num <= 1, key="prev_btn2"):
+                    st.session_state.page_num -= 1
+                    st.rerun()
+            with col_page2:
+                st.markdown(f"**{st.session_state.page_num}/{total_pages}**")
+            with col_next2:
+                if st.button("Next ▶", disabled=st.session_state.page_num >= total_pages, key="next_btn2"):
+                    st.session_state.page_num += 1
+                    st.rerun()

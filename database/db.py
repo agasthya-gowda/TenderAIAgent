@@ -143,9 +143,9 @@ def save_tender(tender: dict):
                 location, tender_type, value, emd,
                 deadline, published_date, category,
                 relevance_score, url, description,
-                found_via, downloaded_files
+                found_via, downloaded_files, quantity
             )
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             tender.get("title"),
             tender.get("portal"),
@@ -162,7 +162,8 @@ def save_tender(tender: dict):
             tender.get("url", ""),
             tender.get("description", ""),
             tender.get("found_via", ""),
-            downloaded_files
+            downloaded_files,
+            tender.get("quantity", "N/A")
         ))
         conn.commit()
         row_id = c.lastrowid

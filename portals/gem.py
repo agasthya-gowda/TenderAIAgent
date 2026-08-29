@@ -107,7 +107,7 @@ def construct_pdf2_url(bid_ref: str) -> str:
     ]
     return urls[0]  # Try first, fallback in download function
 
-async def search_gem(keyword: str, category: str = "") -> list:
+async def search_gem(keyword: str, category: str = "", max_pages: int = 5) -> list:
     """
     Search GeM portal for tenders matching keyword.
     Extracts all details from bid cards.
@@ -170,23 +170,35 @@ async def search_gem(keyword: str, category: str = "") -> list:
                 await browser.close()
                 return []
 
-            # Step 3 — Extract bid cards from results
-            # From screenshot: each card has
-            # BID NO, Items, Quantity, Department, Start/End Date
-            bid_cards = await page.query_selector_all("div.card")
+            # Step 3 — Extract bid cards across multiple pages
+            all_bid_cards = []
+            # max_pages now comes from function parameter
 
-            print(f"[GeM] Found {len(bid_cards)} bid cards")
+            for page_num in range(max_pages):
+                bid_cards = await page.query_selector_all("div.card")
 
-            # If no cards found try getting all divs with bid info
-            if not bid_cards:
-                # Try to get page text and parse
-                page_text = await page.inner_text("body")
-                print(f"[GeM] Page loaded, trying alternate extraction...")
+                if not bid_cards:
+                    page_text = await page.inner_text("body")
+                    bid_cards = await page.query_selector_all("tr")
 
-                # Try table rows
-                bid_cards = await page.query_selector_all("tr")
+                all_bid_cards.extend(bid_cards)
+                print(f"[GeM] Page {page_num + 1}: found {len(bid_cards)} cards (total so far: {len(all_bid_cards)})")
 
-            for card in bid_cards[:8]:
+                # Try to go to next page
+                next_btn = await page.query_selector("a:has-text('Next')")
+                if next_btn and page_num < max_pages - 1:
+                    try:
+                        await next_btn.click()
+                        await page.wait_for_timeout(3000)
+                    except Exception:
+                        break
+                else:
+                    break
+
+            print(f"[GeM] Found {len(all_bid_cards)} total bid cards across pages")
+            bid_cards = all_bid_cards
+
+            for card in bid_cards:
                 try:
                     card_text = await card.inner_text()
 
@@ -282,7 +294,7 @@ async def search_gem(keyword: str, category: str = "") -> list:
 
                     print(f"[GeM] Found bid: {bid_no}")
 
-                    # Skip if already in database — avoid re-downloading
+                    # Skip if already in database
                     from database.db import get_conn
                     conn = get_conn()
                     existing = conn.execute(
@@ -290,87 +302,9 @@ async def search_gem(keyword: str, category: str = "") -> list:
                     ).fetchone()
                     conn.close()
                     if existing:
-                        print(f"[GeM] Skipping {bid_no} — already in database")
                         continue
 
-                    # Step 4 — Download PDF 1
                     downloaded_files = []
-                    pdf1_path = ""
-                    pdf2_path = ""
-
-                    try:
-                        # Create folder for this bid
-                        safe_name = bid_no.replace("/", "_")
-                        bid_folder = os.path.join(DOWNLOAD_PATH, safe_name)
-                        os.makedirs(bid_folder, exist_ok=True)
-
-                        # Find and click bid number link
-                        bid_no_link = await card.query_selector(
-                            f"a:has-text('{bid_no}'), "
-                            "a[href*='getBidResultView']"
-                        )
-
-                        if bid_no_link:
-                            # Download PDF 1
-                            async with context.expect_page() as new_page_info:
-                                async with page.expect_download(timeout=15000) as dl1:
-                                    await bid_no_link.click()
-
-                                download1 = await dl1.value
-                                pdf1_path = os.path.join(
-                                    bid_folder,
-                                    f"GeM-Bidding-{safe_name}.pdf"
-                                )
-                                await download1.save_as(pdf1_path)
-                                downloaded_files.append(pdf1_path)
-                                print(f"[GeM] PDF 1 downloaded: {pdf1_path}")
-
-                    except Exception as e:
-                        print(f"[GeM] PDF 1 download error for {bid_no}: {e}")
-
-                        # Try direct URL download
-                        if bid_url:
-                            bid_id = re.search(r"/(\d+)$", bid_url)
-                            if bid_id:
-                                pdf1_url = f"https://bidplus.gem.gov.in/bidding/bid/getBidResultView/{bid_id.group(1)}"
-                                pdf1_path = os.path.join(
-                                    bid_folder,
-                                    f"GeM-Bidding-{safe_name}.pdf"
-                                )
-                                if download_file(pdf1_url, pdf1_path):
-                                    downloaded_files.append(pdf1_path)
-                                    print(f"[GeM] PDF 1 downloaded via direct URL")
-
-                    # Try to get full title from PDF 1 if current title is truncated
-                   
-                    # Step 5 — Read PDF 1 → find PDF 2 link
-                    if pdf1_path and os.path.exists(pdf1_path):
-                        bid_ref = find_pdf2_link_in_pdf1(pdf1_path)
-
-                        if bid_ref:
-                            # Step 6 — Download PDF 2
-                            try:
-                                pdf2_url = construct_pdf2_url(bid_ref)
-                                pdf2_path = os.path.join(
-                                    bid_folder,
-                                    f"GeM-BidDocument-{safe_name}.pdf"
-                                )
-
-                                # Try multiple URL patterns
-                                pdf2_urls = [
-                                    f"https://bidplus.gem.gov.in/bidding/bid/getBidDocument/{bid_ref}",
-                                    f"https://bidplus.gem.gov.in/showbidDocument/{bid_ref.replace('/', '_')}",
-                                    f"https://bidplus.gem.gov.in/downloadBidDocument/{bid_ref}",
-                                ]
-
-                                for url in pdf2_urls:
-                                    if download_file(url, pdf2_path):
-                                        downloaded_files.append(pdf2_path)
-                                        print(f"[GeM] PDF 2 downloaded: {pdf2_path}")
-                                        break
-
-                            except Exception as e:
-                                print(f"[GeM] PDF 2 download error: {e}")
 
                     tenders.append({
                         "title": items,
@@ -386,6 +320,7 @@ async def search_gem(keyword: str, category: str = "") -> list:
                         "deadline": end_date,
                         "published_date": start_date,
                         "emd": "See bid document",
+                        "quantity": quantity,
                         "description": f"GeM bid for {items[:100]}",
                         "downloaded_files": downloaded_files,
                         "relevance_score": 0.75
@@ -405,6 +340,101 @@ async def search_gem(keyword: str, category: str = "") -> list:
         print(f"[GeM] Fatal error: {e}")
         return []
 
-def search_gem_sync(keyword: str, category: str = "") -> list:
+async def download_gem_documents(bid_no: str) -> list:
+    """
+    Download PDF1 and PDF2 for a specific GeM bid number on demand.
+    Called when CEO clicks 'Get Full Analysis'.
+    """
+    try:
+        from playwright.async_api import async_playwright
+
+        downloaded_files = []
+
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-blink-features=AutomationControlled", "--disable-dev-shm-usage"]
+            )
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                viewport={"width": 1366, "height": 768},
+                accept_downloads=True
+            )
+            page = await context.new_page()
+
+            await page.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            """)
+
+            print(f"[GeM] Downloading documents for: {bid_no}")
+
+            await page.goto("https://bidplus.gem.gov.in/all-bids", timeout=60000, wait_until="networkidle")
+            await page.wait_for_timeout(3000)
+
+            search_box = await page.query_selector("input[name='searchBid']")
+            if search_box:
+                await search_box.click()
+                await search_box.fill("")
+                await search_box.fill(bid_no)
+                await search_box.press("Enter")
+                await page.wait_for_timeout(6000)
+
+            # Verify the bid link actually appears before trying to click
+            found_link = await page.query_selector(f"a:has-text('{bid_no}')")
+            if not found_link:
+                print(f"[GeM] Bid {bid_no} not found in search results, retrying with longer wait...")
+                await page.wait_for_timeout(4000)
+
+            safe_name = bid_no.replace("/", "_")
+            bid_folder = os.path.join(DOWNLOAD_PATH, safe_name)
+            os.makedirs(bid_folder, exist_ok=True)
+
+            pdf1_path = ""
+
+            try:
+                bid_no_link = await page.query_selector(f"a:has-text('{bid_no}')")
+                if bid_no_link:
+                    async with page.expect_download(timeout=15000) as dl1:
+                        await bid_no_link.click()
+                    download1 = await dl1.value
+                    pdf1_path = os.path.join(bid_folder, f"GeM-Bidding-{safe_name}.pdf")
+                    await download1.save_as(pdf1_path)
+                    downloaded_files.append(pdf1_path)
+                    print(f"[GeM] PDF 1 downloaded: {pdf1_path}")
+            except Exception as e:
+                print(f"[GeM] PDF 1 download error: {e}")
+
+            if pdf1_path and os.path.exists(pdf1_path):
+                bid_ref = find_pdf2_link_in_pdf1(pdf1_path)
+                if bid_ref:
+                    try:
+                        pdf2_path = os.path.join(bid_folder, f"GeM-BidDocument-{safe_name}.pdf")
+                        pdf2_urls = [
+                            f"https://bidplus.gem.gov.in/bidding/bid/getBidDocument/{bid_ref}",
+                            f"https://bidplus.gem.gov.in/showbidDocument/{bid_ref.replace('/', '_')}",
+                            f"https://bidplus.gem.gov.in/downloadBidDocument/{bid_ref}",
+                        ]
+                        for url in pdf2_urls:
+                            if download_file(url, pdf2_path):
+                                downloaded_files.append(pdf2_path)
+                                print(f"[GeM] PDF 2 downloaded: {pdf2_path}")
+                                break
+                    except Exception as e:
+                        print(f"[GeM] PDF 2 download error: {e}")
+
+            await browser.close()
+            return downloaded_files
+
+    except Exception as e:
+        print(f"[GeM] Document download error: {e}")
+        return []
+
+
+def download_gem_documents_sync(bid_no: str) -> list:
+    """Synchronous wrapper for download_gem_documents."""
+    return asyncio.run(download_gem_documents(bid_no))
+
+
+def search_gem_sync(keyword: str, category: str = "", max_pages: int = 5) -> list:
     """Synchronous wrapper for search_gem."""
-    return asyncio.run(search_gem(keyword, category))
+    return asyncio.run(search_gem(keyword, category, max_pages))

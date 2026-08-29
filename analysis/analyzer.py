@@ -536,6 +536,15 @@ def analyze_tender(tender: dict) -> str:
         # For KPPP tenders — download documents now
         print("[Analyzer] Downloading KPPP documents for analysis...")
         file_text = download_kppp_docs(tender)
+    elif tender.get("portal") == "GeM" and tender.get("tender_number"):
+        # For GeM tenders — download documents now (on-demand)
+        print("[Analyzer] Downloading GeM documents for analysis...")
+        from portals.gem import download_gem_documents_sync
+        from database.db import update_downloaded_files
+        new_files = download_gem_documents_sync(tender.get("tender_number"))
+        if new_files:
+            update_downloaded_files(tender.get("id"), new_files)
+            file_text = read_all_files(new_files)
 
     # Step 2 — Extract details using AI
     print("[Analyzer] Extracting details with AI...")
