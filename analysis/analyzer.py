@@ -541,7 +541,7 @@ def analyze_tender(tender: dict) -> str:
         print("[Analyzer] Downloading GeM documents for analysis...")
         from portals.gem import download_gem_documents_sync
         from database.db import update_downloaded_files
-        new_files = download_gem_documents_sync(tender.get("tender_number"))
+        new_files = download_gem_documents_sync(tender.get("tender_number"), tender.get("url", ""))
         if new_files:
             update_downloaded_files(tender.get("id"), new_files)
             file_text = read_all_files(new_files)

@@ -5,7 +5,7 @@ Tender Agent Dashboard
 import streamlit as st
 import os
 import json
-import base64
+from rapidfuzz import fuzz
 from database.db import (
     get_all_tenders, get_stats, update_tender_status,
     update_tender_pdfs, get_all_ceo_searches, get_learned_patterns,
@@ -16,6 +16,27 @@ from agent.orchestrator import (
     get_log, trigger_manual_search
 )
 from analysis.analyzer import analyze_tender
+
+
+def fuzzy_filter_tenders(tenders, query, threshold=80):
+    """Filter tenders by a fuzzy/substring match over the visible table columns.
+
+    Scores each field separately (not one concatenated string) and takes the
+    best per-tender score — concatenating first let a short query "get lucky"
+    against the combined length of every field (e.g. a long department name),
+    surfacing unrelated tenders as fuzzy matches.
+    """
+    query = (query or "").strip().lower()
+    if not query:
+        return tenders
+    fields = ("tender_number", "title", "department", "quantity", "published_date", "deadline")
+    out = []
+    for t in tenders:
+        values = [str(t.get(f, "")).lower() for f in fields]
+        if any(query in v for v in values) or \
+                max(fuzz.partial_ratio(query, v) for v in values) >= threshold:
+            out.append(t)
+    return out
 
 st.set_page_config(
     page_title="Tender Agent",
@@ -349,23 +370,31 @@ else:
                     ("Category", tender.get("category")),
                     ("Found Via Search", found_via),
                 ]
+                # GeM has no page that displays a single tender's info — the
+                # bid number link on GeM's own site always downloads the bid
+                # PDF, even there. So this points at GeM's generic search
+                # landing page rather than the stored per-tender doc URL,
+                # which would silently trigger a PDF download instead of
+                # opening a page.
+                portal_home_urls = {
+                    "GeM": "https://bidplus.gem.gov.in/all-bids",
+                    "KPPP": "https://kppp.karnataka.gov.in/#/portal/searchTender/live",
+                }
+                portal_home_url = portal_home_urls.get(portal, "")
+
                 for label, val in details_data:
                     if val and val not in ["", "None", "null"]:
+                        if label == "Tender Number" and portal_home_url:
+                            value_html = f"<a href='{portal_home_url}' target='_blank'>{val}</a>"
+                        else:
+                            value_html = f"<span class='detail-value'>{val}</span>"
                         st.markdown(
-                            f"<span class='detail-label'>{label}:</span> "
-                            f"<span class='detail-value'>{val}</span>",
+                            f"<span class='detail-label'>{label}:</span> {value_html}",
                             unsafe_allow_html=True
                         )
 
             with col_b:
-                st.markdown("#### 🔗 Links & Downloads")
-                url = tender.get("url", "")
-                if url:
-                    st.markdown(
-                        f"🔗 <a href='{url}' target='_blank'>Open on {portal} Portal</a>",
-                        unsafe_allow_html=True
-                    )
-                st.markdown("---")
+                st.markdown("#### 📁 Downloads")
 
                 downloaded_files = tender.get("downloaded_files", [])
                 if isinstance(downloaded_files, str):
@@ -414,24 +443,31 @@ else:
                     with open(analysis_path, "rb") as f:
                         pdf_bytes = f.read()
 
-                    pdf_b64 = base64.b64encode(pdf_bytes).decode()
-                    html_viewer = f"""<!DOCTYPE html><html>
-                    <head><title>Tender Analysis</title></head>
-                    <body style="margin:0;padding:0;">
-                    <embed src="data:application/pdf;base64,{pdf_b64}"
-                           width="100%" height="100%"
-                           type="application/pdf"
-                           style="position:fixed;top:0;left:0;width:100%;height:100%;">
-                    </body></html>"""
-                    html_b64 = base64.b64encode(html_viewer.encode()).decode()
+                    # Chrome blocks top-level navigation to both data: URLs
+                    # and file:// URLs from an http(s) page (both were tried
+                    # and both silently failed to open a new tab). The only
+                    # reliable way to open the PDF in its own tab is to serve
+                    # it over http like a real resource — Streamlit serves
+                    # anything placed in dashboard/static/ at /app/static/
+                    # when server.enableStaticServing is on (see
+                    # .streamlit/config.toml), so copy the report there under
+                    # a stable per-tender name and link to that.
+                    static_dir = os.path.join(os.path.dirname(__file__), "static")
+                    os.makedirs(static_dir, exist_ok=True)
+                    static_name = f"analysis_{tid}.pdf"
+                    static_path = os.path.join(static_dir, static_name)
+                    if not os.path.exists(static_path) or os.path.getmtime(analysis_path) > os.path.getmtime(static_path):
+                        with open(static_path, "wb") as f:
+                            f.write(pdf_bytes)
+
                     st.markdown(
-                        f'<a href="data:text/html;base64,{html_b64}" '
-                        f'target="_blank" style="text-decoration:none;">'
+                        f'<a href="app/static/{static_name}" target="_blank" style="text-decoration:none;">'
                         f'<button style="width:100%;padding:10px;background:#8E44AD;'
                         f'color:white;border:none;border-radius:6px;cursor:pointer;'
                         f'font-size:14px;margin-bottom:8px;">👁️ View Analysis</button></a>',
                         unsafe_allow_html=True
                     )
+
                     st.download_button(
                         label="⬇️ Download Analysis",
                         data=pdf_bytes,
@@ -502,6 +538,14 @@ else:
 
     # ── TABLE LIST VIEW ───────────────────────────────────
     else:
+        search_query = st.text_input(
+            "🔍 Search tenders",
+            key="table_search_query",
+            placeholder="Search by bid number, item name, department...",
+            on_change=lambda: st.session_state.update(page_num=1),
+        )
+        tenders = fuzzy_filter_tenders(tenders, search_query)
+
         if not tenders:
             st.info("🔍 No tenders found yet.")
         else:
