@@ -36,6 +36,24 @@ def init_db():
         )
     """)
 
+    # Table 2b - stores KPPP-specific search filters set by the CEO. KPPP has
+    # no keyword search, so instead of a keyword this stores the actual
+    # fields its own search form takes (category, procuring entity, tender
+    # number, closure date range, tender type). Each saved row is re-applied
+    # automatically on every future agent search cycle, same as GeM keywords.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS kppp_search_criteria (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category TEXT,
+            procuring_entity TEXT,
+            tender_number TEXT,
+            from_date TEXT,
+            to_date TEXT,
+            tender_type TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+
     # Table 3 - stores all tenders found
     c.execute("""
         CREATE TABLE IF NOT EXISTS tenders (
@@ -93,6 +111,43 @@ def get_all_ceo_searches():
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+def save_kppp_criteria(criteria: dict):
+    """Save a CEO-defined KPPP search filter (category/entity/dates/type).
+    Skips saving an exact duplicate of an already-saved criteria set."""
+    conn = get_conn()
+    c = conn.cursor()
+    fields = ("category", "procuring_entity", "tender_number", "from_date", "to_date", "tender_type")
+    values = tuple(criteria.get(f, "") or "" for f in fields)
+    existing = c.execute(
+        """SELECT id FROM kppp_search_criteria
+           WHERE category=? AND procuring_entity=? AND tender_number=?
+             AND from_date=? AND to_date=? AND tender_type=?""",
+        values
+    ).fetchone()
+    if not existing:
+        c.execute(
+            """INSERT INTO kppp_search_criteria
+               (category, procuring_entity, tender_number, from_date, to_date, tender_type)
+               VALUES (?,?,?,?,?,?)""",
+            values
+        )
+    conn.commit()
+    conn.close()
+
+def get_kppp_criteria_list():
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM kppp_search_criteria ORDER BY created_at DESC"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def delete_kppp_criteria(criteria_id: int):
+    conn = get_conn()
+    conn.execute("DELETE FROM kppp_search_criteria WHERE id=?", (criteria_id,))
+    conn.commit()
+    conn.close()
 
 def save_learned_patterns(category: str, keywords: str, weight: float = 1.0):
     conn = get_conn()

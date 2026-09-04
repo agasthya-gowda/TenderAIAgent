@@ -10,7 +10,10 @@ import threading
 import time
 import json
 from datetime import datetime
-from database.db import save_tender, get_all_ceo_searches, update_downloaded_files
+from database.db import (
+    save_tender, get_all_ceo_searches, update_downloaded_files,
+    save_kppp_criteria, get_kppp_criteria_list
+)
 from agent.learner import expand_keyword_instantly, analyze_patterns, get_search_queries
 from agent.watcher import start_watching, register_callback
 
@@ -103,6 +106,7 @@ _state = {
     "status": "idle",
     "last_search": None,
     "last_learn": None,
+    "last_full_search_date": None,
     "tenders_found_today": 0,
     "log": [],
     "running": False,
@@ -166,20 +170,12 @@ def _instant_expand_and_search(keyword: str, portal: str):
             _state["status"] = "searching"
             _state["last_learn"] = datetime.now().isoformat()
 
-        gem_thread = threading.Thread(
-            target=_search_portal,
-            args=("GeM", expanded, category, 15),
-            daemon=True
-        )
-        kppp_thread = threading.Thread(
-            target=_search_portal,
-            args=("KPPP", expanded, category),
-            daemon=True
-        )
-        gem_thread.start()
-        kppp_thread.start()
-        gem_thread.join()
-        kppp_thread.join()
+        # KPPP is not searched here — it has no keyword search of its own,
+        # so this GeM keyword box never actually drove a useful KPPP search
+        # (the previous KPPP thread just re-ran the same fixed listing).
+        # KPPP is searched via its own filter form (see on_kppp_search)
+        # instead, using KPPP's real search fields.
+        _search_portal("GeM", expanded, category, 15)
 
         with _lock:
             _state["status"] = "watching"
@@ -192,26 +188,25 @@ def _instant_expand_and_search(keyword: str, portal: str):
             _state["status"] = "watching"
 
 def _search_portal(portal: str, keywords: list, category: str, max_pages: int = 5):
+    # GeM-only: KPPP has no keyword search, so it's handled separately by
+    # on_kppp_search / _run_kppp_criteria_search using KPPP's real filter
+    # fields instead of a keyword list.
+    if portal != "GeM":
+        log(f"⚠️ _search_portal only supports GeM, got '{portal}'")
+        return
     try:
-        if portal == "GeM":
-            from portals.gem import search_gem_sync
-            search_fn = search_gem_sync
-        else:
-            from portals.kppp import search_kppp_sync
-            search_fn = search_kppp_sync
+        from portals.gem import search_gem_sync
+        search_fn = search_gem_sync
 
+        # Not gated on _state["running"] — a manual search from the search
+        # box must work whether or not Start Agent has been clicked this
+        # session; "running" only controls the background scheduler loop.
         found_count = 0
         for keyword in keywords[:8]:
-            if not _state["running"]:
-                log(f"🛑 [{portal}] Search stopped by user")
-                break
             try:
                 log(f"🔎 [{portal}] Searching: '{keyword}'")
-                if portal == "GeM":
-                    tenders = search_fn(keyword, category, max_pages=max_pages)
-                else:
-                    tenders = search_fn(keyword, category)
-                
+                tenders = search_fn(keyword, category, max_pages=max_pages)
+
                 # Batch relevance check using AI
                 if tenders:
                     titles = [t.get("title", "") for t in tenders]
@@ -242,6 +237,61 @@ def _search_portal(portal: str, keywords: list, category: str, max_pages: int = 
     except Exception as e:
         log(f"❌ [{portal}] Fatal error: {e}")
 
+def on_kppp_search(criteria: dict):
+    """
+    CEO submitted the KPPP-specific search form (category, procuring entity,
+    tender number, closure dates, tender type). Unlike GeM, KPPP has no
+    keyword search, so this saves the real filter values instead of a
+    keyword and immediately runs a search with them. Every future agent
+    cycle (Start Agent, 2 AM scheduled run) re-applies every saved KPPP
+    criteria set automatically, the same way GeM's learned keywords do.
+    """
+    save_kppp_criteria(criteria)
+    log(f"👀 CEO set KPPP search filter: {criteria}")
+    threading.Thread(
+        target=_run_kppp_criteria_search,
+        args=([criteria],),
+        daemon=True
+    ).start()
+
+def _run_kppp_criteria_search(criteria_list: list):
+    if not criteria_list:
+        return
+    if _state.get("status") in ("searching", "expanding"):
+        log("⏳ Search already in progress, skipping duplicate KPPP trigger")
+        return
+    with _lock:
+        _state["status"] = "searching"
+    try:
+        from portals.kppp import search_kppp_sync
+
+        # Not gated on _state["running"] — see _search_portal for why.
+        found_count = 0
+        for criteria in criteria_list:
+            try:
+                log(f"🔎 [KPPP] Searching with saved filter: {criteria}")
+                tenders = search_kppp_sync(criteria)
+                for tender in tenders:
+                    tender_id = save_tender(tender)
+                    if tender_id:
+                        found_count += 1
+                        files = tender.get("downloaded_files", [])
+                        if files:
+                            update_downloaded_files(tender_id, files)
+                        log(f"📄 [KPPP] Found: {tender['title'][:60]}...")
+            except Exception as e:
+                log(f"⚠️ [KPPP] Error searching with filter {criteria}: {e}")
+
+        with _lock:
+            _state["tenders_found_today"] += found_count
+        log(f"✅ [KPPP] Done. Found {found_count} new tenders")
+    except Exception as e:
+        log(f"❌ [KPPP] Fatal error: {e}")
+    finally:
+        with _lock:
+            _state["status"] = "watching"
+            _state["last_search"] = datetime.now().isoformat()
+
 def _scheduled_search():
     """Runs every day at 2 AM automatically."""
     import datetime as dt
@@ -259,7 +309,8 @@ def _scheduled_search():
             break
 
         searches = get_all_ceo_searches()
-        if not searches:
+        kppp_criteria_list = get_kppp_criteria_list()
+        if not searches and not kppp_criteria_list:
             log("⏰ Scheduled search skipped — no CEO searches yet")
             continue
         # Reset old new tenders to "seen" status
@@ -272,91 +323,73 @@ def _scheduled_search():
 
         log("⏰ Daily 2 AM scheduled search starting...")
 
-        with _lock:
-            _state["status"] = "learning"
-
-        result = analyze_patterns()
-        summary = result.get("summary", "")
-        if summary:
-            log(f"📋 Pattern summary: {summary}")
-
-        queries = get_search_queries()
-        if not queries:
-            log("⚠️ No search queries available")
+        if searches:
             with _lock:
-                _state["status"] = "watching"
-            continue
+                _state["status"] = "learning"
 
-        log(f"🚀 Running {len(queries)} scheduled searches...")
+            result = analyze_patterns()
+            summary = result.get("summary", "")
+            if summary:
+                log(f"📋 Pattern summary: {summary}")
 
-        with _lock:
-            _state["status"] = "searching"
+            queries = get_search_queries()
+            gem_keywords = [q["keyword"] for q in queries if q["portal"] == "GeM"][:10]
+            category = queries[0].get("category", "") if queries else ""
 
-        gem_queries = [q for q in queries if q["portal"] == "GeM"]
-        kppp_queries = [q for q in queries if q["portal"] == "KPPP"]
-        gem_keywords = [q["keyword"] for q in gem_queries[:10]]
-        kppp_keywords = [q["keyword"] for q in kppp_queries[:10]]
-        category = queries[0].get("category", "") if queries else ""
+            log(f"🚀 Running {len(gem_keywords)} scheduled GeM searches...")
+            with _lock:
+                _state["status"] = "searching"
+            _search_portal("GeM", gem_keywords, category, 15)
 
-        gem_thread = threading.Thread(
-            target=_search_portal,
-            args=("GeM", gem_keywords, category, 15),
-            daemon=True
-        )
-        kppp_thread = threading.Thread(
-            target=_search_portal,
-            args=("KPPP", kppp_keywords, category),
-            daemon=True
-        )
-        gem_thread.start()
-        kppp_thread.start()
-        gem_thread.join()
-        kppp_thread.join()
+        if kppp_criteria_list:
+            log(f"🚀 Running {len(kppp_criteria_list)} scheduled KPPP searches...")
+            _run_kppp_criteria_search(kppp_criteria_list)
 
         with _lock:
             _state["status"] = "watching"
             _state["last_search"] = datetime.now().isoformat()
+            _state["last_full_search_date"] = datetime.now().date().isoformat()
             _state["tenders_found_today"] = 0
 
         log("✅ Daily scheduled search complete")
 
-def _run_startup_search():
-    """Run immediate search when agent starts."""
+def _run_full_catalog_search():
+    """
+    Run every saved GeM pattern + every saved KPPP filter right now.
+    Triggered on every "Start Agent" click — always fetches fresh results
+    on demand, regardless of whether a full search already ran today. This
+    is the manual/on-demand counterpart to the automatic daily 2 AM sweep
+    in _scheduled_search(); dedup in save_tender() (by title+portal) keeps
+    repeated runs from creating duplicate rows.
+    """
     time.sleep(3)
-    
+
     searches = get_all_ceo_searches()
-    if not searches:
+    kppp_criteria_list = get_kppp_criteria_list()
+    if not searches and not kppp_criteria_list:
         log("💡 No previous searches. Use search box to find tenders.")
         return
-    
-    log("🚀 Running startup search for today's tenders...")
-    
-    queries = get_search_queries()
-    if not queries:
-        return
-    
-    gem_keywords = [q["keyword"] for q in queries if q["portal"] == "GeM"][:8]
-    kppp_keywords = [q["keyword"] for q in queries if q["portal"] == "KPPP"][:8]
-    category = queries[0].get("category", "") if queries else ""
-    
-    gem_thread = threading.Thread(
-        target=_search_portal,
-        args=("GeM", gem_keywords, category, 15),
-        daemon=True
-    )
-    kppp_thread = threading.Thread(
-        target=_search_portal,
-        args=("KPPP", kppp_keywords, category),
-        daemon=True
-    )
-    gem_thread.start()
-    kppp_thread.start()
-    gem_thread.join()
-    kppp_thread.join()
-    
-    log("✅ Startup search complete — check New Tenders!")
+
+    log("🚀 Running full catalog search...")
+
+    if searches:
+        queries = get_search_queries()
+        gem_keywords = [q["keyword"] for q in queries if q["portal"] == "GeM"][:8]
+        category = queries[0].get("category", "") if queries else ""
+        _search_portal("GeM", gem_keywords, category, 15)
+
+    if kppp_criteria_list:
+        _run_kppp_criteria_search(kppp_criteria_list)
+
+    with _lock:
+        _state["last_full_search_date"] = datetime.now().date().isoformat()
+    log("✅ Full catalog search complete — check New Tenders!")
+
+_scheduler_thread = None
 
 def start_agent():
+    global _scheduler_thread
+
     with _lock:
         _state["running"] = True
         _state["status"] = "watching"
@@ -367,17 +400,21 @@ def start_agent():
     register_callback(on_ceo_search)
     start_watching()
 
-    # Immediately search on startup
+    # Always fetch fresh tenders on every Start Agent click, whether it's
+    # the first start today or a restart later.
     threading.Thread(
-        target=_run_startup_search,
+        target=_run_full_catalog_search,
         daemon=True
     ).start()
 
-    scheduler = threading.Thread(
-        target=_scheduled_search,
-        daemon=True
-    )
-    scheduler.start()
+    # Only one scheduler loop should ever be alive — clicking Start Agent
+    # again (e.g. after Stop) must not stack duplicate 2 AM loops.
+    if _scheduler_thread is None or not _scheduler_thread.is_alive():
+        _scheduler_thread = threading.Thread(
+            target=_scheduled_search,
+            daemon=True
+        )
+        _scheduler_thread.start()
 
     log("✅ Agent is live and monitoring")
 

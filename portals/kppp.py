@@ -18,7 +18,32 @@ load_dotenv()
 
 DOWNLOAD_PATH = os.getenv("DOWNLOAD_PATH", "downloads")
 
-async def search_kppp(keyword: str, category: str = "") -> list:
+async def _search_kppp_once(criteria: dict) -> tuple:
+    """
+    Run one full attempt at searching KPPP using its real search form
+    fields. Returns (tenders, entity_verified) — entity_verified is False
+    when a procuring entity was requested but the dropdown selection didn't
+    actually stick (KPPP's Angular app can reset/reload the entity list
+    right after the category changes), in which case `tenders` is the
+    unfiltered/wrong-filter list and must NOT be trusted by the caller.
+
+    KPPP has no keyword search — its own "Search Tenders" form only takes
+    Category, Procuring Entity, Tender Number, a tender-closure date range,
+    and a Regular/Prequalification/Reserved choice (see
+    portals/data/kppp_options.py for the real option values, scraped from
+    the live form). `criteria` carries whichever of these the CEO set:
+    {category, procuring_entity, tender_number, from_date, to_date, tender_type}
+    (all optional/blank-able except category, which KPPP requires).
+    """
+    category = (criteria or {}).get("category", "")
+    procuring_entity = (criteria or {}).get("procuring_entity", "")
+    tender_number = (criteria or {}).get("tender_number", "")
+    from_date = (criteria or {}).get("from_date", "")
+    to_date = (criteria or {}).get("to_date", "")
+    tender_type = (criteria or {}).get("tender_type", "")
+    found_via_label = "KPPP: " + ", ".join(
+        f"{k}={v}" for k, v in (criteria or {}).items() if v
+    ) if criteria else "KPPP search"
     try:
         from playwright.async_api import async_playwright
 
@@ -44,7 +69,7 @@ async def search_kppp(keyword: str, category: str = "") -> list:
                 Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
             """)
 
-            print(f"[KPPP] Opening search page for: {keyword}")
+            print(f"[KPPP] Opening search page with filter: {criteria}")
 
             await page.goto(
                 "https://kppp.karnataka.gov.in/#/portal/searchTender/live",
@@ -101,29 +126,91 @@ async def search_kppp(keyword: str, category: str = "") -> list:
             if not captcha_solved:
                 print("[KPPP] CAPTCHA failed after 3 attempts")
                 await browser.close()
-                return []
+                return [], False
 
             # ── SEARCH ────────────────────────────────────
-                        # ── SEARCH ──────────────────────────────
+            # Fill in KPPP's actual search fields (selectors/options
+            # confirmed against the live form — see portals/data/kppp_options.py).
             await page.wait_for_timeout(2000)
 
-            # # Type keyword into Tender Number field
-            # text_inputs = await page.query_selector_all("input[type='text']")
-            # if text_inputs:
-            #     await text_inputs[0].fill(keyword)
-            #     await page.wait_for_timeout(500)
+            if tender_number:
+                tn_input = await page.query_selector("#tendernumberInputField")
+                if tn_input:
+                    await tn_input.fill(tender_number)
+                    await page.wait_for_timeout(300)
 
-            # Select Published status
+            if category:
+                cat_select = await page.query_selector("#categorySelect")
+                if cat_select:
+                    try:
+                        await cat_select.select_option(label=category)
+                    except Exception as e:
+                        print(f"[KPPP] Category '{category}' not found: {e}")
+                    await page.wait_for_timeout(300)
+
+            # Status — always Published, since we only care about live/open tenders
             selects = await page.query_selector_all("select")
             if len(selects) >= 2:
                 await selects[1].select_option(index=1)
-                await page.wait_for_timeout(500)
+                await page.wait_for_timeout(300)
+
+            entity_verified = True
+            if procuring_entity:
+                entity_verified = False
+                entity_select = await page.query_selector("#departmentstatusSelect")
+                if not entity_select:
+                    print(f"[KPPP] Procuring entity dropdown not found on page")
+                else:
+                    # KPPP's Angular app can silently reset/reload the entity
+                    # dropdown shortly after the category changes, so a
+                    # selection made too soon doesn't stick even though no
+                    # exception is raised. Verify what's actually selected
+                    # and retry rather than trusting the call blindly —
+                    # otherwise a failed selection quietly falls through to
+                    # an unfiltered search that gets mislabeled as filtered.
+                    for verify_attempt in range(4):
+                        try:
+                            await entity_select.select_option(label=procuring_entity)
+                        except Exception as e:
+                            print(f"[KPPP] Procuring entity '{procuring_entity}' not in dropdown: {e}")
+                            break
+                        await page.wait_for_timeout(400 + verify_attempt * 400)
+                        selected_text = await entity_select.evaluate(
+                            "el => el.options[el.selectedIndex]?.text.trim()"
+                        )
+                        if selected_text == procuring_entity:
+                            entity_verified = True
+                            break
+                        print(
+                            f"[KPPP] Entity selection didn't stick "
+                            f"(attempt {verify_attempt + 1}, got '{selected_text}'), retrying..."
+                        )
+                    if not entity_verified:
+                        print(f"[KPPP] Giving up on selecting entity '{procuring_entity}' for this attempt")
+                        await browser.close()
+                        return [], False
+
+            date_inputs = await page.query_selector_all("input[type='date']")
+            if len(date_inputs) >= 2:
+                if from_date:
+                    await date_inputs[0].fill(from_date)
+                if to_date:
+                    await date_inputs[1].fill(to_date)
+                await page.wait_for_timeout(300)
+
+            if tender_type:
+                type_order = ["Regular Tenders", "Prequalification Tenders", "Reserved Tenders"]
+                if tender_type in type_order:
+                    radios = await page.query_selector_all("input[type='radio']")
+                    if len(radios) >= len(type_order):
+                        await radios[type_order.index(tender_type)].click()
+                        await page.wait_for_timeout(300)
 
             search_btn = await page.query_selector("button:has-text('Search')")
             if search_btn:
                 await search_btn.click()
                 await page.wait_for_timeout(4000)
-                print(f"[KPPP] Search submitted for: {keyword}")
+                print(f"[KPPP] Search submitted with filter: {criteria}")
 
             # ── EXTRACT RESULTS ───────────────────────────
             await page.wait_for_timeout(2000)
@@ -179,7 +266,7 @@ async def search_kppp(keyword: str, category: str = "") -> list:
                         "portal": "KPPP",
                         "url": tender_url,
                         "category": category,
-                        "found_via": keyword,
+                        "found_via": found_via_label,
                         "tender_number": tender_number,
                         "department": procuring_entity,
                         "location": location,
@@ -201,13 +288,29 @@ async def search_kppp(keyword: str, category: str = "") -> list:
 
             await browser.close()
             print(f"[KPPP] Done. Total: {len(tenders)} tenders")
-            return tenders
+            return tenders, entity_verified
 
     except Exception as e:
         print(f"[KPPP] Fatal error: {e}")
-        return []
+        return [], False
 
-def search_kppp_sync(keyword: str, category: str = "") -> list:
+async def search_kppp(criteria: dict, max_attempts: int = 5) -> list:
+    """
+    Search KPPP, retrying the whole attempt (fresh browser + CAPTCHA) when
+    a requested procuring-entity filter didn't actually stick, instead of
+    giving up and returning results from the wrong (unfiltered) search.
+    Only returns tenders once the filter is confirmed applied — or once
+    max_attempts is exhausted, in which case it returns nothing rather than
+    ever return mismatched-department tenders under the requested filter.
+    """
+    for attempt in range(1, max_attempts + 1):
+        tenders, entity_verified = await _search_kppp_once(criteria)
+        if entity_verified:
+            return tenders
+        print(f"[KPPP] Attempt {attempt}/{max_attempts} did not confirm the requested filter, retrying search...")
+    print(f"[KPPP] Giving up after {max_attempts} attempts — not returning unfiltered results")
+    return []
+
+def search_kppp_sync(criteria: dict) -> list:
     """Synchronous wrapper for search_kppp."""
-    results = asyncio.run(search_kppp(keyword, category))
-    return results
+    return asyncio.run(search_kppp(criteria))

@@ -103,57 +103,88 @@ def solve_captcha(image_bytes: bytes) -> str:
         return result
     
     print("Both CAPTCHA solvers failed")
+    _save_failed_captcha(image_bytes)
     return ""
+
+def _save_failed_captcha(image_bytes: bytes):
+    """Dump a CAPTCHA image every solver failed on, for later inspection."""
+    try:
+        import os
+        import time
+
+        out_dir = os.path.join(os.path.dirname(__file__), "failed")
+        os.makedirs(out_dir, exist_ok=True)
+        path = os.path.join(out_dir, f"{int(time.time() * 1000)}.png")
+        with open(path, "wb") as f:
+            f.write(image_bytes)
+    except Exception as e:
+        print(f"Could not save failed CAPTCHA image: {e}")
+def _call_claude_captcha_api(b64: str, api_key: str):
+    """One request to the Claude vision CAPTCHA endpoint. Returns the requests.Response."""
+    import requests
+    return requests.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json"
+        },
+        json={
+            "model": "claude-haiku-4-5-20251001",
+            "max_tokens": 50,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": b64
+                        }
+                    },
+                    {
+                        "type": "text",
+                        "text": "This is a CAPTCHA image. Read the text shown and reply with ONLY the characters you see, nothing else. No spaces, no explanation."
+                    }
+                ]
+            }]
+        },
+        timeout=30
+    )
+
 def solve_captcha_claude(image_bytes: bytes) -> str:
     """Use Claude vision to read CAPTCHA."""
-    try:
-        import base64
-        import requests
-        import os
-        
-        api_key = os.getenv("ANTHROPIC_API_KEY", "")
-        if not api_key:
-            return ""
-        
-        b64 = base64.b64encode(image_bytes).decode()
-        
-        response = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json"
-            },
-            json={
-                "model": "claude-sonnet-4-6",
-                "max_tokens": 50,
-                "messages": [{
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "image/png",
-                                "data": b64
-                            }
-                        },
-                        {
-                            "type": "text",
-                            "text": "This is a CAPTCHA image. Read the text shown and reply with ONLY the characters you see, nothing else. No spaces, no explanation."
-                        }
-                    ]
-                }]
-            },
-            timeout=30
-        )
-        
-        result = response.json()["content"][0]["text"].strip()
-        import re
-        result = re.sub(r'[^A-Za-z0-9]', '', result)
-        print(f"Claude solved CAPTCHA: {result}")
-        return result.upper()
-        
-    except Exception as e:
-        print(f"Claude CAPTCHA solver failed: {e}")
+    import base64
+    import os
+    import re
+    import time
+
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if not api_key:
         return ""
+
+    b64 = base64.b64encode(image_bytes).decode()
+
+    for attempt in range(2):  # one retry on a transient API error
+        try:
+            response = _call_claude_captcha_api(b64, api_key)
+
+            if response.status_code != 200:
+                is_transient = response.status_code in (429, 529)
+                print(f"Claude CAPTCHA solver failed: HTTP {response.status_code} - {response.text[:200]}")
+                if is_transient and attempt == 0:
+                    time.sleep(3)
+                    continue
+                return ""
+
+            result = response.json()["content"][0]["text"].strip()
+            result = re.sub(r'[^A-Za-z0-9]', '', result)
+            print(f"Claude solved CAPTCHA: {result}")
+            return result.upper()
+
+        except Exception as e:
+            print(f"Claude CAPTCHA solver failed: {e}")
+            return ""
+
+    return ""

@@ -16,6 +16,10 @@ from agent.orchestrator import (
     get_log, trigger_manual_search
 )
 from analysis.analyzer import analyze_tender
+from portals.data.kppp_options import (
+    CATEGORIES as KPPP_CATEGORIES,
+    PROCURING_ENTITIES as KPPP_ENTITIES,
+)
 
 
 def fuzzy_filter_tenders(tenders, query, threshold=80):
@@ -133,6 +137,13 @@ if "viewing_tender_id" not in st.session_state:
 with st.sidebar:
     st.markdown("### ⚙️ Agent Control")
 
+    # Start Agent always triggers an immediate full catalog fetch on click
+    # (every saved GeM keyword + every saved KPPP filter), whether it's the
+    # first start of the day or a restart later — use it any time you want
+    # to force a fetch (e.g. the 2 AM run was missed, or the network was
+    # down earlier). The daily 2 AM scheduled sweep runs automatically in
+    # the background on top of that. Neither is required to use the search
+    # boxes below — both work standalone, any time.
     if not st.session_state.agent_started:
         if st.button("▶️ Start Agent", use_container_width=True, type="primary"):
             start_agent()
@@ -144,7 +155,9 @@ with st.sidebar:
             stop_agent()
             st.session_state.agent_started = False
             st.rerun()
-        keyword_input = st.text_input("🔍 Search Tenders", placeholder="Enter keyword e.g. cctv")
+
+    with st.expander("🔍 GeM Search Filters"):
+        keyword_input = st.text_input("Search Tenders", placeholder="Enter keyword e.g. cctv")
         if st.button("🚀 Search", use_container_width=True, type="primary"):
             if keyword_input.strip():
                 from agent.orchestrator import on_ceo_search
@@ -152,6 +165,29 @@ with st.sidebar:
                 st.success(f"Searching for '{keyword_input}'...")
             else:
                 st.warning("Please enter a keyword first")
+
+    # KPPP has no keyword search of its own — its real search form takes
+    # Category and Procuring Entity (Tender Number/dates/Tender Type
+    # exist on KPPP's form too but aren't needed here per the manager's
+    # call). Category defaults to "Goods" to match what KPPP's own page
+    # shows pre-selected. Nothing here is mandatory — filling in just
+    # one field and searching is enough, same as on KPPP's own site.
+    # Saved filters are re-applied automatically on every future search
+    # cycle, same as GeM keywords.
+    with st.expander("🏛️ KPPP Search Filters"):
+        kppp_category = st.selectbox(
+            "Category", KPPP_CATEGORIES, key="kppp_category"
+        )
+        kppp_entity = st.selectbox(
+            "Procuring Entity (optional)", ["-- Any --"] + KPPP_ENTITIES, key="kppp_entity"
+        )
+        if st.button("🔎 Search KPPP", use_container_width=True, type="primary", key="kppp_search_btn"):
+            from agent.orchestrator import on_kppp_search
+            on_kppp_search({
+                "category": kppp_category,
+                "procuring_entity": "" if kppp_entity == "-- Any --" else kppp_entity,
+            })
+            st.success("Searching KPPP — this filter will keep running automatically from now on.")
 
     state = get_state()
     status = state.get("status", "idle")
