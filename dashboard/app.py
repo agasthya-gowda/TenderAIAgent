@@ -6,6 +6,7 @@ import streamlit as st
 import os
 import json
 from rapidfuzz import fuzz
+from st_keyup import st_keyup
 from database.db import (
     get_all_tenders, get_stats, update_tender_status,
     update_tender_pdfs, get_all_ceo_searches, get_learned_patterns,
@@ -20,6 +21,27 @@ from portals.data.kppp_options import (
     CATEGORIES as KPPP_CATEGORIES,
     PROCURING_ENTITIES as KPPP_ENTITIES,
 )
+
+PORTAL_FILTER_OPTIONS = ["🔵 GeM", "🟠 KPPP (KA)"]
+PORTAL_FILTER_DEFAULT = "🔵 GeM"
+PORTAL_FILTER_MAP = {
+    "🔵 GeM": "GeM",
+    "🟠 KPPP (KA)": "KPPP",
+}
+
+
+def _sync_portal_from_pills():
+    """Keep the narrow-screen dropdown in sync when the pill control changes."""
+    label = st.session_state.get("portal_filter_display", PORTAL_FILTER_DEFAULT)
+    st.session_state.portal_filter_value = PORTAL_FILTER_MAP.get(label, "GeM")
+    st.session_state.portal_filter_dropdown = label
+
+
+def _sync_portal_from_dropdown():
+    """Keep the wide-screen pill control in sync when the dropdown changes."""
+    label = st.session_state.get("portal_filter_dropdown", PORTAL_FILTER_DEFAULT)
+    st.session_state.portal_filter_value = PORTAL_FILTER_MAP.get(label, "GeM")
+    st.session_state.portal_filter_display = label
 
 
 def fuzzy_filter_tenders(tenders, query, threshold=80):
@@ -50,18 +72,312 @@ st.set_page_config(
 )
 
 st.markdown("""
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap">
 <style>
-    .main { background-color: #F8F9FA; }
-    .block-container { padding-top: 1rem !important; }
+    html, body, [class*="css"] {
+        font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+    }
+    .mono { font-family: 'JetBrains Mono', monospace !important; }
+    .main { background-color: #F8FAFC; }
+
+    /* ══════════════ SIDEBAR: slate-900 command panel ══════════════ */
+    section[data-testid="stSidebar"] {
+        background: #0F172A !important;
+        border-right: 1px solid #1E293B;
+    }
+    section[data-testid="stSidebar"] * {
+        color: #E2E8F0 !important;
+    }
+    section[data-testid="stSidebar"] svg {
+        fill: #94A3B8 !important;
+    }
+
+    /* Section heading — small icon-chip label, not a plain h3 */
+    section[data-testid="stSidebar"] h3 {
+        font-size: 12px !important;
+        font-weight: 700 !important;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #E2E8F0 !important;
+        padding-bottom: 0 !important;
+        margin-bottom: 4px !important;
+        border-bottom: none !important;
+    }
+
+    section[data-testid="stSidebar"] hr {
+        border: none !important;
+        height: 1px;
+        background: #1E293B !important;
+        margin: 18px 0 !important;
+    }
+
+    /* Expander panels */
+    section[data-testid="stSidebar"] div[data-testid="stExpander"] {
+        background: rgba(15, 23, 42, 0.9);
+        border: 1px solid #1E293B;
+        border-radius: 12px;
+        box-shadow: none;
+        transition: border-color 0.15s ease;
+    }
+    section[data-testid="stSidebar"] div[data-testid="stExpander"]:hover {
+        border-color: #334155;
+    }
+    section[data-testid="stSidebar"] div[data-testid="stExpander"] summary {
+        background-color: transparent;
+    }
+    section[data-testid="stSidebar"] div[data-testid="stExpander"] summary p {
+        font-size: 12px !important;
+        font-weight: 600 !important;
+        color: #CBD5E1 !important;
+    }
+
+    /* Text inputs — the visible box is actually stTextInputRootElement, a
+       separate wrapper around the <input> that keeps the page's light
+       background unless overridden too (otherwise the input's own light
+       text sits on that leftover light box and becomes unreadable). */
+    section[data-testid="stSidebar"] div[data-testid="stTextInputRootElement"] {
+        background-color: rgba(2, 6, 23, 0.7) !important;
+        border: 1px solid #334155 !important;
+        border-radius: 8px !important;
+        height: 34px !important;
+        min-height: 34px !important;
+    }
+    section[data-testid="stSidebar"] div[data-testid="stTextInputRootElement"]:focus-within {
+        border-color: #6366F1 !important;
+        box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25) !important;
+    }
+    section[data-testid="stSidebar"] input {
+        background-color: transparent !important;
+        border: none !important;
+        font-size: 12px !important;
+    }
+    section[data-testid="stSidebar"] input::placeholder {
+        color: #64748B !important;
+    }
+    div[data-testid="InputInstructions"] {
+        display: none !important;
+    }
+    section[data-testid="stSidebar"] label p {
+        font-size: 11px !important;
+        font-weight: 500 !important;
+        color: #94A3B8 !important;
+    }
+
+    /* Select / combobox — fix the unstyled trigger box (react-aria ComboBox
+       renders the visible box as the input's own parent div, separate from
+       the input element itself; without this it stays page-background
+       white behind the dropdown chevron). */
+    section[data-testid="stSidebar"] .react-aria-ComboBox {
+        background-color: rgba(2, 6, 23, 0.7) !important;
+        border: 1px solid #334155 !important;
+        border-radius: 8px !important;
+        height: 34px !important;
+        min-height: 34px !important;
+        overflow: hidden;
+    }
+    section[data-testid="stSidebar"] .react-aria-ComboBox * {
+        background-color: transparent !important;
+        border-color: transparent !important;
+    }
+    section[data-testid="stSidebar"] .react-aria-ComboBox input {
+        border: none !important;
+        font-size: 12px !important;
+    }
+    section[data-testid="stSidebar"] .react-aria-ComboBox:focus-within {
+        border-color: #6366F1 !important;
+        box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25) !important;
+    }
+
+    /* Buttons */
+    section[data-testid="stSidebar"] div[data-testid="stButton"] button[kind="secondary"] {
+        background: #1E293B !important;
+        border: 1px solid #334155 !important;
+        border-radius: 10px !important;
+        font-size: 12.5px !important;
+        padding: 8px 12px !important;
+        transition: background 0.15s ease, border-color 0.15s ease;
+    }
+    section[data-testid="stSidebar"] div[data-testid="stButton"] button[kind="secondary"]:hover {
+        background: #263449 !important;
+        border-color: #475569 !important;
+    }
+    section[data-testid="stSidebar"] div[data-testid="stButton"] button[kind="primary"] {
+        background: linear-gradient(90deg, #7C3AED, #4F46E5) !important;
+        border: 1px solid rgba(129, 140, 248, 0.4) !important;
+        border-radius: 10px !important;
+        font-size: 12.5px !important;
+        padding: 8px 12px !important;
+        box-shadow: 0 4px 14px rgba(79, 70, 229, 0.35);
+        transition: box-shadow 0.15s ease, transform 0.15s ease;
+    }
+    section[data-testid="stSidebar"] div[data-testid="stButton"] button[kind="primary"]:hover {
+        box-shadow: 0 6px 18px rgba(79, 70, 229, 0.5);
+        transform: translateY(-1px);
+    }
+
+    /* GeM/KPPP Search buttons — cobalt blue instead of the violet gradient
+       used for Start Agent, for a calmer, more professional accent.
+       (Selector chain matches the base sidebar rule's specificity so this
+       actually wins the cascade instead of losing to it.) */
+    section[data-testid="stSidebar"] .st-key-gem_search_btn div[data-testid="stButton"] button[kind="primary"],
+    section[data-testid="stSidebar"] .st-key-kppp_search_btn div[data-testid="stButton"] button[kind="primary"] {
+        background: #2563EB !important;
+        border: 1px solid rgba(96, 165, 250, 0.4) !important;
+        box-shadow: 0 4px 14px rgba(37, 99, 235, 0.3) !important;
+    }
+    section[data-testid="stSidebar"] .st-key-gem_search_btn div[data-testid="stButton"] button[kind="primary"]:hover,
+    section[data-testid="stSidebar"] .st-key-kppp_search_btn div[data-testid="stButton"] button[kind="primary"]:hover {
+        background: #3B82F6 !important;
+        box-shadow: 0 6px 18px rgba(37, 99, 235, 0.45) !important;
+    }
+
+    /* Start Agent — idle state: dark slate instead of a colored gradient,
+       since nothing is running yet. */
+    section[data-testid="stSidebar"] .st-key-start_agent_btn div[data-testid="stButton"] button[kind="primary"] {
+        background: rgba(30, 41, 59, 0.9) !important;
+        border: 1px solid #334155 !important;
+        box-shadow: none !important;
+    }
+    section[data-testid="stSidebar"] .st-key-start_agent_btn div[data-testid="stButton"] button[kind="primary"]:hover {
+        background: #263449 !important;
+        border-color: #475569 !important;
+        transform: none !important;
+    }
+
+    /* Stop Agent — running state: emerald with a live pulsing dot, reading
+       as an operational status rather than a plain destructive action. */
+    @keyframes sidebar-pulse-dot {
+        0%   { box-shadow: 0 0 0 0 rgba(110, 231, 183, 0.65); }
+        70%  { box-shadow: 0 0 0 7px rgba(110, 231, 183, 0); }
+        100% { box-shadow: 0 0 0 0 rgba(110, 231, 183, 0); }
+    }
+    section[data-testid="stSidebar"] .st-key-stop_agent_btn div[data-testid="stButton"] button[kind="secondary"] {
+        background: #059669 !important;
+        border: 1px solid rgba(110, 231, 183, 0.4) !important;
+        color: #ECFDF5 !important;
+        position: relative;
+        padding-left: 30px !important;
+    }
+    section[data-testid="stSidebar"] .st-key-stop_agent_btn div[data-testid="stButton"] button[kind="secondary"]:hover {
+        background: #10B981 !important;
+        border-color: rgba(110, 231, 183, 0.6) !important;
+    }
+    section[data-testid="stSidebar"] .st-key-stop_agent_btn div[data-testid="stButton"] button[kind="secondary"]::before {
+        content: "";
+        position: absolute;
+        left: 14px;
+        top: 50%;
+        width: 8px;
+        height: 8px;
+        margin-top: -4px;
+        border-radius: 50%;
+        background: #6EE7B7;
+        animation: sidebar-pulse-dot 1.8s infinite;
+    }
+
+    /* Status badge — soft outlined pill instead of a solid block; each
+       state keeps its own color (set below), just restyled to an outline. */
+    section[data-testid="stSidebar"] .status-badge {
+        font-size: 11px !important;
+        letter-spacing: 0.05em;
+        border: 1px solid currentColor;
+        box-shadow: none;
+    }
+    section[data-testid="stSidebar"] .status-watching {
+        background: rgba(16, 185, 129, 0.1) !important;
+        color: #34D399 !important;
+    }
+    section[data-testid="stSidebar"] .status-searching {
+        background: rgba(245, 158, 11, 0.1) !important;
+        color: #FBBF24 !important;
+    }
+    section[data-testid="stSidebar"] .status-learning {
+        background: rgba(59, 130, 246, 0.1) !important;
+        color: #60A5FA !important;
+    }
+    section[data-testid="stSidebar"] .status-expanding {
+        background: rgba(124, 58, 237, 0.1) !important;
+        color: #A78BFA !important;
+    }
+    section[data-testid="stSidebar"] .status-idle {
+        background: rgba(148, 163, 184, 0.1) !important;
+        color: #94A3B8 !important;
+    }
+    .block-container {
+        padding-top: 1rem !important;
+        padding-left: 2rem !important;
+        padding-right: 2rem !important;
+        max-width: 100% !important;
+    }
     div[data-testid="stVerticalBlock"] div:has(> div.stats-sticky) {
         position: sticky;
         top: 0;
         z-index: 999;
-        background-color: #F8F9FA;
+        background-color: #F8FAFC;
         padding-bottom: 8px;
     }
     .stats-sticky {
-        background-color: #F8F9FA;
+        background-color: #F8FAFC;
+    }
+
+    /* Stat cards — plain white/slate by default, each key gets its own
+       accent color (border + ring + label) only when it's the active
+       filter, matching the reference's per-card color coding.
+       (.st-key-btn_* is a class on the widget's own container — not a
+       descendant of the .stats-sticky marker, which is just a sibling
+       element, not an ancestor — so these must be scoped standalone.) */
+    .st-key-btn_all button,
+    .st-key-btn_new button,
+    .st-key-btn_saved button,
+    .st-key-btn_searches button,
+    .st-key-btn_patterns button {
+        border-radius: 12px !important;
+        border: 1px solid #E2E8F0 !important;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+        transition: border-color 0.15s ease, box-shadow 0.15s ease;
+        padding: 10px 8px !important;
+        font-size: 12px !important;
+        line-height: 1.5 !important;
+    }
+    .st-key-btn_all button[kind="secondary"]:hover,
+    .st-key-btn_new button[kind="secondary"]:hover,
+    .st-key-btn_saved button[kind="secondary"]:hover,
+    .st-key-btn_searches button[kind="secondary"]:hover,
+    .st-key-btn_patterns button[kind="secondary"]:hover {
+        border-color: #CBD5E1 !important;
+    }
+    .st-key-btn_all button[kind="primary"],
+    .st-key-btn_new button[kind="primary"],
+    .st-key-btn_saved button[kind="primary"],
+    .st-key-btn_searches button[kind="primary"],
+    .st-key-btn_patterns button[kind="primary"] {
+        background-color: #FFFFFF !important;
+    }
+    .st-key-btn_all button[kind="primary"] {
+        color: #6D28D9 !important;
+        border: 1.5px solid #7C3AED !important;
+        box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.12) !important;
+    }
+    .st-key-btn_new button[kind="primary"] {
+        color: #047857 !important;
+        border: 1.5px solid #10B981 !important;
+        box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.12) !important;
+    }
+    .st-key-btn_saved button[kind="primary"] {
+        color: #4338CA !important;
+        border: 1.5px solid #4F46E5 !important;
+        box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12) !important;
+    }
+    .st-key-btn_searches button[kind="primary"] {
+        color: #1D4ED8 !important;
+        border: 1.5px solid #3B82F6 !important;
+        box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12) !important;
+    }
+    .st-key-btn_patterns button[kind="primary"] {
+        color: #BE185D !important;
+        border: 1.5px solid #EC4899 !important;
+        box-shadow: 0 0 0 3px rgba(236, 72, 153, 0.12) !important;
     }
     .agent-header {
         background: linear-gradient(135deg, #2C3E50, #8E44AD);
@@ -109,13 +425,205 @@ st.markdown("""
     .detail-value { color: #2C3E50; font-size: 13px; }
     div[data-testid="stButton"] button {
         height: auto;
-        padding: 12px 8px;
+        padding: 7px 12px;
+        font-size: 13px;
         white-space: pre-wrap;
+    }
+    div[data-testid="stColumn"]:has(.col-marker-portal) {
+        flex: 0 0 auto !important;
+        min-width: 190px !important;
+        max-width: none !important;
+    }
+    /* Wide screens: show the pill control, hide the dropdown fallback */
+    div[data-testid="stColumn"]:has(.col-marker-portal) div[data-testid="stElementContainer"]:has(div[data-testid="stSelectbox"]) {
+        display: none !important;
+    }
+    @media (max-width: 900px) {
+        /* Narrow screens: the portal column only needs dropdown-sized width */
+        div[data-testid="stColumn"]:has(.col-marker-portal) {
+            flex: 0 0 200px !important;
+            min-width: 200px !important;
+            max-width: 220px !important;
+        }
+        div[data-testid="stColumn"]:has(.col-marker-portal) div[data-testid="stElementContainer"]:has(div[data-testid="stButtonGroup"]) {
+            display: none !important;
+        }
+        div[data-testid="stColumn"]:has(.col-marker-portal) div[data-testid="stElementContainer"]:has(div[data-testid="stSelectbox"]) {
+            display: block !important;
+        }
+    }
+    div[data-testid="stColumn"]:has(.col-marker-search) {
+        flex: 1 1 0% !important;
+        min-width: 180px !important;
+        max-width: none !important;
+    }
+    div[data-testid="stColumn"]:has(.col-marker-sort) {
+        flex: 0 0 200px !important;
+        min-width: 200px !important;
+        max-width: 220px !important;
+    }
+    div[data-testid="stColumn"]:has(.col-marker-sort) div[data-baseweb],
+    div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox {
+        border-radius: 10px !important;
+    }
+    div[data-testid="stColumn"]:has(.col-marker-sort) .react-aria-ComboBox,
+    div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox {
+        border: 1px solid #E2E8F0 !important;
+        border-radius: 10px !important;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+        height: 38px !important;
+        min-height: 38px !important;
+    }
+    div[data-testid="stColumn"]:has(.col-marker-sort) .react-aria-ComboBox input {
+        font-size: 12.5px !important;
+    }
+    div[data-testid="stColumn"]:has(.col-marker-sort) .react-aria-ComboBox:focus-within,
+    div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox:focus-within {
+        border-color: #6366F1 !important;
+        box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15) !important;
+    }
+    div[data-testid="stElementContainer"]:has(div[data-testid="stButtonGroup"]) {
+        width: 100% !important;
+    }
+    div[data-testid="stButtonGroup"] {
+        width: 100% !important;
+    }
+    div[data-testid="stButtonGroup"] div[role="radiogroup"] {
+        flex-wrap: nowrap !important;
+        overflow-x: auto;
+        justify-content: flex-start !important;
+        gap: 6px !important;
+        width: 100% !important;
+        max-width: 100% !important;
+    }
+    div[data-testid="stButtonGroup"] div[role="radiogroup"] button {
+        white-space: nowrap;
+        flex-shrink: 0;
+        border-radius: 8px !important;
+        font-weight: 600 !important;
+        color: #475569 !important;
+        padding: 6px 12px !important;
+        font-size: 12px !important;
+        background: #FFFFFF !important;
+        border: 1px solid #E2E8F0 !important;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    }
+    div[data-testid="stButtonGroup"] div[role="radiogroup"] {
+        background: transparent;
+        border: none;
+        border-radius: 0;
+        padding: 0;
+        box-shadow: none;
+    }
+    /* Portal pills — each option gets its own tint when selected, matching
+       the reference's GeM (blue) / KPPP (amber). */
+    div[data-testid="stButtonGroup"] div[role="radiogroup"] button:nth-of-type(1)[aria-checked="true"] {
+        background: #EFF6FF !important;
+        color: #1D4ED8 !important;
+        border: 1px solid #BFDBFE !important;
+    }
+    div[data-testid="stButtonGroup"] div[role="radiogroup"] button:nth-of-type(2)[aria-checked="true"] {
+        background: #FFFBEB !important;
+        color: #92400E !important;
+        border: 1px solid #FDE68A !important;
     }
     div[data-testid="stButton"] button:has-text("🗑️") {
         background-color: #E74C3C !important;
         color: white !important;
         border: none !important;
+    }
+
+    /* ══════════════ TENDERS TABLE: white card, refined cells ══════════════ */
+    div[data-testid="stVerticalBlock"]:has(> div[data-testid="stElementContainer"] div.table-card-marker) {
+        background: #FFFFFF;
+        border: 1px solid #E2E8F0;
+        border-radius: 16px;
+        box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+        padding: 14px 18px 6px;
+    }
+    div[data-testid="stVerticalBlock"]:has(> div[data-testid="stElementContainer"] div.table-card-marker) [data-testid="stMarkdownContainer"] p {
+        font-size: 12.5px !important;
+    }
+    .th-cell {
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #64748B;
+    }
+    .td-slno { color: #94A3B8; font-weight: 500; }
+    .td-bid { font-size: 12.5px; font-weight: 700; color: #0F172A; }
+    .td-dept { font-weight: 600; color: #1E293B; }
+    .td-qty { font-weight: 700; color: #0F172A; }
+    .td-date { font-size: 11.5px; color: #475569; }
+    .portal-chip {
+        display: inline-block;
+        font-size: 9.5px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        padding: 1px 6px;
+        border-radius: 4px;
+        margin-top: 2px;
+    }
+    .portal-chip-gem { background: #EFF6FF; color: #1D4ED8; }
+    .portal-chip-kppp { background: #FFFBEB; color: #92400E; }
+    .enddate-chip {
+        display: inline-block;
+        font-size: 11px;
+        font-weight: 600;
+        color: #92400E;
+        background: rgba(251, 191, 36, 0.12);
+        border: 1px solid rgba(251, 191, 36, 0.35);
+        padding: 2px 7px;
+        border-radius: 5px;
+    }
+
+    /* Row action buttons — View / Save / Delete */
+    [class*="st-key-view_"] button {
+        border-radius: 8px !important;
+        border: 1px solid #E2E8F0 !important;
+        font-weight: 600 !important;
+        font-size: 12px !important;
+    }
+    [class*="st-key-view_"] button:hover {
+        border-color: #C7D2FE !important;
+        color: #4F46E5 !important;
+    }
+    [class*="st-key-table_save_"] button,
+    [class*="st-key-table_unsave_"] button {
+        border-radius: 8px !important;
+        border: 1px solid #E2E8F0 !important;
+    }
+    [class*="st-key-table_save_"] button:hover {
+        background: #EEF2FF !important;
+        border-color: #C7D2FE !important;
+    }
+    [class*="st-key-table_unsave_"] button {
+        background: #EEF2FF !important;
+        border-color: #C7D2FE !important;
+    }
+    [class*="st-key-table_delete_"] button {
+        border-radius: 8px !important;
+        border: 1px solid #E2E8F0 !important;
+    }
+    [class*="st-key-table_delete_"] button:hover {
+        background: #FEF2F2 !important;
+        border-color: #FECACA !important;
+        color: #DC2626 !important;
+    }
+
+    /* Pagination */
+    [class*="st-key-prev_btn2"] button,
+    [class*="st-key-next_btn2"] button {
+        border-radius: 8px !important;
+        border: 1px solid #E2E8F0 !important;
+        font-weight: 600 !important;
+    }
+    [class*="st-key-prev_btn2"] button:hover,
+    [class*="st-key-next_btn2"] button:hover {
+        border-color: #C7D2FE !important;
+        color: #4F46E5 !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -145,20 +653,20 @@ with st.sidebar:
     # the background on top of that. Neither is required to use the search
     # boxes below — both work standalone, any time.
     if not st.session_state.agent_started:
-        if st.button("▶️ Start Agent", use_container_width=True, type="primary"):
+        if st.button("▶️ Start Agent", use_container_width=True, type="primary", key="start_agent_btn"):
             start_agent()
             st.session_state.agent_started = True
             st.success("Agent started!")
             st.rerun()
     else:
-        if st.button("⏹️ Stop Agent", use_container_width=True):
+        if st.button("⏹️ Stop Agent", use_container_width=True, key="stop_agent_btn"):
             stop_agent()
             st.session_state.agent_started = False
             st.rerun()
 
     with st.expander("🔍 GeM Search Filters"):
         keyword_input = st.text_input("Search Tenders", placeholder="Enter keyword e.g. cctv")
-        if st.button("🚀 Search", use_container_width=True, type="primary"):
+        if st.button("Search", icon=":material/search:", use_container_width=True, type="primary", key="gem_search_btn"):
             if keyword_input.strip():
                 from agent.orchestrator import on_ceo_search
                 on_ceo_search(keyword_input.strip(), "GeM")
@@ -181,7 +689,7 @@ with st.sidebar:
         kppp_entity = st.selectbox(
             "Procuring Entity (optional)", ["-- Any --"] + KPPP_ENTITIES, key="kppp_entity"
         )
-        if st.button("🔎 Search KPPP", use_container_width=True, type="primary", key="kppp_search_btn"):
+        if st.button("Search KPPP", icon=":material/search:", use_container_width=True, type="primary", key="kppp_search_btn"):
             from agent.orchestrator import on_kppp_search
             on_kppp_search({
                 "category": kppp_category,
@@ -206,9 +714,6 @@ with st.sidebar:
     """, unsafe_allow_html=True)
 
     st.markdown("---")
-    st.markdown("### 🔽 Filter Tenders")
-    portal_filter = st.selectbox("Portal", ["All", "GeM", "KPPP"])
-    sort_by = st.selectbox("Sort By", ["Relevance", "Newest First", "Deadline"])
     
 
    
@@ -352,9 +857,10 @@ else:
         tenders = get_all_tenders()
         section_title = "📋 All Tenders"
 
-    if portal_filter != "All":
-        tenders = [t for t in tenders if t["portal"] == portal_filter]
+    current_portal_filter = st.session_state.get("portal_filter_value", "GeM")
+    tenders = [t for t in tenders if t["portal"] == current_portal_filter]
 
+    sort_by = st.session_state.get("sort_by_select", "Relevance")
     if sort_by == "Newest First":
         tenders = sorted(tenders, key=lambda x: x["found_at"], reverse=True)
     elif sort_by == "Deadline":
@@ -574,12 +1080,46 @@ else:
 
     # ── TABLE LIST VIEW ───────────────────────────────────
     else:
-        search_query = st.text_input(
-            "🔍 Search tenders",
-            key="table_search_query",
-            placeholder="Search by bid number, item name, department...",
-            on_change=lambda: st.session_state.update(page_num=1),
+        col_portal, col_search, col_sort = st.columns(
+            [0.2, 0.58, 0.22], vertical_alignment="center"
         )
+        with col_portal:
+            st.markdown('<div class="col-marker-portal"></div>', unsafe_allow_html=True)
+            st.segmented_control(
+                "Portal",
+                PORTAL_FILTER_OPTIONS,
+                default=PORTAL_FILTER_DEFAULT,
+                key="portal_filter_display",
+                label_visibility="collapsed",
+                on_change=_sync_portal_from_pills,
+            )
+            st.selectbox(
+                "Portal",
+                PORTAL_FILTER_OPTIONS,
+                key="portal_filter_dropdown",
+                label_visibility="collapsed",
+                on_change=_sync_portal_from_dropdown,
+                filter_mode=None,
+            )
+        with col_search:
+            st.markdown('<div class="col-marker-search"></div>', unsafe_allow_html=True)
+            search_query = st_keyup(
+                "Search tenders",
+                key="table_search_query",
+                placeholder="🔍 Search by bid number, item name, department...",
+                debounce=300,
+                on_change=lambda: st.session_state.update(page_num=1),
+                label_visibility="collapsed",
+            )
+        with col_sort:
+            st.markdown('<div class="col-marker-sort"></div>', unsafe_allow_html=True)
+            st.selectbox(
+                "Sort By",
+                ["Relevance", "Newest First", "Deadline"],
+                key="sort_by_select",
+                label_visibility="collapsed",
+                filter_mode=None,
+            )
         tenders = fuzzy_filter_tenders(tenders, search_query)
 
         if not tenders:
@@ -599,14 +1139,15 @@ else:
             page_tenders = tenders[start:end]
 
             # Table header
+            st.markdown('<div class="table-card-marker"></div>', unsafe_allow_html=True)
             h1, h2, h3, h4, h5, h6, h7, h8, h9, h10 = st.columns([0.5, 1.5, 2.5, 1.7, 0.8, 1.2, 1.2, 0.8, 0.8, 0.8])
-            h1.markdown("**Sl No**")
-            h2.markdown("**Bid Number**")
-            h3.markdown("**Item Name**")
-            h4.markdown("**Department**")
-            h5.markdown("**Qty**")
-            h6.markdown("**Start Date**")
-            h7.markdown("**End Date**")
+            h1.markdown('<span class="th-cell">Sl No</span>', unsafe_allow_html=True)
+            h2.markdown('<span class="th-cell">Bid Number</span>', unsafe_allow_html=True)
+            h3.markdown('<span class="th-cell">Item Name</span>', unsafe_allow_html=True)
+            h4.markdown('<span class="th-cell">Department</span>', unsafe_allow_html=True)
+            h5.markdown('<span class="th-cell">Qty</span>', unsafe_allow_html=True)
+            h6.markdown('<span class="th-cell">Start Date</span>', unsafe_allow_html=True)
+            h7.markdown('<span class="th-cell">End Date</span>', unsafe_allow_html=True)
             h8.markdown("")
             h9.markdown("")
             h10.markdown("")
@@ -621,15 +1162,21 @@ else:
                 quantity = tender.get("quantity", "N/A")
                 start_date = tender.get("published_date", "N/A")
                 end_date = tender.get("deadline", "N/A")
+                portal = tender.get("portal", "")
+                portal_chip_class = "portal-chip-kppp" if portal.upper() == "KPPP" else "portal-chip-gem"
 
                 r1, r2, r3, r4, r5, r6, r7, r8, r9, r10 = st.columns([0.5, 1.5, 2.5, 1.7, 0.8, 1.2, 1.2, 0.8, 0.8, 0.8])
-                r1.markdown(f"{sl_no}")
-                r2.markdown(f"{bid_number}")
+                r1.markdown(f'<span class="td-slno">{sl_no}</span>', unsafe_allow_html=True)
+                r2.markdown(
+                    f'<div class="mono td-bid">{bid_number}</div>'
+                    f'<span class="portal-chip {portal_chip_class}">{portal or "N/A"}</span>',
+                    unsafe_allow_html=True,
+                )
                 r3.markdown(f"{title[:60]}")
-                r4.markdown(f"{department[:30] if department else 'N/A'}")
-                r5.markdown(f"{quantity}")
-                r6.markdown(f"{start_date}")
-                r7.markdown(f"{end_date}")
+                r4.markdown(f'<span class="td-dept">{department[:30] if department else "N/A"}</span>', unsafe_allow_html=True)
+                r5.markdown(f'<span class="mono td-qty">{quantity}</span>', unsafe_allow_html=True)
+                r6.markdown(f'<span class="mono td-date">{start_date}</span>', unsafe_allow_html=True)
+                r7.markdown(f'<span class="mono enddate-chip">{end_date}</span>', unsafe_allow_html=True)
                 with r8:
                     if st.button("View", key=f"view_{tid}_{section}"):
                         st.session_state.viewing_tender_id = tid

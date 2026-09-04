@@ -85,11 +85,16 @@ def find_supporting_documents_in_pdf1(pdf1_path: str) -> list:
         print(f"[GeM] Found {len(urls)} supporting document(s) in PDF 1")
     return urls
 
-async def search_gem(keyword: str, category: str = "", max_pages: int = 5) -> list:
+async def search_gem(keyword: str, category: str = "", max_pages: int = 5, should_stop=None) -> list:
     """
     Search GeM portal for tenders matching keyword.
     Extracts all details from bid cards.
     Downloads PDF 1 and PDF 2 for each bid.
+
+    should_stop: optional zero-arg callable checked between pages and
+    between cards — when it returns True, the search stops early and
+    returns whatever tenders were already extracted, instead of running
+    the remaining pages/cards to completion regardless.
     """
     try:
         from playwright.async_api import async_playwright
@@ -162,6 +167,10 @@ async def search_gem(keyword: str, category: str = "", max_pages: int = 5) -> li
                 all_bid_cards.extend(bid_cards)
                 print(f"[GeM] Page {page_num + 1}: found {len(bid_cards)} cards (total so far: {len(all_bid_cards)})")
 
+                if should_stop and should_stop():
+                    print("[GeM] Stop requested — ending pagination early")
+                    break
+
                 # Try to go to next page
                 next_btn = await page.query_selector("a:has-text('Next')")
                 if next_btn and page_num < max_pages - 1:
@@ -177,6 +186,9 @@ async def search_gem(keyword: str, category: str = "", max_pages: int = 5) -> li
             bid_cards = all_bid_cards
 
             for card in bid_cards:
+                if should_stop and should_stop():
+                    print(f"[GeM] Stop requested — ending card extraction early ({len(tenders)} tenders so far)")
+                    break
                 try:
                     card_text = await card.inner_text()
 
@@ -440,6 +452,6 @@ def download_gem_documents_sync(bid_no: str, bid_url: str = "") -> list:
     return asyncio.run(download_gem_documents(bid_no, bid_url))
 
 
-def search_gem_sync(keyword: str, category: str = "", max_pages: int = 5) -> list:
+def search_gem_sync(keyword: str, category: str = "", max_pages: int = 5, should_stop=None) -> list:
     """Synchronous wrapper for search_gem."""
-    return asyncio.run(search_gem(keyword, category, max_pages))
+    return asyncio.run(search_gem(keyword, category, max_pages, should_stop=should_stop))

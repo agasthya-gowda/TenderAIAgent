@@ -187,7 +187,7 @@ def _instant_expand_and_search(keyword: str, portal: str):
         with _lock:
             _state["status"] = "watching"
 
-def _search_portal(portal: str, keywords: list, category: str, max_pages: int = 5):
+def _search_portal(portal: str, keywords: list, category: str, max_pages: int = 5, respect_stop_flag: bool = False):
     # GeM-only: KPPP has no keyword search, so it's handled separately by
     # on_kppp_search / _run_kppp_criteria_search using KPPP's real filter
     # fields instead of a keyword list.
@@ -198,14 +198,22 @@ def _search_portal(portal: str, keywords: list, category: str, max_pages: int = 
         from portals.gem import search_gem_sync
         search_fn = search_gem_sync
 
-        # Not gated on _state["running"] — a manual search from the search
-        # box must work whether or not Start Agent has been clicked this
-        # session; "running" only controls the background scheduler loop.
+        # Not gated on _state["running"] by default — a manual search from
+        # the search box must work whether or not Start Agent has been
+        # clicked this session. respect_stop_flag=True is only passed by the
+        # agent-driven callers (full catalog run, 2 AM scheduler) so that
+        # clicking Stop Agent actually cuts a multi-keyword run short
+        # instead of letting it keep going through every remaining keyword.
+        should_stop = (lambda: not _state["running"]) if respect_stop_flag else None
+
         found_count = 0
         for keyword in keywords[:8]:
+            if should_stop and should_stop():
+                log(f"🛑 [{portal}] Stop requested — ending search early")
+                break
             try:
                 log(f"🔎 [{portal}] Searching: '{keyword}'")
-                tenders = search_fn(keyword, category, max_pages=max_pages)
+                tenders = search_fn(keyword, category, max_pages=max_pages, should_stop=should_stop)
 
                 # Batch relevance check using AI
                 if tenders:
@@ -254,7 +262,7 @@ def on_kppp_search(criteria: dict):
         daemon=True
     ).start()
 
-def _run_kppp_criteria_search(criteria_list: list):
+def _run_kppp_criteria_search(criteria_list: list, respect_stop_flag: bool = False):
     if not criteria_list:
         return
     if _state.get("status") in ("searching", "expanding"):
@@ -265,9 +273,15 @@ def _run_kppp_criteria_search(criteria_list: list):
     try:
         from portals.kppp import search_kppp_sync
 
-        # Not gated on _state["running"] — see _search_portal for why.
+        # Not gated on _state["running"] by default — see _search_portal for
+        # why. respect_stop_flag=True (agent-driven callers only) stops the
+        # loop before starting the next saved filter once Stop Agent is hit;
+        # it can't abort a single KPPP search already mid-CAPTCHA-retry.
         found_count = 0
         for criteria in criteria_list:
+            if respect_stop_flag and not _state["running"]:
+                log("🛑 [KPPP] Stop requested — ending search early")
+                break
             try:
                 log(f"🔎 [KPPP] Searching with saved filter: {criteria}")
                 tenders = search_kppp_sync(criteria)
@@ -339,11 +353,11 @@ def _scheduled_search():
             log(f"🚀 Running {len(gem_keywords)} scheduled GeM searches...")
             with _lock:
                 _state["status"] = "searching"
-            _search_portal("GeM", gem_keywords, category, 15)
+            _search_portal("GeM", gem_keywords, category, 15, respect_stop_flag=True)
 
         if kppp_criteria_list:
             log(f"🚀 Running {len(kppp_criteria_list)} scheduled KPPP searches...")
-            _run_kppp_criteria_search(kppp_criteria_list)
+            _run_kppp_criteria_search(kppp_criteria_list, respect_stop_flag=True)
 
         with _lock:
             _state["status"] = "watching"
@@ -376,10 +390,10 @@ def _run_full_catalog_search():
         queries = get_search_queries()
         gem_keywords = [q["keyword"] for q in queries if q["portal"] == "GeM"][:8]
         category = queries[0].get("category", "") if queries else ""
-        _search_portal("GeM", gem_keywords, category, 15)
+        _search_portal("GeM", gem_keywords, category, 15, respect_stop_flag=True)
 
     if kppp_criteria_list:
-        _run_kppp_criteria_search(kppp_criteria_list)
+        _run_kppp_criteria_search(kppp_criteria_list, respect_stop_flag=True)
 
     with _lock:
         _state["last_full_search_date"] = datetime.now().date().isoformat()
