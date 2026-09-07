@@ -5,12 +5,16 @@ Tender Agent Dashboard
 import streamlit as st
 import os
 import json
+import html
+import pandas as pd
+import altair as alt
 from rapidfuzz import fuzz
 from st_keyup import st_keyup
 from database.db import (
     get_all_tenders, get_stats, update_tender_status,
     update_tender_pdfs, get_all_ceo_searches, get_learned_patterns,
-    delete_tender, delete_pattern
+    delete_tender, delete_pattern,
+    get_department_counts, get_daily_trend,
 )
 from agent.orchestrator import (
     start_agent, stop_agent, get_state,
@@ -664,7 +668,7 @@ with st.sidebar:
             st.session_state.agent_started = False
             st.rerun()
 
-    with st.expander("🔍 GeM Search Filters"):
+    with st.expander("🔍 GeM Search Filters", expanded=True):
         keyword_input = st.text_input("Search Tenders", placeholder="Enter keyword e.g. cctv")
         if st.button("Search", icon=":material/search:", use_container_width=True, type="primary", key="gem_search_btn"):
             if keyword_input.strip():
@@ -682,7 +686,7 @@ with st.sidebar:
     # one field and searching is enough, same as on KPPP's own site.
     # Saved filters are re-applied automatically on every future search
     # cycle, same as GeM keywords.
-    with st.expander("🏛️ KPPP Search Filters"):
+    with st.expander("🏛️ KPPP Search Filters", expanded=True):
         kppp_category = st.selectbox(
             "Category", KPPP_CATEGORIES, key="kppp_category"
         )
@@ -779,6 +783,125 @@ with c5:
         st.rerun()
 st.markdown('</div>', unsafe_allow_html=True)
 
+# ── OVERVIEW CHARTS — real data from the tenders table, one GeM/KPPP
+# toggle per chart (defaults to GeM). Purely additive/visual: no existing
+# query, filter, or button behavior above/below this block is touched. ──
+DEPARTMENT_BAR_COLORS = ["#4F46E5", "#3B82F6", "#10B981", "#F59E0B", "#EF4444", "#94A3B8"]
+
+st.markdown("""
+<style>
+.st-key-chart_trend_range { margin-left: auto; max-width: 128px; }
+.st-key-chart_trend_range .react-aria-ComboBox,
+.st-key-chart_trend_range .react-aria-ComboBox > div {
+    height: 32px !important;
+    min-height: 32px !important;
+    background-color: #F1F5F9 !important;
+    border: none !important;
+    border-radius: 7px !important;
+    box-shadow: none !important;
+}
+.st-key-chart_trend_range input {
+    font-size: 11px !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+}
+.st-key-chart_trend_range svg { width: 11px !important; height: 11px !important; }
+</style>
+""", unsafe_allow_html=True)
+
+
+def _chart_portal_toggle(key: str) -> str:
+    label = st.segmented_control(
+        "Portal", ["GeM", "KPPP (KA)"], default="GeM",
+        key=key, label_visibility="collapsed",
+    )
+    return "KPPP" if label and "KPPP" in label else "GeM"
+
+
+chart_col1, chart_col2 = st.columns(2)
+
+with chart_col1:
+    with st.container(border=True):
+        dept_title_col, dept_toggle_col = st.columns([2, 2])
+        with dept_title_col:
+            st.markdown("**Tenders by Department**")
+        with dept_toggle_col:
+            dept_portal = _chart_portal_toggle("chart_dept_portal")
+        dept_data = get_department_counts(dept_portal)
+        if dept_data:
+            dept_df = pd.DataFrame(dept_data, columns=["Department", "Count"])
+            total_dept = int(dept_df["Count"].sum())
+            dept_df["Pct"] = (dept_df["Count"] / total_dept * 100).round().astype(int) if total_dept else 0
+            dept_df["idx"] = range(len(dept_df))
+            dept_df["CountLabel"] = dept_df["Count"].astype(str) + " (" + dept_df["Pct"].astype(str) + "%)"
+            dept_color_domain = dept_df["Department"].tolist()
+
+            donut_col, legend_col = st.columns([1, 1])
+
+            with donut_col:
+                donut = alt.Chart(dept_df).mark_arc(innerRadius=52, outerRadius=82).encode(
+                    theta=alt.Theta("Count:Q", stack=True),
+                    color=alt.Color(
+                        "Department:N",
+                        scale=alt.Scale(domain=dept_color_domain, range=DEPARTMENT_BAR_COLORS),
+                        legend=None,
+                    ),
+                    order=alt.Order("Count:Q", sort="descending"),
+                    tooltip=[alt.Tooltip("Department:N"), alt.Tooltip("Count:Q"), alt.Tooltip("Pct:Q", title="Percent")],
+                )
+                center_total = alt.Chart(pd.DataFrame({"v": [str(total_dept)]})).mark_text(
+                    size=24, fontWeight="bold", color="#0F172A", dy=-5,
+                ).encode(text="v:N")
+                center_label = alt.Chart(pd.DataFrame({"v": ["TOTAL"]})).mark_text(
+                    size=10, color="#64748B", dy=13,
+                ).encode(text="v:N")
+                donut_chart = (donut + center_total + center_label).properties(height=190, width="container")
+                st.altair_chart(donut_chart, width="stretch")
+
+            with legend_col:
+                legend_rows = ""
+                for i, row in dept_df.iterrows():
+                    color = DEPARTMENT_BAR_COLORS[i % len(DEPARTMENT_BAR_COLORS)]
+                    name_esc = html.escape(row["Department"])
+                    tooltip = html.escape(f"{row['Department']} — {int(row['Count'])} ({int(row['Pct'])}%)")
+                    legend_rows += (
+                        f'<div class="dept-legend-row" title="{tooltip}" '
+                        f'style="display:flex;align-items:center;gap:8px;padding:5px 0;cursor:default;">'
+                        f'<span style="width:9px;height:9px;border-radius:50%;background:{color};flex-shrink:0;"></span>'
+                        f'<span style="flex:1;font-size:12.5px;color:#334155;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{name_esc}</span>'
+                        f'<span style="font-size:12.5px;color:#64748B;flex-shrink:0;">{int(row["Count"])} ({int(row["Pct"])}%)</span>'
+                        f'</div>'
+                    )
+                st.markdown(
+                    "<style>.dept-legend-row:hover{background:#F1F5F9;border-radius:6px;}</style>"
+                    f"<div style='padding-top:6px;'>{legend_rows}</div>",
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.info(f"No {dept_portal} tenders yet.")
+
+with chart_col2:
+    with st.container(border=True):
+        trend_title_col, trend_toggle_col, trend_range_col = st.columns([2, 2, 2])
+        with trend_title_col:
+            st.markdown("**Tenders Trend**")
+        with trend_toggle_col:
+            trend_portal = _chart_portal_toggle("chart_trend_portal")
+        with trend_range_col:
+            trend_range = st.selectbox(
+                "Range", ["Last 7 Days", "Last 14 Days", "Last 30 Days"],
+                key="chart_trend_range", label_visibility="collapsed", filter_mode=None,
+            )
+        days = {"Last 7 Days": 7, "Last 14 Days": 14, "Last 30 Days": 30}[trend_range]
+        trend_data = get_daily_trend(trend_portal, days=days)
+        trend_df = pd.DataFrame(trend_data, columns=["Date", "Count"])
+        trend_df["Label"] = pd.to_datetime(trend_df["Date"]).dt.strftime("%d %b")
+        line = alt.Chart(trend_df).mark_line(point=True, color="#4F46E5").encode(
+            x=alt.X("Label:N", sort=list(trend_df["Label"]), title=None),
+            y=alt.Y("Count:Q", title="No. of Tenders"),
+            tooltip=[alt.Tooltip("Label:N", title="Date"), alt.Tooltip("Count:Q")],
+        ).properties(height=190)
+        st.altair_chart(line, width='stretch')
 
 # Auto-refresh while agent is actively searching
 if state.get("status") in ("searching", "expanding", "learning"):

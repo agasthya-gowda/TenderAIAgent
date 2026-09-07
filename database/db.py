@@ -313,6 +313,78 @@ def get_stats():
         "patterns_learned": patterns
     }
 
+def get_department_counts(portal: str, top_n: int = 5):
+    """Real per-department tender counts for one portal, top N plus an
+    'Others' bucket for the rest — read-only, used by the dashboard charts."""
+    conn = get_conn()
+    rows = conn.execute(
+        """SELECT department, COUNT(*) as c FROM tenders
+           WHERE portal=? AND department IS NOT NULL AND TRIM(department) != ''
+           GROUP BY department ORDER BY c DESC""",
+        (portal,)
+    ).fetchall()
+    conn.close()
+    data = [(r["department"], r["c"]) for r in rows]
+    if len(data) <= top_n:
+        return data
+    top = data[:top_n]
+    others_count = sum(c for _, c in data[top_n:])
+    if others_count:
+        top.append(("Others", others_count))
+    return top
+
+_CAMERA_TYPE_KEYWORDS = [
+    ("ANPR Camera", ("anpr", "number plate", "license plate", "automatic number plate")),
+    ("Body Worn Camera", ("body worn", "bodycam", "body cam")),
+    ("PTZ Camera", ("ptz",)),
+    ("Thermal Camera", ("thermal",)),
+    ("CCTV Camera", ("cctv", "surveillance camera", "surveillance system", "dome camera",
+                      "bullet camera", "ip camera", "nvr", "dvr", "surveillance")),
+]
+
+def get_camera_type_counts(portal: str):
+    """Classify each tender's title into a camera-type bucket by keyword
+    match — real counts over the actual scraped titles, not invented data.
+    A title matching none of the known keyword groups falls into 'Others'."""
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT title FROM tenders WHERE portal=?", (portal,)
+    ).fetchall()
+    conn.close()
+    buckets = {label: 0 for label, _ in _CAMERA_TYPE_KEYWORDS}
+    buckets["Others"] = 0
+    for r in rows:
+        title = (r["title"] or "").lower()
+        matched = False
+        for label, keywords in _CAMERA_TYPE_KEYWORDS:
+            if any(kw in title for kw in keywords):
+                buckets[label] += 1
+                matched = True
+                break
+        if not matched:
+            buckets["Others"] += 1
+    return [(label, count) for label, count in buckets.items() if count > 0]
+
+def get_daily_trend(portal: str, days: int = 7):
+    """Real count of tenders found (by found_at, the date we actually saved
+    each row) per day for the last `days` days, for one portal. Days with
+    zero tenders are included as 0, not omitted."""
+    from datetime import date, timedelta
+    conn = get_conn()
+    rows = conn.execute(
+        """SELECT date(found_at) as d, COUNT(*) as c FROM tenders
+           WHERE portal=? GROUP BY d""",
+        (portal,)
+    ).fetchall()
+    conn.close()
+    counts = {r["d"]: r["c"] for r in rows}
+    today = date.today()
+    out = []
+    for i in range(days - 1, -1, -1):
+        d = today - timedelta(days=i)
+        out.append((d.isoformat(), counts.get(d.isoformat(), 0)))
+    return out
+
 def delete_tender(tender_id: int):
     conn = get_conn()
     conn.execute("DELETE FROM tenders WHERE id=?", (tender_id,))
