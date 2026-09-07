@@ -12,7 +12,7 @@ import json
 from datetime import datetime
 from database.db import (
     save_tender, get_all_ceo_searches, update_downloaded_files,
-    save_kppp_criteria, get_kppp_criteria_list
+    save_kppp_criteria, get_kppp_criteria_list, delete_expired_tenders
 )
 from agent.learner import expand_keyword_instantly, analyze_patterns, get_search_queries
 from agent.watcher import start_watching, register_callback
@@ -282,6 +282,12 @@ def _run_kppp_criteria_search(criteria_list: list, respect_stop_flag: bool = Fal
             if respect_stop_flag and not _state["running"]:
                 log("🛑 [KPPP] Stop requested — ending search early")
                 break
+            if not (criteria.get("procuring_entity") or "").strip():
+                # An entity-less criteria row searches every KPPP department
+                # at once — refuse to run it rather than silently pulling in
+                # tenders outside what was actually asked for.
+                log(f"⚠️ [KPPP] Skipping saved filter with no procuring entity: {criteria}")
+                continue
             try:
                 log(f"🔎 [KPPP] Searching with saved filter: {criteria}")
                 tenders = search_kppp_sync(criteria)
@@ -334,6 +340,10 @@ def _scheduled_search():
         conn.commit()
         conn.close()
         log("🔄 Reset old tenders — fresh start for today")
+
+        removed = delete_expired_tenders()
+        if removed:
+            log(f"🧹 Removed {removed} expired tender(s) (past their deadline)")
 
         log("⏰ Daily 2 AM scheduled search starting...")
 
@@ -409,6 +419,11 @@ def start_agent():
         _state["status"] = "watching"
 
     log("🤖 Tender Agent started")
+
+    removed = delete_expired_tenders()
+    if removed:
+        log(f"🧹 Removed {removed} expired tender(s) (past their deadline)")
+
     log("👀 Watching CEO browser activity on GeM & KPPP...")
 
     register_callback(on_ceo_search)

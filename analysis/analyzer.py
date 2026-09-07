@@ -407,7 +407,7 @@ def download_kppp_docs(tender: dict) -> str:
         tender_folder = os.path.join(DOWNLOAD_PATH, safe_name)
         os.makedirs(tender_folder, exist_ok=True)
 
-        async def _download():
+        async def _download_once():
             async with async_playwright() as p:
                 browser = await p.chromium.launch(headless=True)
                 context = await browser.new_context(accept_downloads=True)
@@ -501,6 +501,25 @@ def download_kppp_docs(tender: dict) -> str:
 
                 await browser.close()
                 return downloaded_files
+
+        async def _download():
+            # Same 5-whole-attempt retry as search_kppp() — a fresh browser
+            # + CAPTCHA each time — since one failed CAPTCHA attempt
+            # shouldn't sink the whole download when the portal's CAPTCHA
+            # is this failure-prone (each of the 5 attempts also gets its
+            # own inner 3-try CAPTCHA loop, same as the search flow).
+            max_attempts = 5
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    files = await _download_once()
+                except Exception as e:
+                    print(f"[Analyzer] KPPP download attempt {attempt}/{max_attempts} crashed: {e}")
+                    files = []
+                if files:
+                    return files
+                print(f"[Analyzer] KPPP download attempt {attempt}/{max_attempts} failed, retrying...")
+            print(f"[Analyzer] Giving up on KPPP download after {max_attempts} attempts")
+            return []
 
         files = asyncio.run(_download())
         if files:

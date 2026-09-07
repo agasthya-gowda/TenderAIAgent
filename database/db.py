@@ -121,7 +121,13 @@ def get_all_ceo_searches():
 
 def save_kppp_criteria(criteria: dict):
     """Save a CEO-defined KPPP search filter (category/entity/dates/type).
-    Skips saving an exact duplicate of an already-saved criteria set."""
+    Skips saving an exact duplicate of an already-saved criteria set.
+    Refuses to save a blank procuring_entity — that turns into an unscoped,
+    every-department search that then runs forever on every future cycle
+    (the UI is expected to require an entity before calling this, but this
+    guard exists so a bad call can never quietly poison the criteria list)."""
+    if not (criteria.get("procuring_entity") or "").strip():
+        return
     conn = get_conn()
     c = conn.cursor()
     fields = ("category", "procuring_entity", "tender_number", "from_date", "to_date", "tender_type")
@@ -397,6 +403,36 @@ def delete_tender(tender_id: int):
     conn.execute("DELETE FROM tenders WHERE id=?", (tender_id,))
     conn.commit()
     conn.close()
+
+def delete_expired_tenders() -> int:
+    """Permanently removes every tender whose deadline (End Date) has
+    already passed — a closed tender can't be bid on or usefully analyzed,
+    so there's no reason to keep it around. Only rows with a clearly
+    parseable DD-MM-YYYY date are touched; a missing/unparseable deadline
+    (e.g. "Not available") is left alone rather than risking a wrong delete.
+    Returns how many rows were removed."""
+    import re
+    from datetime import date
+    conn = get_conn()
+    rows = conn.execute("SELECT id, deadline FROM tenders").fetchall()
+    today = date.today()
+    expired_ids = []
+    for r in rows:
+        match = re.match(r"(\d{2})-(\d{2})-(\d{4})", (r["deadline"] or "").strip())
+        if not match:
+            continue
+        day, month, year = (int(g) for g in match.groups())
+        try:
+            deadline_date = date(year, month, day)
+        except ValueError:
+            continue
+        if deadline_date < today:
+            expired_ids.append(r["id"])
+    if expired_ids:
+        conn.executemany("DELETE FROM tenders WHERE id=?", [(i,) for i in expired_ids])
+        conn.commit()
+    conn.close()
+    return len(expired_ids)
 
 def delete_pattern(pattern_id: int):
     conn = get_conn()

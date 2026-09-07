@@ -19,14 +19,17 @@ from database.db import (
 )
 
 
-# Short-TTL caches for the summary/chart queries — these get re-run on every
+# Short-TTL caches for the chart queries — these get re-run on every
 # full-page rerun (including the one a Trend-chart drill-down click forces),
 # but the underlying counts don't meaningfully change within a few seconds,
 # so this avoids redundant DB round-trips without ever showing stale-feeling
 # data (the background agent's writes still show up within the TTL window).
-@st.cache_data(ttl=4)
-def get_stats():
-    return _get_stats()
+# get_stats() is deliberately NOT cached here — it drives the 5 stat cards
+# (Total/New/Saved/...), and caching it meant Save/Unsave/Delete and newly
+# found tenders didn't reflect there until the cache happened to expire,
+# which read as the cards being stuck/laggy. It's just a handful of cheap
+# COUNT(*) queries, so there's no real cost to always running it fresh.
+get_stats = _get_stats
 
 
 @st.cache_data(ttl=4)
@@ -766,15 +769,22 @@ with st.sidebar:
             "Category", KPPP_CATEGORIES, key="kppp_category"
         )
         kppp_entity = st.selectbox(
-            "Procuring Entity (optional)", ["-- Any --"] + KPPP_ENTITIES, key="kppp_entity"
+            "Procuring Entity", ["-- Select an entity --"] + KPPP_ENTITIES, key="kppp_entity"
         )
         if st.button("Search KPPP", icon=":material/search:", use_container_width=True, type="primary", key="kppp_search_btn"):
-            from agent.orchestrator import on_kppp_search
-            on_kppp_search({
-                "category": kppp_category,
-                "procuring_entity": "" if kppp_entity == "-- Any --" else kppp_entity,
-            })
-            st.success("Searching KPPP — this filter will keep running automatically from now on.")
+            if kppp_entity == "-- Select an entity --":
+                # A blank/"any" entity turns this into an unscoped,
+                # every-department search that then runs forever on every
+                # future cycle — KPPP searches must always be scoped to one
+                # procuring entity, same as the two we already track.
+                st.warning("Please select a Procuring Entity — KPPP searches must be scoped to a specific entity.")
+            else:
+                from agent.orchestrator import on_kppp_search
+                on_kppp_search({
+                    "category": kppp_category,
+                    "procuring_entity": kppp_entity,
+                })
+                st.success("Searching KPPP — this filter will keep running automatically from now on.")
 
     state = get_state()
     status = state.get("status", "idle")
@@ -924,6 +934,21 @@ st.iframe("""
 # toggle per chart (defaults to GeM). Purely additive/visual: no existing
 # query, filter, or button behavior above/below this block is touched. ──
 DEPARTMENT_BAR_COLORS = ["#4F46E5", "#3B82F6", "#10B981", "#F59E0B", "#EF4444", "#94A3B8"]
+# KPPP only ever has these two saved procuring entities, so unlike GeM's
+# positional palette above, these get fixed identity colors regardless of
+# which one has more tenders this week.
+KPPP_DEPARTMENT_COLORS = {
+    "Karnataka State Police": "#EF4444",  # red
+    "Karnataka State Road Transport Corporation": "#10B981",  # green
+}
+# GeM's palette is otherwise positional (Nth-largest department gets the Nth
+# color) — these two specifically always swap to the opposite color from
+# whatever position would normally assign them, regardless of which one is
+# currently bigger.
+GEM_DEPARTMENT_COLOR_OVERRIDES = {
+    "Ministry of DefenceDepartment of Military Affairs": "#F59E0B",
+    "Ministry of DefenceDepartment of Defence Production": "#4F46E5",
+}
 
 st.markdown("""
 <style>
@@ -975,7 +1000,15 @@ def _render_dept_chart():
         if st.session_state.dept_chart_last_portal != dept_portal:
             st.session_state.dept_chart_last_portal = dept_portal
             st.session_state.dept_chart_reset_counter += 1
-            st.rerun(scope="fragment")
+            # scope="fragment" is only valid when THIS run was itself
+            # triggered as a fragment-scoped rerun (e.g. the portal toggle
+            # click) — this same code also runs during ordinary full-page
+            # reruns (a stat-card click, Clear, etc.), where it isn't, and
+            # Streamlit raises for that. Fall back to a full rerun then.
+            try:
+                st.rerun(scope="fragment")
+            except st.errors.StreamlitAPIException:
+                st.rerun()
 
         dept_data = get_department_counts(dept_portal)
         if dept_data:
@@ -986,6 +1019,13 @@ def _render_dept_chart():
             dept_df["CountLabel"] = dept_df["Count"].astype(str) + " (" + dept_df["Pct"].astype(str) + "%)"
             dept_color_domain = dept_df["Department"].tolist()
             named_departments = [d for d in dept_color_domain if d != "Others"]
+            if dept_portal == "KPPP":
+                dept_range_colors = [KPPP_DEPARTMENT_COLORS.get(d, "#94A3B8") for d in dept_color_domain]
+            else:
+                dept_range_colors = [
+                    GEM_DEPARTMENT_COLOR_OVERRIDES.get(d, DEPARTMENT_BAR_COLORS[i % len(DEPARTMENT_BAR_COLORS)])
+                    for i, d in enumerate(dept_color_domain)
+                ]
 
             donut_col, legend_col = st.columns([1, 1])
 
@@ -1000,7 +1040,7 @@ def _render_dept_chart():
                     theta=alt.Theta("Count:Q", stack=True),
                     color=alt.Color(
                         "Department:N",
-                        scale=alt.Scale(domain=dept_color_domain, range=DEPARTMENT_BAR_COLORS),
+                        scale=alt.Scale(domain=dept_color_domain, range=dept_range_colors),
                         legend=None,
                     ),
                     order=alt.Order("Count:Q", sort="descending"),
@@ -1094,7 +1134,7 @@ def _render_dept_chart():
                 """, unsafe_allow_html=True)
                 st.markdown('<div class="dept-legend-marker"></div>', unsafe_allow_html=True)
                 for i, row in dept_df.iterrows():
-                    color = DEPARTMENT_BAR_COLORS[i % len(DEPARTMENT_BAR_COLORS)]
+                    color = dept_range_colors[i % len(dept_range_colors)]
                     dot_col, name_col, count_col = st.columns([0.07, 0.63, 0.30], vertical_alignment="center")
                     with dot_col:
                         st.markdown(
@@ -1148,7 +1188,14 @@ def _render_trend_chart():
         if st.session_state.trend_chart_last_portal != trend_portal:
             st.session_state.trend_chart_last_portal = trend_portal
             st.session_state.trend_chart_reset_counter += 1
-            st.rerun(scope="fragment")
+            # Same caveat as the department chart: scope="fragment" is only
+            # valid when this run was itself a fragment-scoped rerun, which
+            # isn't always the case here (e.g. a stat-card click also runs
+            # this code, as an ordinary full-page rerun).
+            try:
+                st.rerun(scope="fragment")
+            except st.errors.StreamlitAPIException:
+                st.rerun()
 
         days = {"Last 7 Days": 7, "Last 14 Days": 14, "Last 30 Days": 30}[trend_range]
         trend_data = get_daily_trend(trend_portal, days=days)
@@ -1650,12 +1697,13 @@ else:
 
             # Table header
             st.markdown('<div class="table-card-marker"></div>', unsafe_allow_html=True)
-            h1, h2, h3, h4, h5, h6, h7, h8, h9, h10 = st.columns([0.5, 1.5, 2.5, 1.7, 0.8, 1.2, 1.2, 0.8, 0.8, 0.8])
+            h1, h2, h3, h4, h5, h6, h7, h8, h9, h10 = st.columns([0.5, 1.5, 2.1, 1.3, 1.6, 1.2, 1.2, 0.8, 0.8, 0.8])
             h1.markdown('<span class="th-cell">Sl No</span>', unsafe_allow_html=True)
             h2.markdown('<span class="th-cell">Bid Number</span>', unsafe_allow_html=True)
             h3.markdown('<span class="th-cell">Item Name</span>', unsafe_allow_html=True)
             h4.markdown('<span class="th-cell">Department</span>', unsafe_allow_html=True)
-            h5.markdown('<span class="th-cell">Qty</span>', unsafe_allow_html=True)
+            qty_col_label = "Location" if current_portal_filter == "KPPP" else "Qty"
+            h5.markdown(f'<span class="th-cell">{qty_col_label}</span>', unsafe_allow_html=True)
             h6.markdown('<span class="th-cell">Start Date</span>', unsafe_allow_html=True)
             h7.markdown('<span class="th-cell">End Date</span>', unsafe_allow_html=True)
             h8.markdown("")
@@ -1669,13 +1717,19 @@ else:
                 bid_number = tender.get("tender_number", "N/A")
                 title = tender.get("title", "Unknown")
                 department = tender.get("department", "N/A")
-                quantity = tender.get("quantity", "N/A")
+                # KPPP tenders have no quantity field at all (never scraped —
+                # the portal doesn't expose one); its own site shows Location
+                # in that spot instead, which we do have real data for.
+                if (tender.get("portal") or "").upper() == "KPPP":
+                    quantity = tender.get("location") or "N/A"
+                else:
+                    quantity = tender.get("quantity", "N/A")
                 start_date = tender.get("published_date", "N/A")
                 end_date = tender.get("deadline", "N/A")
                 portal = tender.get("portal", "")
                 portal_chip_class = "portal-chip-kppp" if portal.upper() == "KPPP" else "portal-chip-gem"
 
-                r1, r2, r3, r4, r5, r6, r7, r8, r9, r10 = st.columns([0.5, 1.5, 2.5, 1.7, 0.8, 1.2, 1.2, 0.8, 0.8, 0.8])
+                r1, r2, r3, r4, r5, r6, r7, r8, r9, r10 = st.columns([0.5, 1.5, 2.1, 1.3, 1.6, 1.2, 1.2, 0.8, 0.8, 0.8])
                 r1.markdown(f'<span class="td-slno">{sl_no}</span>', unsafe_allow_html=True)
                 r2.markdown(
                     f'<div class="mono td-bid">{bid_number}</div>'
