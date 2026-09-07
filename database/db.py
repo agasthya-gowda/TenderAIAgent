@@ -6,7 +6,14 @@ from datetime import datetime
 DB_PATH = os.path.join(os.path.dirname(__file__), "tenders.db")
 
 def get_conn():
-    conn = sqlite3.connect(DB_PATH)
+    # WAL lets the dashboard's reads run concurrently with the background
+    # agent's writes instead of blocking behind its lock (the default
+    # rollback-journal mode serializes them, which is what caused the
+    # dashboard to randomly stall for seconds while a search was running).
+    # busy_timeout is a fallback for the brief moments even WAL still contends.
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=10000")
     conn.row_factory = sqlite3.Row
     return conn
 

@@ -5,17 +5,38 @@ Tender Agent Dashboard
 import streamlit as st
 import os
 import json
-import html
 import pandas as pd
 import altair as alt
 from rapidfuzz import fuzz
 from st_keyup import st_keyup
 from database.db import (
-    get_all_tenders, get_stats, update_tender_status,
+    get_all_tenders, update_tender_status,
     update_tender_pdfs, get_all_ceo_searches, get_learned_patterns,
     delete_tender, delete_pattern,
-    get_department_counts, get_daily_trend,
+    get_stats as _get_stats,
+    get_department_counts as _get_department_counts,
+    get_daily_trend as _get_daily_trend,
 )
+
+
+# Short-TTL caches for the summary/chart queries — these get re-run on every
+# full-page rerun (including the one a Trend-chart drill-down click forces),
+# but the underlying counts don't meaningfully change within a few seconds,
+# so this avoids redundant DB round-trips without ever showing stale-feeling
+# data (the background agent's writes still show up within the TTL window).
+@st.cache_data(ttl=4)
+def get_stats():
+    return _get_stats()
+
+
+@st.cache_data(ttl=4)
+def get_department_counts(portal: str, top_n: int = 5):
+    return _get_department_counts(portal, top_n)
+
+
+@st.cache_data(ttl=4)
+def get_daily_trend(portal: str, days: int = 7):
+    return _get_daily_trend(portal, days)
 from agent.orchestrator import (
     start_agent, stop_agent, get_state,
     get_log, trigger_manual_search
@@ -314,15 +335,57 @@ st.markdown("""
         padding-right: 2rem !important;
         max-width: 100% !important;
     }
-    div[data-testid="stVerticalBlock"] div:has(> div.stats-sticky) {
-        position: sticky;
-        top: 0;
-        z-index: 999;
-        background-color: #F8FAFC;
-        padding-bottom: 8px;
+    /* Streamlit wraps every element in a snug per-element box that's barely
+       taller than the element itself, so plain position:sticky falls out of
+       its own containing block within a few dozen pixels of scroll — a JS
+       helper further down keeps this row's position/size synced instead;
+       this just supplies the fixed-position look once JS sets top/left/width. */
+    div[data-testid="stHorizontalBlock"]:has(div.stats-sticky) {
+        position: fixed !important;
+        /* top/left/width are plain (non-!important) fallbacks only — the JS
+           helper below sets them precisely via inline style once it runs,
+           and !important here would out-rank that inline style and pin the
+           row in the wrong place permanently. */
+        top: 60px;
+        left: 0;
+        width: 100%;
+        z-index: 999 !important;
+        background-color: #F8FAFC !important;
+        padding: 10px 2rem !important;
+        margin: 0 !important;
+        box-sizing: border-box !important;
+        flex-wrap: nowrap !important;
     }
-    .stats-sticky {
-        background-color: #F8FAFC;
+    /* The now out-of-flow fixed row no longer reserves its own vertical
+       space, so its (now-empty) original slot needs an explicit height to
+       stop the rest of the page from jumping up underneath it. Fixed rather
+       than JS-computed so it can't drift or flicker between reruns. */
+    div[data-testid="stLayoutWrapper"]:has(div.stats-sticky) {
+        min-height: 84px !important;
+    }
+    /* Halves the empty gap between the stat-card row and the charts below
+       it (per user request) — Streamlit's own default spacing between
+       consecutive top-level blocks accounts for most of it. */
+    div[data-testid="stLayoutWrapper"]:has(div.stats-sticky) + div {
+        margin-top: -32px !important;
+    }
+    /* The invisible marker itself still gets Streamlit's normal per-element
+       vertical margin, which was making only the "Total Tenders" column
+       (the one column that has this extra element) render taller than the
+       other four. Collapse its own wrapper to zero size. */
+    div[data-testid="stElementContainer"]:has(> div.stats-sticky) {
+        height: 0 !important;
+        min-height: 0 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        overflow: hidden !important;
+    }
+    /* Collapsing the marker's own box isn't enough — its column's inner
+       vertical block still applies its normal gap *between* the marker and
+       the button below it, so that one column was still ~16px taller than
+       the other four. Zero that gap out too. */
+    div[data-testid="stColumn"]:has(div.stats-sticky) div[data-testid="stVerticalBlock"] {
+        gap: 0 !important;
     }
 
     /* Stat cards — plain white/slate by default, each key gets its own
@@ -643,6 +706,18 @@ if "page_num" not in st.session_state:
     st.session_state.page_num = 1
 if "viewing_tender_id" not in st.session_state:
     st.session_state.viewing_tender_id = None
+if "chart_drill_filter" not in st.session_state:
+    st.session_state.chart_drill_filter = None
+if "trend_chart_reset_counter" not in st.session_state:
+    st.session_state.trend_chart_reset_counter = 0
+if "trend_chart_last_portal" not in st.session_state:
+    st.session_state.trend_chart_last_portal = "GeM"
+if "dept_chart_reset_counter" not in st.session_state:
+    st.session_state.dept_chart_reset_counter = 0
+if "dept_chart_last_portal" not in st.session_state:
+    st.session_state.dept_chart_last_portal = "GeM"
+if "scroll_to_table" not in st.session_state:
+    st.session_state.scroll_to_table = False
 
 
 # ── SIDEBAR ───────────────────────────────────────────────
@@ -727,12 +802,12 @@ with st.sidebar:
 st.markdown("<br>", unsafe_allow_html=True)
 # ── STATS ROW ─────────────────────────────────────────────
 # ── STATS ROW ─────────────────────────────────────────────
-st.markdown('<div class="stats-sticky">', unsafe_allow_html=True)
 stats = get_stats()
 active = st.session_state.active_section
 c1, c2, c3, c4, c5 = st.columns(5)
 
 with c1:
+    st.markdown('<div class="stats-sticky"></div>', unsafe_allow_html=True)
     if st.button(
         f"📋  {stats['total_tenders']}\nTotal Tenders",
         key="btn_all", use_container_width=True,
@@ -740,6 +815,10 @@ with c1:
     ):
         st.session_state.active_section = "all"
         st.session_state.page_num = 1
+        st.session_state.chart_drill_filter = None
+        st.session_state.trend_chart_reset_counter += 1
+        st.session_state.dept_chart_reset_counter += 1
+        st.session_state.scroll_to_table = True
         st.rerun()
 
 with c2:
@@ -750,6 +829,10 @@ with c2:
     ):
         st.session_state.active_section = "new"
         st.session_state.page_num = 1
+        st.session_state.chart_drill_filter = None
+        st.session_state.trend_chart_reset_counter += 1
+        st.session_state.dept_chart_reset_counter += 1
+        st.session_state.scroll_to_table = True
         st.rerun()
 
 with c3:
@@ -760,6 +843,10 @@ with c3:
     ):
         st.session_state.active_section = "saved"
         st.session_state.page_num = 1
+        st.session_state.chart_drill_filter = None
+        st.session_state.trend_chart_reset_counter += 1
+        st.session_state.dept_chart_reset_counter += 1
+        st.session_state.scroll_to_table = True
         st.rerun()
 
 with c4:
@@ -770,6 +857,10 @@ with c4:
     ):
         st.session_state.active_section = "searches"
         st.session_state.page_num = 1
+        st.session_state.chart_drill_filter = None
+        st.session_state.trend_chart_reset_counter += 1
+        st.session_state.dept_chart_reset_counter += 1
+        st.session_state.scroll_to_table = True
         st.rerun()
 
 with c5:
@@ -780,8 +871,54 @@ with c5:
     ):
         st.session_state.active_section = "patterns"
         st.session_state.page_num = 1
+        st.session_state.chart_drill_filter = None
+        st.session_state.trend_chart_reset_counter += 1
+        st.session_state.dept_chart_reset_counter += 1
+        st.session_state.scroll_to_table = True
         st.rerun()
-st.markdown('</div>', unsafe_allow_html=True)
+
+# Keeps the stat-card row's fixed position/size synced to the actual main
+# content area. Plain CSS position:sticky doesn't work here because
+# Streamlit wraps every element in its own snug per-element box (barely
+# taller than the row itself), which caps how far a sticky element can
+# travel before falling out of view — nowhere near the length of the page.
+# st.markdown can't run <script> tags (innerHTML-inserted scripts are inert
+# in browsers), so this runs inside an st.iframe and reaches back into the
+# real page via window.parent.document instead.
+st.iframe("""
+<script>
+(function() {
+    function syncStickyStats() {
+        const doc = window.parent.document;
+        const marker = doc.querySelector('div.stats-sticky');
+        const main = doc.querySelector('section[data-testid="stMain"]');
+        if (!marker || !main) return;
+        const row = marker.closest('[data-testid="stHorizontalBlock"]');
+        if (!row) return;
+        const rect = main.getBoundingClientRect();
+        // stMain's own box starts at the very top of the viewport, hidden
+        // behind Streamlit's fixed header overlay — without this offset the
+        // row renders underneath that header instead of below it.
+        const header = doc.querySelector('header[data-testid="stHeader"]');
+        const headerHeight = header ? header.getBoundingClientRect().height : 0;
+        row.style.top = Math.max(rect.top, headerHeight) + 'px';
+        row.style.left = rect.left + 'px';
+        row.style.width = rect.width + 'px';
+    }
+    syncStickyStats();
+    window.parent.addEventListener('resize', syncStickyStats);
+    try {
+        const main = window.parent.document.querySelector('section[data-testid="stMain"]');
+        if (main) new ResizeObserver(syncStickyStats).observe(main);
+    } catch (e) {}
+    // Streamlit reruns replace the row's DOM node on every interaction;
+    // a short poll keeps it positioned without needing to hook Streamlit's
+    // internal rerun lifecycle.
+    clearInterval(window.parent.__statsStickySync);
+    window.parent.__statsStickySync = window.parent.setInterval(syncStickyStats, 400);
+})();
+</script>
+""", height=1)
 
 # ── OVERVIEW CHARTS — real data from the tenders table, one GeM/KPPP
 # toggle per chart (defaults to GeM). Purely additive/visual: no existing
@@ -820,13 +957,26 @@ def _chart_portal_toggle(key: str) -> str:
 
 chart_col1, chart_col2 = st.columns(2)
 
-with chart_col1:
+@st.fragment
+def _render_dept_chart():
+    # Same fragment-scoped pattern as the Trend chart: the portal toggle and
+    # re-clicking an already-selected slice stay fast/local, and only a
+    # genuine new department click escalates to a full app rerun (needed so
+    # the drilled-down table below can update).
     with st.container(border=True):
         dept_title_col, dept_toggle_col = st.columns([2, 2])
         with dept_title_col:
             st.markdown("**Tenders by Department**")
         with dept_toggle_col:
             dept_portal = _chart_portal_toggle("chart_dept_portal")
+
+        # Remount with a clean selection whenever the portal changes, so a
+        # stale click from the previous portal's data can't get replayed.
+        if st.session_state.dept_chart_last_portal != dept_portal:
+            st.session_state.dept_chart_last_portal = dept_portal
+            st.session_state.dept_chart_reset_counter += 1
+            st.rerun(scope="fragment")
+
         dept_data = get_department_counts(dept_portal)
         if dept_data:
             dept_df = pd.DataFrame(dept_data, columns=["Department", "Count"])
@@ -835,10 +985,17 @@ with chart_col1:
             dept_df["idx"] = range(len(dept_df))
             dept_df["CountLabel"] = dept_df["Count"].astype(str) + " (" + dept_df["Pct"].astype(str) + "%)"
             dept_color_domain = dept_df["Department"].tolist()
+            named_departments = [d for d in dept_color_domain if d != "Others"]
 
             donut_col, legend_col = st.columns([1, 1])
 
             with donut_col:
+                # mark_arc renders one arc per row already, so (unlike the
+                # Trend line) the param can bind directly to it — no need for
+                # a separate overlay mark to get real per-datum click targets.
+                dept_click = alt.selection_point(
+                    name="dept_click", on="click", fields=["Department"], empty=False,
+                )
                 donut = alt.Chart(dept_df).mark_arc(innerRadius=52, outerRadius=82).encode(
                     theta=alt.Theta("Count:Q", stack=True),
                     color=alt.Color(
@@ -848,7 +1005,7 @@ with chart_col1:
                     ),
                     order=alt.Order("Count:Q", sort="descending"),
                     tooltip=[alt.Tooltip("Department:N"), alt.Tooltip("Count:Q"), alt.Tooltip("Pct:Q", title="Percent")],
-                )
+                ).add_params(dept_click)
                 center_total = alt.Chart(pd.DataFrame({"v": [str(total_dept)]})).mark_text(
                     size=24, fontWeight="bold", color="#0F172A", dy=-5,
                 ).encode(text="v:N")
@@ -856,31 +1013,123 @@ with chart_col1:
                     size=10, color="#64748B", dy=13,
                 ).encode(text="v:N")
                 donut_chart = (donut + center_total + center_label).properties(height=190, width="container")
-                st.altair_chart(donut_chart, width="stretch")
+                dept_event = st.altair_chart(
+                    donut_chart, width="stretch", on_select="rerun",
+                    key=f"dept_chart_select_{st.session_state.dept_chart_reset_counter}",
+                )
+
+            def _drill_into_department(clicked_dept: str):
+                current_drill = st.session_state.chart_drill_filter
+                if not clicked_dept or (
+                    current_drill
+                    and current_drill.get("type") == "department"
+                    and current_drill.get("department") == clicked_dept
+                    and current_drill.get("portal") == dept_portal
+                ):
+                    return
+                is_others = clicked_dept == "Others"
+                st.session_state.chart_drill_filter = {
+                    "type": "department",
+                    "department": clicked_dept,
+                    "portal": dept_portal,
+                    "label": clicked_dept,
+                    "is_others": is_others,
+                    "named_departments": named_departments if is_others else [],
+                }
+                st.session_state.active_section = "all"
+                st.session_state.viewing_tender_id = None
+                st.session_state.page_num = 1
+                st.session_state.scroll_to_table = True
+                st.rerun()
 
             with legend_col:
-                legend_rows = ""
+                st.markdown("""
+                <style>
+                div[class*="st-key-dept_legend_btn_"] button {
+                    background: transparent !important;
+                    border: none !important;
+                    box-shadow: none !important;
+                    padding: 3px 6px !important;
+                    min-height: 0 !important;
+                    height: auto !important;
+                    font-size: 12.5px !important;
+                    font-weight: 400 !important;
+                    color: #334155 !important;
+                    justify-content: flex-start !important;
+                    text-align: left !important;
+                    white-space: nowrap;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    display: block !important;
+                    width: 100% !important;
+                }
+                div[class*="st-key-dept_legend_btn_"] button:hover {
+                    background: #F1F5F9 !important;
+                    color: #334155 !important;
+                    border: none !important;
+                }
+                div[class*="st-key-dept_legend_btn_"] button:focus:not(:active) {
+                    box-shadow: none !important;
+                    color: #334155 !important;
+                }
+                div[class*="st-key-dept_legend_btn_"] button div,
+                div[class*="st-key-dept_legend_btn_"] button span,
+                div[class*="st-key-dept_legend_btn_"] button [data-testid="stMarkdownContainer"] {
+                    justify-content: flex-start !important;
+                    text-align: left !important;
+                    width: 100% !important;
+                    display: block !important;
+                }
+                div[class*="st-key-dept_legend_btn_"] p {
+                    font-size: 12.5px !important;
+                    text-align: left !important;
+                    white-space: nowrap;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                }
+                div[data-testid="stVerticalBlock"]:has(> div[data-testid="stElementContainer"] div.dept-legend-marker) {
+                    gap: 0.1rem !important;
+                }
+                </style>
+                """, unsafe_allow_html=True)
+                st.markdown('<div class="dept-legend-marker"></div>', unsafe_allow_html=True)
                 for i, row in dept_df.iterrows():
                     color = DEPARTMENT_BAR_COLORS[i % len(DEPARTMENT_BAR_COLORS)]
-                    name_esc = html.escape(row["Department"])
-                    tooltip = html.escape(f"{row['Department']} — {int(row['Count'])} ({int(row['Pct'])}%)")
-                    legend_rows += (
-                        f'<div class="dept-legend-row" title="{tooltip}" '
-                        f'style="display:flex;align-items:center;gap:8px;padding:5px 0;cursor:default;">'
-                        f'<span style="width:9px;height:9px;border-radius:50%;background:{color};flex-shrink:0;"></span>'
-                        f'<span style="flex:1;font-size:12.5px;color:#334155;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{name_esc}</span>'
-                        f'<span style="font-size:12.5px;color:#64748B;flex-shrink:0;">{int(row["Count"])} ({int(row["Pct"])}%)</span>'
-                        f'</div>'
-                    )
-                st.markdown(
-                    "<style>.dept-legend-row:hover{background:#F1F5F9;border-radius:6px;}</style>"
-                    f"<div style='padding-top:6px;'>{legend_rows}</div>",
-                    unsafe_allow_html=True,
-                )
+                    dot_col, name_col, count_col = st.columns([0.07, 0.63, 0.30], vertical_alignment="center")
+                    with dot_col:
+                        st.markdown(
+                            f'<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:{color};margin-top:2px;"></span>',
+                            unsafe_allow_html=True,
+                        )
+                    with name_col:
+                        if st.button(row["Department"], key=f"dept_legend_btn_{i}", use_container_width=True):
+                            _drill_into_department(row["Department"])
+                    with count_col:
+                        st.markdown(
+                            f'<div style="font-size:12.5px;color:#64748B;text-align:right;padding-top:3px;">{int(row["Count"])} ({int(row["Pct"])}%)</div>',
+                            unsafe_allow_html=True,
+                        )
+
+            clicked_slices = dept_event.selection.get("dept_click") if dept_event and dept_event.selection else None
+            if clicked_slices:
+                _drill_into_department(clicked_slices[0].get("Department"))
         else:
             st.info(f"No {dept_portal} tenders yet.")
 
-with chart_col2:
+
+with chart_col1:
+    _render_dept_chart()
+
+@st.fragment
+def _render_trend_chart():
+    # Fragment-scoped: the portal toggle, the range dropdown, and re-clicking
+    # an already-selected (or empty) point all rerun ONLY this box instead of
+    # the whole page (sidebar, stat cards, department chart...) — that full
+    # top-to-bottom rerun on every interaction was the real source of the lag.
+    # A plain st.rerun() call still escalates to a full app rerun (its
+    # default scope), which we use deliberately, and only once an actual new
+    # date is picked, since the drilled-down table lives outside this
+    # fragment and needs a full rerun to update.
     with st.container(border=True):
         trend_title_col, trend_toggle_col, trend_range_col = st.columns([2, 2, 2])
         with trend_title_col:
@@ -892,16 +1141,62 @@ with chart_col2:
                 "Range", ["Last 7 Days", "Last 14 Days", "Last 30 Days"],
                 key="chart_trend_range", label_visibility="collapsed", filter_mode=None,
             )
+
+        # A stale click selection from before a portal switch would otherwise
+        # get replayed against the new portal's data on the very next event —
+        # remount the chart (fresh, empty selection) whenever the portal changes.
+        if st.session_state.trend_chart_last_portal != trend_portal:
+            st.session_state.trend_chart_last_portal = trend_portal
+            st.session_state.trend_chart_reset_counter += 1
+            st.rerun(scope="fragment")
+
         days = {"Last 7 Days": 7, "Last 14 Days": 14, "Last 30 Days": 30}[trend_range]
         trend_data = get_daily_trend(trend_portal, days=days)
         trend_df = pd.DataFrame(trend_data, columns=["Date", "Count"])
         trend_df["Label"] = pd.to_datetime(trend_df["Date"]).dt.strftime("%d %b")
-        line = alt.Chart(trend_df).mark_line(point=True, color="#4F46E5").encode(
-            x=alt.X("Label:N", sort=list(trend_df["Label"]), title=None),
-            y=alt.Y("Count:Q", title="No. of Tenders"),
-            tooltip=[alt.Tooltip("Label:N", title="Date"), alt.Tooltip("Count:Q")],
-        ).properties(height=190)
-        st.altair_chart(line, width='stretch')
+        trend_x = alt.X("Label:N", sort=list(trend_df["Label"]), title=None)
+        trend_y = alt.Y("Count:Q", title="No. of Tenders")
+        trend_tooltip = [alt.Tooltip("Label:N", title="Date"), alt.Tooltip("Count:Q")]
+        trend_click = alt.selection_point(
+            name="trend_click", on="click", nearest=True, empty=False,
+            fields=["Date", "Label"],
+        )
+        base_line = alt.Chart(trend_df).mark_line(color="#4F46E5").encode(x=trend_x, y=trend_y)
+        # A dedicated, larger point layer carries the click-selection param —
+        # mark_line's own point=True overlay isn't a real per-datum hit target
+        # for Vega-Lite selections, so clicks on it never registered.
+        click_points = alt.Chart(trend_df).mark_point(size=120, filled=True, color="#4F46E5", opacity=1).encode(
+            x=trend_x, y=trend_y, tooltip=trend_tooltip,
+        ).add_params(trend_click)
+        trend_chart_obj = (base_line + click_points).properties(height=190)
+        trend_event = st.altair_chart(
+            trend_chart_obj, width='stretch', on_select="rerun",
+            key=f"trend_chart_select_{st.session_state.trend_chart_reset_counter}",
+        )
+
+        clicked_points = trend_event.selection.get("trend_click") if trend_event and trend_event.selection else None
+        if clicked_points:
+            clicked = clicked_points[0]
+            clicked_date, clicked_label = clicked.get("Date"), clicked.get("Label")
+            current_drill = st.session_state.chart_drill_filter
+            if clicked_date and (
+                not current_drill
+                or current_drill.get("type") != "date"
+                or current_drill.get("date") != clicked_date
+                or current_drill.get("portal") != trend_portal
+            ):
+                st.session_state.chart_drill_filter = {
+                    "type": "date", "date": clicked_date, "portal": trend_portal, "label": clicked_label,
+                }
+                st.session_state.active_section = "all"
+                st.session_state.viewing_tender_id = None
+                st.session_state.page_num = 1
+                st.session_state.scroll_to_table = True
+                st.rerun()
+
+
+with chart_col2:
+    _render_trend_chart()
 
 # Auto-refresh while agent is actively searching
 if state.get("status") in ("searching", "expanding", "learning"):
@@ -910,6 +1205,37 @@ if state.get("status") in ("searching", "expanding", "learning"):
     time.sleep(40)
     st.rerun()
 # ── SECTION CONTENT ───────────────────────────────────────
+st.markdown('<div id="tenders-table-anchor"></div>', unsafe_allow_html=True)
+if st.session_state.scroll_to_table:
+    st.session_state.scroll_to_table = False
+    import time as _time
+    # Streamlit reuses/skips re-mounting an iframe when its rendered content
+    # is byte-for-byte identical to a previous one at the same script
+    # position — which this always is, since the script text never changes —
+    # so the embedded <script> only ever ran on the very first click. The
+    # nonce (invisible, inside an HTML comment) makes each render unique so
+    # the browser always treats it as fresh content and actually re-runs it.
+    st.iframe(f"""
+    <!-- nonce:{_time.time()} -->
+    <script>
+    (function() {{
+        const doc = window.parent.document;
+        const main = doc.querySelector('section[data-testid="stMain"]');
+        const anchor = doc.getElementById('tenders-table-anchor');
+        if (!main || !anchor) return;
+        // stMain scrolls internally (not the window), and the stat-card row
+        // is position:fixed on top of it, so a plain scrollIntoView would
+        // still leave the target tucked underneath that fixed bar — offset
+        // by its height so the table lands just below it instead.
+        const barRow = doc.querySelector('div.stats-sticky');
+        const bar = barRow ? barRow.closest('[data-testid="stHorizontalBlock"]') : null;
+        const barHeight = bar ? bar.getBoundingClientRect().height : 0;
+        const targetTop = anchor.getBoundingClientRect().top - main.getBoundingClientRect().top + main.scrollTop - barHeight - 12;
+        main.scrollTo({{top: targetTop, behavior: 'smooth'}});
+    }})();
+    </script>
+    """, height=1)
+
 section = st.session_state.active_section
 
 # ── CEO SEARCHES ──────────────────────────────────────────
@@ -970,18 +1296,46 @@ elif section == "log":
 # ── TENDERS ───────────────────────────────────────────────
 # ── TENDERS ───────────────────────────────────────────────
 else:
-    if section == "new":
-        tenders = get_all_tenders("new")
-        section_title = "🟢 New Tenders"
-    elif section == "saved":
-        tenders = get_all_tenders("saved")
-        section_title = "💾 Saved Tenders"
+    # Drilled in from a Tenders Trend point or Department slice click — show
+    # only the matching tenders, regardless of which stat-card section was
+    # active before the click. Fetched directly instead of via the section
+    # branches below since those would just be discarded (avoids two
+    # full-table reads per rerun).
+    drill = st.session_state.chart_drill_filter
+    if drill and drill.get("type") == "date":
+        tenders = [
+            t for t in get_all_tenders()
+            if t["portal"] == drill["portal"] and str(t.get("found_at", "")).startswith(drill["date"])
+        ]
+        current_portal_filter = drill["portal"]
+        section_title = f"📅 Tenders found on {drill.get('label', drill['date'])} — {drill['portal']}"
+    elif drill and drill.get("type") == "department":
+        if drill.get("is_others"):
+            named = set(drill.get("named_departments", []))
+            tenders = [
+                t for t in get_all_tenders()
+                if t["portal"] == drill["portal"] and t.get("department") not in named
+            ]
+        else:
+            tenders = [
+                t for t in get_all_tenders()
+                if t["portal"] == drill["portal"] and t.get("department") == drill["department"]
+            ]
+        current_portal_filter = drill["portal"]
+        section_title = f"🏢 Tenders for {drill.get('label', drill['department'])} — {drill['portal']}"
     else:
-        tenders = get_all_tenders()
-        section_title = "📋 All Tenders"
+        if section == "new":
+            tenders = get_all_tenders("new")
+            section_title = "🟢 New Tenders"
+        elif section == "saved":
+            tenders = get_all_tenders("saved")
+            section_title = "💾 Saved Tenders"
+        else:
+            tenders = get_all_tenders()
+            section_title = "📋 All Tenders"
 
-    current_portal_filter = st.session_state.get("portal_filter_value", "GeM")
-    tenders = [t for t in tenders if t["portal"] == current_portal_filter]
+        current_portal_filter = st.session_state.get("portal_filter_value", "GeM")
+        tenders = [t for t in tenders if t["portal"] == current_portal_filter]
 
     sort_by = st.session_state.get("sort_by_select", "Relevance")
     if sort_by == "Newest First":
@@ -1203,6 +1557,39 @@ else:
 
     # ── TABLE LIST VIEW ───────────────────────────────────
     else:
+        if drill:
+            if drill.get("type") == "date":
+                banner_text = f"📅 Showing {len(tenders)} tender(s) found on **{drill.get('label', drill['date'])}** — {drill['portal']}"
+            else:
+                banner_text = f"🏢 Showing {len(tenders)} tender(s) for **{drill.get('label', drill['department'])}** — {drill['portal']}"
+            banner_col, clear_col = st.columns([5, 1], vertical_alignment="center")
+            with banner_col:
+                st.info(banner_text)
+            with clear_col:
+                st.markdown("""
+                <style>
+                div[class*="st-key-clear_chart_drill"] button {
+                    background-color: #EF4444 !important;
+                    border-color: #EF4444 !important;
+                    color: #FFFFFF !important;
+                }
+                div[class*="st-key-clear_chart_drill"] button:hover {
+                    background-color: #DC2626 !important;
+                    border-color: #DC2626 !important;
+                    color: #FFFFFF !important;
+                }
+                div[class*="st-key-clear_chart_drill"] button:focus:not(:active) {
+                    color: #FFFFFF !important;
+                    box-shadow: none !important;
+                }
+                </style>
+                """, unsafe_allow_html=True)
+                if st.button("✖ Clear", key="clear_chart_drill", use_container_width=True):
+                    st.session_state.chart_drill_filter = None
+                    st.session_state.trend_chart_reset_counter += 1
+                    st.session_state.dept_chart_reset_counter += 1
+                    st.rerun()
+
         col_portal, col_search, col_sort = st.columns(
             [0.2, 0.58, 0.22], vertical_alignment="center"
         )
