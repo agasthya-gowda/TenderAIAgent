@@ -12,7 +12,8 @@ import json
 from datetime import datetime
 from database.db import (
     save_tender, get_all_ceo_searches, update_downloaded_files,
-    save_kppp_criteria, get_kppp_criteria_list, delete_expired_tenders
+    save_kppp_criteria, get_kppp_criteria_list, delete_expired_tenders,
+    save_ceo_search, save_learned_patterns
 )
 from agent.learner import expand_keyword_instantly, analyze_patterns, get_search_queries
 from agent.watcher import start_watching, register_callback
@@ -256,6 +257,27 @@ def on_kppp_search(criteria: dict):
     """
     save_kppp_criteria(criteria)
     log(f"👀 CEO set KPPP search filter: {criteria}")
+
+    # KPPP has no free-text keyword box and no AI expansion step of its own,
+    # so it never went through on_ceo_search/expand_keyword_instantly — the
+    # only two places that feed the "Search History" and "Patterns Learned"
+    # cards. Log it here directly (using whichever of tender_name/entity/
+    # category is most specific) so those cards reflect KPPP searches too,
+    # same as they already do for GeM's keyword box.
+    search_label = (
+        criteria.get("tender_name")
+        or criteria.get("procuring_entity")
+        or criteria.get("category")
+        or "KPPP search"
+    )
+    save_ceo_search(search_label, "KPPP")
+    save_learned_patterns(
+        category=search_label,
+        keywords=json.dumps([search_label]),
+        weight=1.0,
+        portal="KPPP"
+    )
+
     threading.Thread(
         target=_run_kppp_criteria_search,
         args=([criteria],),

@@ -39,9 +39,16 @@ def init_db():
             category TEXT,
             keywords TEXT,
             weight REAL DEFAULT 1.0,
+            portal TEXT DEFAULT 'GeM',
             last_updated TEXT DEFAULT (datetime('now'))
         )
     """)
+    # Migration: portal was added after this table already existed on disk
+    # for some installs — CREATE TABLE IF NOT EXISTS above won't touch
+    # those, so add the column by hand if it's missing.
+    existing_pattern_cols = [r["name"] for r in c.execute("PRAGMA table_info(learned_patterns)").fetchall()]
+    if "portal" not in existing_pattern_cols:
+        c.execute("ALTER TABLE learned_patterns ADD COLUMN portal TEXT DEFAULT 'GeM'")
 
     # Table 2b - stores KPPP-specific search filters set by the CEO. KPPP has
     # no keyword search, so instead of a keyword this stores the actual
@@ -170,7 +177,7 @@ def delete_kppp_criteria(criteria_id: int):
     conn.commit()
     conn.close()
 
-def save_learned_patterns(category: str, keywords: str, weight: float = 1.0):
+def save_learned_patterns(category: str, keywords: str, weight: float = 1.0, portal: str = "GeM"):
     conn = get_conn()
     c = conn.cursor()
     existing = c.execute(
@@ -178,13 +185,13 @@ def save_learned_patterns(category: str, keywords: str, weight: float = 1.0):
     ).fetchone()
     if existing:
         c.execute(
-            "UPDATE learned_patterns SET keywords=?, weight=?, last_updated=? WHERE id=?",
-            (keywords, weight, datetime.now().isoformat(), existing["id"])
+            "UPDATE learned_patterns SET keywords=?, weight=?, portal=?, last_updated=? WHERE id=?",
+            (keywords, weight, portal, datetime.now().isoformat(), existing["id"])
         )
     else:
         c.execute(
-            "INSERT INTO learned_patterns (category, keywords, weight) VALUES (?,?,?)",
-            (category, keywords, weight)
+            "INSERT INTO learned_patterns (category, keywords, weight, portal) VALUES (?,?,?,?)",
+            (category, keywords, weight, portal)
         )
     conn.commit()
     conn.close()

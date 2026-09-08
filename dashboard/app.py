@@ -1334,11 +1334,13 @@ elif section == "patterns":
                 kws = json.loads(p['keywords'])
             except:
                 kws = []
+            pattern_portal = p['portal'] if p['portal'] else "GeM"
+            portal_badge = "🔵 GeM" if pattern_portal == "GeM" else "🟠 KPPP (KA)"
             col_p, col_d = st.columns([4, 1])
             with col_p:
                 st.markdown(f"""
                 <div class='tender-card'>
-                    <div class='tender-title'>📂 {p['category']}</div>
+                    <div class='tender-title'>📂 {p['category']} <span style="font-size:0.75em;font-weight:500;color:#64748B;">— {portal_badge}</span></div>
                     <div class='tender-meta'>Weight: {p['weight']} | Keywords: {', '.join(kws[:5])}</div>
                 </div>
                 """, unsafe_allow_html=True)
