@@ -282,11 +282,12 @@ def _run_kppp_criteria_search(criteria_list: list, respect_stop_flag: bool = Fal
             if respect_stop_flag and not _state["running"]:
                 log("🛑 [KPPP] Stop requested — ending search early")
                 break
-            if not (criteria.get("procuring_entity") or "").strip():
-                # An entity-less criteria row searches every KPPP department
-                # at once — refuse to run it rather than silently pulling in
-                # tenders outside what was actually asked for.
-                log(f"⚠️ [KPPP] Skipping saved filter with no procuring entity: {criteria}")
+            if not (criteria.get("procuring_entity") or "").strip() and not (criteria.get("tender_name") or "").strip():
+                # A criteria row with neither an entity nor a tender name
+                # searches every KPPP department at once — refuse to run it
+                # rather than silently pulling in tenders outside what was
+                # actually asked for.
+                log(f"⚠️ [KPPP] Skipping saved filter with no procuring entity or tender name: {criteria}")
                 continue
             try:
                 log(f"🔎 [KPPP] Searching with saved filter: {criteria}")

@@ -27,13 +27,15 @@ async def _search_kppp_once(criteria: dict) -> tuple:
     right after the category changes), in which case `tenders` is the
     unfiltered/wrong-filter list and must NOT be trusted by the caller.
 
-    KPPP has no keyword search — its own "Search Tenders" form only takes
-    Category, Procuring Entity, Tender Number, a tender-closure date range,
-    and a Regular/Prequalification/Reserved choice (see
-    portals/data/kppp_options.py for the real option values, scraped from
-    the live form). `criteria` carries whichever of these the CEO set:
-    {category, procuring_entity, tender_number, from_date, to_date, tender_type}
-    (all optional/blank-able except category, which KPPP requires).
+    KPPP's own "Search Tenders" form takes Category, Procuring Entity,
+    Tender Number, a tender-closure date range, a Regular/Prequalification/
+    Reserved choice (see portals/data/kppp_options.py for the real option
+    values, scraped from the live form), and — under its "Advanced Search"
+    toggle, in the "Other Details" block — a free-text Tender Name field
+    (KPPP's own keyword search). `criteria` carries whichever of these the
+    CEO set: {category, procuring_entity, tender_number, from_date, to_date,
+    tender_type, tender_name} (all optional/blank-able except category,
+    which KPPP requires).
     """
     category = (criteria or {}).get("category", "")
     procuring_entity = (criteria or {}).get("procuring_entity", "")
@@ -41,6 +43,7 @@ async def _search_kppp_once(criteria: dict) -> tuple:
     from_date = (criteria or {}).get("from_date", "")
     to_date = (criteria or {}).get("to_date", "")
     tender_type = (criteria or {}).get("tender_type", "")
+    tender_name_filter = (criteria or {}).get("tender_name", "")
     found_via_label = "KPPP: " + ", ".join(
         f"{k}={v}" for k, v in (criteria or {}).items() if v
     ) if criteria else "KPPP search"
@@ -205,6 +208,53 @@ async def _search_kppp_once(criteria: dict) -> tuple:
                     if len(radios) >= len(type_order):
                         await radios[type_order.index(tender_type)].click()
                         await page.wait_for_timeout(300)
+
+            if tender_name_filter:
+                # The Tender Name field lives under KPPP's collapsed
+                # "Advanced Search" -> "Other Details" section — expand it
+                # first if it isn't already open. A plain .click() on the
+                # wrapping "div.advancedsearch" row (or its child "arrow"
+                # div) reliably does NOT register with this page's Angular
+                # click handler under Playwright — confirmed by extensive
+                # testing (element/mouse clicks, force clicks, raw JS
+                # dispatchEvent, up to 8s of waiting, all failed). What
+                # actually works is a real mousedown+mouseup sequence
+                # targeted at the inner "lib-icon#showAdvancedSearch" custom
+                # element specifically, not its parent — likely a
+                # shadow-DOM/custom-element hit-testing quirk. Do not
+                # simplify this back to `.click()` on the outer div without
+                # re-verifying live against the portal first.
+                tn_field = await page.query_selector("#innertendernameInputField")
+                for expand_attempt in range(3):
+                    if tn_field:
+                        break
+                    advanced_icon = await page.query_selector("lib-icon#showAdvancedSearch")
+                    if not advanced_icon:
+                        break
+                    box = await advanced_icon.bounding_box()
+                    if box:
+                        cx = box["x"] + box["width"] / 2
+                        cy = box["y"] + box["height"] / 2
+                        await page.mouse.move(cx, cy)
+                        await page.mouse.down()
+                        await page.wait_for_timeout(100)
+                        await page.mouse.up()
+                    try:
+                        await page.wait_for_selector("#innertendernameInputField", timeout=2500)
+                    except Exception:
+                        print(f"[KPPP] Advanced Search expand attempt {expand_attempt + 1}/3 didn't reveal Tender Name field, retrying...")
+                    tn_field = await page.query_selector("#innertendernameInputField")
+                if tn_field:
+                    await tn_field.fill(tender_name_filter)
+                    await page.wait_for_timeout(300)
+                else:
+                    # Same defense-in-depth principle as the entity check
+                    # above — never let a failed filter silently fall
+                    # through to an unfiltered "every tender" search that
+                    # gets mislabeled as scoped to tender_name_filter.
+                    print("[KPPP] Tender Name field not found even after expanding Advanced Search — aborting this attempt")
+                    await browser.close()
+                    return [], False
 
             search_btn = await page.query_selector("button:has-text('Search')")
             if search_btn:

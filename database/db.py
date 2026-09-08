@@ -57,9 +57,16 @@ def init_db():
             from_date TEXT,
             to_date TEXT,
             tender_type TEXT,
+            tender_name TEXT,
             created_at TEXT DEFAULT (datetime('now'))
         )
     """)
+    # Migration: tender_name was added after this table already existed on
+    # disk for some installs — CREATE TABLE IF NOT EXISTS above won't touch
+    # those, so add the column by hand if it's missing.
+    existing_cols = [r["name"] for r in c.execute("PRAGMA table_info(kppp_search_criteria)").fetchall()]
+    if "tender_name" not in existing_cols:
+        c.execute("ALTER TABLE kppp_search_criteria ADD COLUMN tender_name TEXT")
 
     # Table 3 - stores all tenders found
     c.execute("""
@@ -120,29 +127,30 @@ def get_all_ceo_searches():
     return [dict(r) for r in rows]
 
 def save_kppp_criteria(criteria: dict):
-    """Save a CEO-defined KPPP search filter (category/entity/dates/type).
+    """Save a CEO-defined KPPP search filter (category/entity/dates/type/tender name).
     Skips saving an exact duplicate of an already-saved criteria set.
-    Refuses to save a blank procuring_entity — that turns into an unscoped,
-    every-department search that then runs forever on every future cycle
-    (the UI is expected to require an entity before calling this, but this
-    guard exists so a bad call can never quietly poison the criteria list)."""
-    if not (criteria.get("procuring_entity") or "").strip():
+    Refuses to save a filter with neither a procuring_entity nor a
+    tender_name — that turns into an unscoped, every-department search that
+    then runs forever on every future cycle (the UI is expected to require
+    at least one of the two before calling this, but this guard exists so a
+    bad call can never quietly poison the criteria list)."""
+    if not (criteria.get("procuring_entity") or "").strip() and not (criteria.get("tender_name") or "").strip():
         return
     conn = get_conn()
     c = conn.cursor()
-    fields = ("category", "procuring_entity", "tender_number", "from_date", "to_date", "tender_type")
+    fields = ("category", "procuring_entity", "tender_number", "from_date", "to_date", "tender_type", "tender_name")
     values = tuple(criteria.get(f, "") or "" for f in fields)
     existing = c.execute(
         """SELECT id FROM kppp_search_criteria
            WHERE category=? AND procuring_entity=? AND tender_number=?
-             AND from_date=? AND to_date=? AND tender_type=?""",
+             AND from_date=? AND to_date=? AND tender_type=? AND tender_name=?""",
         values
     ).fetchone()
     if not existing:
         c.execute(
             """INSERT INTO kppp_search_criteria
-               (category, procuring_entity, tender_number, from_date, to_date, tender_type)
-               VALUES (?,?,?,?,?,?)""",
+               (category, procuring_entity, tender_number, from_date, to_date, tender_type, tender_name)
+               VALUES (?,?,?,?,?,?,?)""",
             values
         )
     conn.commit()

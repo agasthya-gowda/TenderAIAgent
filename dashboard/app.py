@@ -771,19 +771,30 @@ with st.sidebar:
         kppp_entity = st.selectbox(
             "Procuring Entity", ["-- Select an entity --"] + KPPP_ENTITIES, key="kppp_entity"
         )
+        # Mirrors KPPP's own "Advanced Search" -> Other Details -> Tender
+        # Name field, so a filter can be scoped by keyword instead of (or as
+        # well as) a procuring entity, same as GeM's keyword search.
+        kppp_tender_name = st.text_input(
+            "Tender Name (Advanced Search)", key="kppp_tender_name",
+            placeholder="e.g. cctv camera"
+        )
         if st.button("Search KPPP", icon=":material/search:", use_container_width=True, type="primary", key="kppp_search_btn"):
-            if kppp_entity == "-- Select an entity --":
-                # A blank/"any" entity turns this into an unscoped,
-                # every-department search that then runs forever on every
-                # future cycle — KPPP searches must always be scoped to one
-                # procuring entity, same as the two we already track.
-                st.warning("Please select a Procuring Entity — KPPP searches must be scoped to a specific entity.")
+            entity_selected = kppp_entity != "-- Select an entity --"
+            tender_name_entered = bool(kppp_tender_name.strip())
+            if not entity_selected and not tender_name_entered:
+                # A blank entity AND a blank tender name turns this into an
+                # unscoped, every-department search that then runs forever
+                # on every future cycle — KPPP searches must always be
+                # scoped to at least one of the two.
+                st.warning("Please select a Procuring Entity or enter a Tender Name — KPPP searches must be scoped.")
             else:
                 from agent.orchestrator import on_kppp_search
-                on_kppp_search({
-                    "category": kppp_category,
-                    "procuring_entity": kppp_entity,
-                })
+                criteria = {"category": kppp_category}
+                if entity_selected:
+                    criteria["procuring_entity"] = kppp_entity
+                if tender_name_entered:
+                    criteria["tender_name"] = kppp_tender_name.strip()
+                on_kppp_search(criteria)
                 st.success("Searching KPPP — this filter will keep running automatically from now on.")
 
     state = get_state()
@@ -948,6 +959,7 @@ KPPP_DEPARTMENT_COLORS = {
 GEM_DEPARTMENT_COLOR_OVERRIDES = {
     "Ministry of DefenceDepartment of Military Affairs": "#F59E0B",
     "Ministry of DefenceDepartment of Defence Production": "#4F46E5",
+    "Ministry of Petroleum and Natural Gas": "#EF4444",
 }
 
 st.markdown("""
@@ -1020,7 +1032,21 @@ def _render_dept_chart():
             dept_color_domain = dept_df["Department"].tolist()
             named_departments = [d for d in dept_color_domain if d != "Others"]
             if dept_portal == "KPPP":
-                dept_range_colors = [KPPP_DEPARTMENT_COLORS.get(d, "#94A3B8") for d in dept_color_domain]
+                # KSP/KSRTC keep their fixed identity colors; any other KPPP
+                # department (there can be more than two once other saved
+                # filters bring new ones in) cycles through the fallback
+                # palette instead of all collapsing onto the same grey —
+                # grey is reserved for the literal "Others" bucket.
+                fallback_i = 0
+                dept_range_colors = []
+                for d in dept_color_domain:
+                    if d in KPPP_DEPARTMENT_COLORS:
+                        dept_range_colors.append(KPPP_DEPARTMENT_COLORS[d])
+                    elif d == "Others":
+                        dept_range_colors.append("#94A3B8")
+                    else:
+                        dept_range_colors.append(DEPARTMENT_BAR_COLORS[fallback_i % len(DEPARTMENT_BAR_COLORS)])
+                        fallback_i += 1
             else:
                 dept_range_colors = [
                     GEM_DEPARTMENT_COLOR_OVERRIDES.get(d, DEPARTMENT_BAR_COLORS[i % len(DEPARTMENT_BAR_COLORS)])
