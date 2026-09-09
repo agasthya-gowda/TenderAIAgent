@@ -8,11 +8,10 @@ import json
 import pandas as pd
 import altair as alt
 from rapidfuzz import fuzz
-from st_keyup import st_keyup
 from database.db import (
     get_all_tenders, update_tender_status,
     update_tender_pdfs, get_all_ceo_searches, get_learned_patterns,
-    delete_tender, delete_pattern,
+    delete_tender, delete_pattern, delete_ceo_search,
     get_stats as _get_stats,
     get_department_counts as _get_department_counts,
     get_daily_trend as _get_daily_trend,
@@ -73,22 +72,33 @@ def _sync_portal_from_dropdown():
 
 
 def fuzzy_filter_tenders(tenders, query, threshold=80):
-    """Filter tenders by a fuzzy/substring match over the visible table columns.
+    """Filter tenders by a substring/fuzzy match over the visible table columns.
 
     Scores each field separately (not one concatenated string) and takes the
     best per-tender score — concatenating first let a short query "get lucky"
     against the combined length of every field (e.g. a long department name),
     surfacing unrelated tenders as fuzzy matches.
+
+    Fuzzy scoring (fuzz.partial_ratio) only runs against free-text fields
+    (title, department) — structured/templated fields (tender_number,
+    quantity, published_date, deadline) are exact-substring-only. Every GeM
+    bid number shares the same "GEM/2026/B/XXXXXXX" template, so
+    partial_ratio scores ~85-90+ between ANY two of them regardless of the
+    actual digits — fuzzy-matching tender_number made an exact bid-number
+    search return every tender in the table instead of the one match.
     """
     query = (query or "").strip().lower()
     if not query:
         return tenders
-    fields = ("tender_number", "title", "department", "quantity", "published_date", "deadline")
+    exact_only_fields = ("tender_number", "quantity", "published_date", "deadline")
+    fuzzy_fields = ("title", "department")
     out = []
     for t in tenders:
-        values = [str(t.get(f, "")).lower() for f in fields]
-        if any(query in v for v in values) or \
-                max(fuzz.partial_ratio(query, v) for v in values) >= threshold:
+        exact_values = [str(t.get(f, "")).lower() for f in exact_only_fields]
+        fuzzy_values = [str(t.get(f, "")).lower() for f in fuzzy_fields]
+        if any(query in v for v in exact_values) or \
+                any(query in v for v in fuzzy_values) or \
+                max(fuzz.partial_ratio(query, v) for v in fuzzy_values) >= threshold:
             out.append(t)
     return out
 
@@ -527,10 +537,41 @@ st.markdown("""
         min-width: 180px !important;
         max-width: none !important;
     }
+    div[data-testid="stColumn"]:has(.col-marker-search) div[data-testid="stTextInput"] input {
+        border: 1px solid #E2E8F0 !important;
+        border-radius: 10px !important;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+        height: 38px !important;
+        font-size: 12.5px !important;
+    }
+    div[data-testid="stColumn"]:has(.col-marker-search) div[data-testid="stTextInput"] input:focus {
+        border-color: #6366F1 !important;
+        box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15) !important;
+    }
     div[data-testid="stColumn"]:has(.col-marker-sort) {
         flex: 0 0 200px !important;
         min-width: 200px !important;
         max-width: 220px !important;
+    }
+    div[data-testid="stColumn"]:has(.col-marker-search-btn) {
+        flex: 0 0 44px !important;
+        min-width: 44px !important;
+        max-width: 44px !important;
+    }
+    div[class*="st-key-apply_table_search_btn"] button {
+        height: 38px !important;
+        min-height: 38px !important;
+        padding: 0 !important;
+        border-radius: 10px !important;
+        background-color: #2563EB !important;
+        border: 1px solid rgba(96, 165, 250, 0.4) !important;
+        color: #FFFFFF !important;
+    }
+    div[class*="st-key-apply_table_search_btn"] button:hover {
+        background-color: #3B82F6 !important;
+    }
+    div[class*="st-key-apply_table_search_btn"] button span[data-testid="stIconMaterial"] {
+        font-size: 18px !important;
     }
     div[data-testid="stColumn"]:has(.col-marker-sort) div[data-baseweb],
     div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox {
@@ -960,6 +1001,7 @@ GEM_DEPARTMENT_COLOR_OVERRIDES = {
     "Ministry of DefenceDepartment of Military Affairs": "#F59E0B",
     "Ministry of DefenceDepartment of Defence Production": "#4F46E5",
     "Ministry of Petroleum and Natural Gas": "#EF4444",
+    "Ministry of EducationDepartment of Higher Education": "#A855F7",
 }
 
 st.markdown("""
@@ -1316,12 +1358,19 @@ if section == "searches":
     searches = get_all_ceo_searches()
     if searches:
         for s in searches:
-            st.markdown(f"""
-            <div class='tender-card'>
-                <div class='tender-title'>🔍 {s['keyword']}</div>
-                <div class='tender-meta'>Portal: {s['portal']} | Searched {s['frequency']} times | Last: {s['searched_at'][:16]}</div>
-            </div>
-            """, unsafe_allow_html=True)
+            col_s, col_d = st.columns([4, 1])
+            with col_s:
+                st.markdown(f"""
+                <div class='tender-card'>
+                    <div class='tender-title'>🔍 {s['keyword']}</div>
+                    <div class='tender-meta'>Portal: {s['portal']} | Searched {s['frequency']} times | Last: {s['searched_at'][:16]}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            with col_d:
+                if st.button("🗑️ Delete", key=f"del_search_{s['id']}"):
+                    delete_ceo_search(s['id'])
+                    st.success(f"Deleted '{s['keyword']}' — the agent will stop searching for it.")
+                    st.rerun()
     else:
         st.info("No searches yet.")
 
@@ -1665,8 +1714,8 @@ else:
                     st.session_state.dept_chart_reset_counter += 1
                     st.rerun()
 
-        col_portal, col_search, col_sort = st.columns(
-            [0.2, 0.58, 0.22], vertical_alignment="center"
+        col_portal, col_search, col_search_btn, col_sort = st.columns(
+            [0.2, 0.5, 0.08, 0.22], vertical_alignment="center"
         )
         with col_portal:
             st.markdown('<div class="col-marker-portal"></div>', unsafe_allow_html=True)
@@ -1688,13 +1737,31 @@ else:
             )
         with col_search:
             st.markdown('<div class="col-marker-search"></div>', unsafe_allow_html=True)
-            search_query = st_keyup(
+            # st_keyup (a third-party "Components v2" widget) was used here for
+            # live-as-you-type filtering, but its browser<->Python round-trip
+            # can silently fail to land a typed value in Python — reproduced
+            # with a full bid number like "GEM/2026/B/7915789": the input
+            # correctly showed the typed text, but st.session_state never
+            # picked it up, so the table stayed unfiltered. st.text_input is
+            # Streamlit's own well-tested widget — it updates on Enter/blur
+            # instead of every keystroke, which is a minor UX trade for
+            # actually returning the right results every time.
+            search_query = st.text_input(
                 "Search tenders",
                 key="table_search_query",
                 placeholder="🔍 Search by bid number, item name, department...",
-                debounce=300,
                 on_change=lambda: st.session_state.update(page_num=1),
                 label_visibility="collapsed",
+            )
+        with col_search_btn:
+            st.markdown('<div class="col-marker-search-btn"></div>', unsafe_allow_html=True)
+            # Clicking this button blurs the text input first (same as
+            # clicking anywhere else), which is what actually commits its
+            # typed value in Streamlit — the button itself doesn't need to
+            # do anything beyond that click triggering the rerun.
+            st.button(
+                "", icon=":material/search:", key="apply_table_search_btn",
+                use_container_width=True, type="primary", help="Search"
             )
         with col_sort:
             st.markdown('<div class="col-marker-sort"></div>', unsafe_allow_html=True)

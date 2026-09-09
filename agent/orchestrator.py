@@ -13,7 +13,8 @@ from datetime import datetime
 from database.db import (
     save_tender, get_all_ceo_searches, update_downloaded_files,
     save_kppp_criteria, get_kppp_criteria_list, delete_expired_tenders,
-    save_ceo_search, save_learned_patterns
+    save_ceo_search, save_learned_patterns,
+    has_had_full_gem_search, mark_gem_full_search_done
 )
 from agent.learner import expand_keyword_instantly, analyze_patterns, get_search_queries
 from agent.watcher import start_watching, register_callback
@@ -39,70 +40,93 @@ def check_relevance_ai(original_keyword: str, titles: list) -> list:
     return all_flags
 
 
-def _check_relevance_batch(original_keyword: str, titles: list) -> list:
-    """Check relevance for a single batch of titles (max ~20)."""
+def _check_relevance_batch(original_keyword: str, titles: list, max_attempts: int = 3) -> list:
+    """Check relevance for a single batch of titles (max ~20). Retries the
+    DeepSeek call a few times before giving up — a transient truncated/
+    malformed response (rare, but does happen) shouldn't immediately
+    trigger the fail-safe "exclude everything" fallback below when a
+    second try would likely have succeeded cleanly."""
     if not titles:
         return []
 
-    try:
-        import requests
-        import os
-        import json as json_lib
+    last_error = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return _check_relevance_batch_once(original_keyword, titles)
+        except Exception as e:
+            last_error = e
+            print(f"[Relevance Check] Attempt {attempt}/{max_attempts} failed: {e}")
 
-        DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+    print(f"[Relevance Check] All {max_attempts} attempts failed ({last_error}), excluding all in this batch (fail safe, not fail open)")
+    return [False] * len(titles)
 
-        titles_numbered = "\n".join([f"{i+1}. {t}" for i, t in enumerate(titles)])
 
-        prompt = f"""The user is looking for tenders related to: "{original_keyword}"
+def _check_relevance_batch_once(original_keyword: str, titles: list) -> list:
+    import requests
+    import os
+    import json as json_lib
+
+    DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+
+    titles_numbered = "\n".join([f"{i+1}. {t}" for i, t in enumerate(titles)])
+
+    prompt = f"""The user is looking for tenders related to: "{original_keyword}"
 Here is a list of tender titles found:
 {titles_numbered}
-For EACH numbered title, decide if it is genuinely relevant to "{original_keyword}".
-A tender is relevant if it's about the same product/service category, even if worded differently.
-A tender is NOT relevant if it's about a completely different category (e.g. food, furniture, cleaning supplies) when searching for electronics/security equipment.
+For EACH numbered title, decide if it is genuinely relevant to "{original_keyword}" specifically —
+not just a broader category it happens to belong to. A tender is relevant only if a person who typed
+"{original_keyword}" would actually want to see it (the same specific product/item, even if worded
+differently or abbreviated). A tender is NOT relevant if it's a different product that merely shares
+a word with "{original_keyword}" — e.g. if searching for "binoculars", an "Optical Table" or "Optical
+Fiber Cable" is NOT relevant even though both contain "optical"; if searching for "camera", a "Camera
+Trap for wildlife study" used as a research instrument may still count, but unrelated lab equipment
+that merely mentions "camera" in a spec sheet does not. When in doubt, be strict and mark it false.
 Respond ONLY with a JSON array of true/false values, one per title, in order.
 Example: [true, false, true, true, false]"""
 
-        response = requests.post(
-            "https://api.deepseek.com/chat/completions",
-            headers={
-                "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": "deepseek-chat",
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 1000
-            },
-            timeout=60
-        )
+    response = requests.post(
+        "https://api.deepseek.com/chat/completions",
+        headers={
+            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+            "Content-Type": "application/json"
+        },
+        json={
+            "model": "deepseek-chat",
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 1000
+        },
+        timeout=60
+    )
 
-        result = response.json()["choices"][0]["message"]["content"].strip()
+    result = response.json()["choices"][0]["message"]["content"].strip()
 
-        if "```json" in result:
-            result = result.split("```json")[1].split("```")[0]
-        elif "```" in result:
-            result = result.split("```")[1].split("```")[0]
+    if "```json" in result:
+        result = result.split("```json")[1].split("```")[0]
+    elif "```" in result:
+        result = result.split("```")[1].split("```")[0]
 
-        flags = json_lib.loads(result)
+    flags = json_lib.loads(result)
 
-        normalized_flags = []
-        for f in flags:
-            if isinstance(f, bool):
-                normalized_flags.append(f)
-            elif isinstance(f, str):
-                normalized_flags.append(f.strip().lower() == "true")
-            else:
-                normalized_flags.append(bool(f))
-        flags = normalized_flags
+    normalized_flags = []
+    for f in flags:
+        if isinstance(f, bool):
+            normalized_flags.append(f)
+        elif isinstance(f, str):
+            normalized_flags.append(f.strip().lower() == "true")
+        else:
+            normalized_flags.append(bool(f))
+    flags = normalized_flags
 
-        while len(flags) < len(titles):
-            flags.append(True)
+    # A short/truncated AI response means those trailing titles were never
+    # actually judged — treat them as unverified and exclude them rather
+    # than assuming they're relevant. This matters most for the AI-expanded
+    # "bonus" keywords (never the CEO's literal search term, which skips
+    # this check entirely) — an unverified match there has no business
+    # polluting the tenders table.
+    while len(flags) < len(titles):
+        flags.append(False)
 
-        return flags[:len(titles)]
-
-    except Exception as e:
-        print(f"[Relevance Check] Batch failed: {e}, defaulting to keep all in this batch")
-        return [True] * len(titles)
+    return flags[:len(titles)]
 _state = {
     "status": "idle",
     "last_search": None,
@@ -171,12 +195,19 @@ def _instant_expand_and_search(keyword: str, portal: str):
             _state["status"] = "searching"
             _state["last_learn"] = datetime.now().isoformat()
 
+        # The literal keyword the CEO typed always goes first and is not
+        # part of the [:8] cap below getting displaced by AI synonyms — a
+        # search for "camera" in our app must return every "camera" tender
+        # GeM itself shows, not a subset diluted by 7 other AI-guessed
+        # terms crowding it out of the keyword budget.
+        search_list = [keyword] + [kw for kw in expanded if kw.strip().lower() != keyword.strip().lower()]
+
         # KPPP is not searched here — it has no keyword search of its own,
         # so this GeM keyword box never actually drove a useful KPPP search
         # (the previous KPPP thread just re-ran the same fixed listing).
         # KPPP is searched via its own filter form (see on_kppp_search)
         # instead, using KPPP's real search fields.
-        _search_portal("GeM", expanded, category, 15)
+        _search_portal("GeM", search_list, category, 15, primary_keyword=keyword)
 
         with _lock:
             _state["status"] = "watching"
@@ -188,7 +219,7 @@ def _instant_expand_and_search(keyword: str, portal: str):
         with _lock:
             _state["status"] = "watching"
 
-def _search_portal(portal: str, keywords: list, category: str, max_pages: int = 5, respect_stop_flag: bool = False):
+def _search_portal(portal: str, keywords: list, category: str, max_pages: int = 5, respect_stop_flag: bool = False, primary_keyword: str = None):
     # GeM-only: KPPP has no keyword search, so it's handled separately by
     # on_kppp_search / _run_kppp_criteria_search using KPPP's real filter
     # fields instead of a keyword list.
@@ -213,17 +244,50 @@ def _search_portal(portal: str, keywords: list, category: str, max_pages: int = 
                 log(f"🛑 [{portal}] Stop requested — ending search early")
                 break
             try:
-                log(f"🔎 [{portal}] Searching: '{keyword}'")
-                tenders = search_fn(keyword, category, max_pages=max_pages, should_stop=should_stop)
+                is_primary = primary_keyword is not None and keyword.strip().lower() == primary_keyword.strip().lower()
+                # Start Agent / 2 AM batch runs (primary_keyword is None
+                # here) give each of their keywords one full/unlimited pass
+                # too — but only the very first time that keyword is ever
+                # run through a batch cycle. Every batch run after that for
+                # the same keyword stays capped at max_pages, since by then
+                # it's just checking for what's new, not re-walking pages
+                # already confirmed to hold nothing new.
+                is_first_batch_pass = primary_keyword is None and not has_had_full_gem_search(keyword)
+                do_full_pagination = is_primary or is_first_batch_pass
+                # The literal keyword the CEO typed gets every page GeM has
+                # (None = unlimited, see search_gem) so the count matches
+                # GeM's own site exactly; AI-expanded synonyms stay capped —
+                # they're bonus discovery, not the thing being compared 1:1.
+                pages_for_keyword = None if do_full_pagination else max_pages
+                log(f"🔎 [{portal}] Searching: '{keyword}'" + (" (full pagination)" if do_full_pagination else ""))
+                tenders = search_fn(keyword, category, max_pages=pages_for_keyword, should_stop=should_stop)
+                if is_first_batch_pass:
+                    mark_gem_full_search_done(keyword)
 
-                # Batch relevance check using AI
-                if tenders:
+                if is_primary:
+                    # This is GeM's own "Contains" search result for the
+                    # exact term the CEO typed — GeM already decided
+                    # relevance. Re-filtering it with our own AI guess would
+                    # risk silently dropping tenders GeM itself shows, which
+                    # breaks the "matches GeM exactly" guarantee. Only the
+                    # AI-guessed synonym keywords below get the AI filter.
+                    relevant_flags = [True] * len(tenders)
+                elif tenders:
+                    # Judge relevance against the CEO's actual original word
+                    # (primary_keyword), not the AI-suggested synonym itself
+                    # — a broad DeepSeek suggestion like "optical instrument"
+                    # genuinely contains things like "Optical Table" or
+                    # "Optical Fiber Cable", so checking relevance against
+                    # the suggestion just rubber-stamps its own noise. What
+                    # actually matters is whether the CEO who searched
+                    # "binoculars" would consider a result relevant.
+                    relevance_target = primary_keyword or keyword
                     titles = [t.get("title", "") for t in tenders]
-                    relevant_flags = check_relevance_ai(keyword, titles)
-                    print(f"[Relevance] Keyword '{keyword}': {relevant_flags}")
+                    relevant_flags = check_relevance_ai(relevance_target, titles)
+                    print(f"[Relevance] Keyword '{keyword}' (vs '{relevance_target}'): {relevant_flags}")
                 else:
                     relevant_flags = []
-                
+
                 for i, tender in enumerate(tenders):
                     is_relevant = relevant_flags[i] if i < len(relevant_flags) else True
                     if not is_relevant:

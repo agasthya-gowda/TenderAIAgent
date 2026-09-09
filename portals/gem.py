@@ -153,11 +153,22 @@ async def search_gem(keyword: str, category: str = "", max_pages: int = 5, shoul
                 await browser.close()
                 return []
 
-            # Step 3 — Extract bid cards across multiple pages
+            # Step 3 — Extract bid cards across multiple pages.
+            # max_pages=None means "paginate until GeM itself runs out of
+            # pages" (i.e. match GeM's own result count exactly) — used for
+            # the CEO's literal search term so our app never shows fewer
+            # tenders than a manual search on GeM's own site would. A hard
+            # ceiling still applies underneath so a page-detection bug can
+            # never spin forever.
             all_bid_cards = []
-            # max_pages now comes from function parameter
+            HARD_PAGE_CEILING = 200
 
-            for page_num in range(max_pages):
+            page_num = 0
+            while max_pages is None or page_num < max_pages:
+                if page_num >= HARD_PAGE_CEILING:
+                    print(f"[GeM] Hit hard safety ceiling of {HARD_PAGE_CEILING} pages, stopping")
+                    break
+
                 bid_cards = await page.query_selector_all("div.card")
 
                 if not bid_cards:
@@ -173,7 +184,8 @@ async def search_gem(keyword: str, category: str = "", max_pages: int = 5, shoul
 
                 # Try to go to next page
                 next_btn = await page.query_selector("a:has-text('Next')")
-                if next_btn and page_num < max_pages - 1:
+                more_pages_allowed = max_pages is None or page_num < max_pages - 1
+                if next_btn and more_pages_allowed:
                     try:
                         await next_btn.click()
                         await page.wait_for_timeout(3000)
@@ -181,6 +193,7 @@ async def search_gem(keyword: str, category: str = "", max_pages: int = 5, shoul
                         break
                 else:
                     break
+                page_num += 1
 
             print(f"[GeM] Found {len(all_bid_cards)} total bid cards across pages")
             bid_cards = all_bid_cards

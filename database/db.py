@@ -50,6 +50,18 @@ def init_db():
     if "portal" not in existing_pattern_cols:
         c.execute("ALTER TABLE learned_patterns ADD COLUMN portal TEXT DEFAULT 'GeM'")
 
+    # Table 2c - tracks which GeM keywords have already had their one-time
+    # full/unlimited-pagination pass (run by Start Agent / the 2 AM job).
+    # A keyword gets the full pass exactly once, ever — every later Start
+    # Agent/2 AM run for that same keyword only does a capped, quick check
+    # for new tenders instead of re-walking every page again.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS gem_keyword_full_search_log (
+            keyword TEXT PRIMARY KEY,
+            first_full_search_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+
     # Table 2b - stores KPPP-specific search filters set by the CEO. KPPP has
     # no keyword search, so instead of a keyword this stores the actual
     # fields its own search form takes (category, procuring entity, tender
@@ -105,6 +117,26 @@ def init_db():
     conn.commit()
     conn.close()
 
+def has_had_full_gem_search(keyword: str) -> bool:
+    """True once this exact keyword has already had its one-time
+    full/unlimited-pagination pass (case-insensitive)."""
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT 1 FROM gem_keyword_full_search_log WHERE keyword=?",
+        (keyword.lower().strip(),)
+    ).fetchone()
+    conn.close()
+    return row is not None
+
+def mark_gem_full_search_done(keyword: str):
+    conn = get_conn()
+    conn.execute(
+        "INSERT OR IGNORE INTO gem_keyword_full_search_log (keyword) VALUES (?)",
+        (keyword.lower().strip(),)
+    )
+    conn.commit()
+    conn.close()
+
 def save_ceo_search(keyword: str, portal: str):
     conn = get_conn()
     c = conn.cursor()
@@ -132,6 +164,57 @@ def get_all_ceo_searches():
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+def delete_ceo_search(search_id: int):
+    """Delete a Search History entry, and unwire it from whatever actually
+    drives future re-searching so the agent stops fetching tenders for it —
+    just removing the history row wouldn't be enough on its own:
+    - GeM: the keyword is stripped out of every learned pattern's keyword
+      list (a pattern can bundle several original search terms together,
+      so the whole pattern is only dropped if that leaves it empty), and
+      its one-time-full-search tracking is cleared so a future re-add
+      starts fresh instead of silently staying "already done".
+    - KPPP: the matching saved filter row (by tender_name or procuring
+      entity) is removed from kppp_search_criteria, which is what the
+      agent actually re-runs on every cycle — not ceo_searches.
+    """
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT keyword, portal FROM ceo_searches WHERE id=?", (search_id,)
+    ).fetchone()
+    if not row:
+        conn.close()
+        return
+    keyword, portal = row["keyword"], row["portal"]
+    conn.execute("DELETE FROM ceo_searches WHERE id=?", (search_id,))
+
+    if portal == "KPPP":
+        conn.execute(
+            "DELETE FROM kppp_search_criteria WHERE lower(tender_name)=? OR lower(procuring_entity)=?",
+            (keyword.lower(), keyword.lower())
+        )
+    else:
+        patterns = conn.execute(
+            "SELECT id, keywords FROM learned_patterns WHERE portal='GeM' OR portal IS NULL"
+        ).fetchall()
+        for p in patterns:
+            try:
+                kws = json.loads(p["keywords"]) if p["keywords"] else []
+            except Exception:
+                kws = []
+            new_kws = [k for k in kws if k.strip().lower() != keyword.strip().lower()]
+            if len(new_kws) != len(kws):
+                if new_kws:
+                    conn.execute(
+                        "UPDATE learned_patterns SET keywords=? WHERE id=?",
+                        (json.dumps(new_kws), p["id"])
+                    )
+                else:
+                    conn.execute("DELETE FROM learned_patterns WHERE id=?", (p["id"],))
+        conn.execute("DELETE FROM gem_keyword_full_search_log WHERE keyword=?", (keyword.lower().strip(),))
+
+    conn.commit()
+    conn.close()
 
 def save_kppp_criteria(criteria: dict):
     """Save a CEO-defined KPPP search filter (category/entity/dates/type/tender name).
@@ -450,8 +533,40 @@ def delete_expired_tenders() -> int:
     return len(expired_ids)
 
 def delete_pattern(pattern_id: int):
+    """Delete a Patterns Learned entry and unwire it from future re-searching,
+    same guarantee as delete_ceo_search:
+    - GeM: the pattern row itself is what Start Agent/2AM read keywords from,
+      so removing it already stops future searches for its keywords; also
+      clear their one-time-full-search tracking so a future re-add starts
+      fresh instead of silently staying "already done".
+    - KPPP: the pattern's keywords are the tender_name/procuring_entity
+      labels used when the filter was saved, but the real thing the agent
+      re-runs every cycle is kppp_search_criteria, not learned_patterns — so
+      each matching saved filter row must be deleted too."""
     conn = get_conn()
+    row = conn.execute(
+        "SELECT keywords, portal FROM learned_patterns WHERE id=?", (pattern_id,)
+    ).fetchone()
+    if not row:
+        conn.close()
+        return
+    try:
+        kws = json.loads(row["keywords"]) if row["keywords"] else []
+    except Exception:
+        kws = []
+
     conn.execute("DELETE FROM learned_patterns WHERE id=?", (pattern_id,))
+
+    if row["portal"] == "KPPP":
+        for kw in kws:
+            conn.execute(
+                "DELETE FROM kppp_search_criteria WHERE lower(tender_name)=? OR lower(procuring_entity)=?",
+                (kw.strip().lower(), kw.strip().lower())
+            )
+    else:
+        for kw in kws:
+            conn.execute("DELETE FROM gem_keyword_full_search_log WHERE keyword=?", (kw.strip().lower(),))
+
     conn.commit()
     conn.close()
 init_db()

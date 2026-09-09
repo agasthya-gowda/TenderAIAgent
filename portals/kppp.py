@@ -76,7 +76,7 @@ async def _search_kppp_once(criteria: dict) -> tuple:
 
             await page.goto(
                 "https://kppp.karnataka.gov.in/#/portal/searchTender/live",
-                timeout=30000,
+                timeout=60000,
                 wait_until="domcontentloaded"
             )
             await page.wait_for_timeout(3000)
@@ -344,7 +344,7 @@ async def _search_kppp_once(criteria: dict) -> tuple:
         print(f"[KPPP] Fatal error: {e}")
         return [], False
 
-async def search_kppp(criteria: dict, max_attempts: int = 5) -> list:
+async def search_kppp(criteria: dict, max_attempts: int = 7) -> list:
     """
     Search KPPP, retrying the whole attempt (fresh browser + CAPTCHA) when
     a requested procuring-entity filter didn't actually stick, instead of
@@ -358,6 +358,8 @@ async def search_kppp(criteria: dict, max_attempts: int = 5) -> list:
         if entity_verified:
             return tenders
         print(f"[KPPP] Attempt {attempt}/{max_attempts} did not confirm the requested filter, retrying search...")
+        if attempt < max_attempts:
+            await asyncio.sleep(5)
     print(f"[KPPP] Giving up after {max_attempts} attempts — not returning unfiltered results")
     return []
 
