@@ -11,7 +11,7 @@ from rapidfuzz import fuzz
 from database.db import (
     get_all_tenders, update_tender_status,
     update_tender_pdfs, get_all_ceo_searches, get_learned_patterns,
-    delete_tender, delete_pattern, delete_ceo_search,
+    delete_tender, delete_pattern, delete_ceo_search, clear_tender_analysis,
     get_stats as _get_stats,
     get_department_counts as _get_department_counts,
     get_daily_trend as _get_daily_trend,
@@ -1603,8 +1603,13 @@ else:
                         with open(static_path, "wb") as f:
                             f.write(pdf_bytes)
 
+                    # Cache-bust with the file's own mtime so the browser can't
+                    # keep serving a stale cached copy of this same URL after
+                    # Re-analyze produces a newer file — without this, "View
+                    # Analysis" could silently keep showing an old report.
+                    cache_bust = int(os.path.getmtime(analysis_path))
                     st.markdown(
-                        f'<a href="app/static/{static_name}" target="_blank" style="text-decoration:none;">'
+                        f'<a href="app/static/{static_name}?v={cache_bust}" target="_blank" style="text-decoration:none;">'
                         f'<button style="width:100%;padding:10px;background:#8E44AD;'
                         f'color:white;border:none;border-radius:6px;cursor:pointer;'
                         f'font-size:14px;margin-bottom:8px;">👁️ View Analysis</button></a>',
@@ -1618,6 +1623,31 @@ else:
                         mime="application/pdf",
                         key=f"analysis_{tid}_detail",
                     )
+
+                    if st.session_state.analyzing.get(tid):
+                        st.info("⏳ Re-analyzing... please wait")
+                    elif st.button(
+                        "🔄 Re-analyze",
+                        key=f"reanalyze_{tid}_detail",
+                        help="Redo the analysis from scratch — use this if a "
+                             "past attempt failed partway (e.g. a KPPP CAPTCHA "
+                             "failure left no real documents to read).",
+                    ):
+                        clear_tender_analysis(tid)
+                        st.session_state.analyzing[tid] = True
+                        with st.spinner("🤖 Re-analyzing tender documents..."):
+                            fresh_tender = dict(tender)
+                            fresh_tender["downloaded_files"] = []
+                            fresh_tender["analysis_pdf_path"] = None
+                            path = analyze_tender(fresh_tender)
+                        if path and os.path.exists(path):
+                            update_tender_pdfs(tid, analysis_path=path)
+                            st.session_state.analyzing[tid] = False
+                            st.success("✅ Re-analysis ready!")
+                            st.rerun()
+                        else:
+                            st.session_state.analyzing[tid] = False
+                            st.error("❌ Re-analysis failed. Try again.")
                 else:
                     if st.session_state.analyzing.get(tid):
                         st.info("⏳ Generating analysis... please wait")

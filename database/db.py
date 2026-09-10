@@ -403,6 +403,20 @@ def update_downloaded_files(tender_id: int, files: list):
     conn.commit()
     conn.close()
 
+def clear_tender_analysis(tender_id: int):
+    """Wipes a tender's saved analysis PDF and downloaded documents so
+    'Get Full Analysis' runs completely fresh next time — used by the
+    Re-analyze button for cases where the first attempt produced a broken
+    or incomplete report (e.g. a KPPP CAPTCHA failure left no real
+    documents to read, so the AI had nothing to analyze)."""
+    conn = get_conn()
+    conn.execute(
+        "UPDATE tenders SET analysis_pdf_path=NULL, downloaded_files='[]' WHERE id=?",
+        (tender_id,)
+    )
+    conn.commit()
+    conn.close()
+
 def get_stats():
     from datetime import date
     today = date.today().isoformat()

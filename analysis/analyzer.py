@@ -32,8 +32,38 @@ def read_pdf(file_path: str) -> str:
         print(f"[Analyzer] PDF read error: {e}")
         return ""
 
+LIBREOFFICE_PATH = r"C:\Program Files\LibreOffice\program\soffice.exe"
+
+def _convert_doc_with_libreoffice(file_path: str) -> str:
+    """A legacy .doc file (the pre-2007 binary Word format) isn't a zip
+    archive at all, so it can't be read the way .docx is below — this
+    handles it (and works as a general fallback for any Word format)
+    by converting it to plain text with LibreOffice running headless."""
+    import subprocess
+    import tempfile
+
+    if not os.path.exists(LIBREOFFICE_PATH):
+        return ""
+    try:
+        with tempfile.TemporaryDirectory() as out_dir:
+            subprocess.run(
+                [LIBREOFFICE_PATH, "--headless", "--convert-to", "txt",
+                 "--outdir", out_dir, file_path],
+                capture_output=True, timeout=60
+            )
+            base = os.path.splitext(os.path.basename(file_path))[0]
+            txt_path = os.path.join(out_dir, base + ".txt")
+            if os.path.exists(txt_path):
+                with open(txt_path, "r", encoding="utf-8", errors="ignore") as f:
+                    return f.read()
+    except Exception as e:
+        print(f"[Analyzer] LibreOffice conversion error: {e}")
+    return ""
+
 def read_docx(file_path: str) -> str:
-    """Extract text from Word document."""
+    """Extract text from a Word document. The modern .docx format is
+    just a zip archive, read directly below; a legacy .doc file (not a
+    zip at all) falls back to LibreOffice conversion."""
     try:
         import zipfile
         from xml.etree import ElementTree as ET
@@ -51,10 +81,12 @@ def read_docx(file_path: str) -> str:
                             para_text += run.text
                     if para_text.strip():
                         text += para_text + "\n"
-        return text[:4000]
+        if text.strip():
+            return text[:4000]
     except Exception as e:
-        print(f"[Analyzer] DOCX read error: {e}")
-        return ""
+        print(f"[Analyzer] DOCX read error: {e}, trying LibreOffice conversion...")
+
+    return _convert_doc_with_libreoffice(file_path)[:4000]
 
 def read_all_files(file_paths: list) -> str:
     """Read all downloaded files and combine text."""
@@ -71,8 +103,25 @@ def read_all_files(file_paths: list) -> str:
             combined += read_docx(path)
     return combined[:15000]
 
-def call_ai(prompt: str) -> str:
-    """Call DeepSeek first, Claude as fallback."""
+def call_ai(prompt: str, temperature: float = None) -> str:
+    """Call DeepSeek first, Claude as fallback.
+
+    `temperature` is left at the API default (unset) for most callers —
+    factual extraction from a tender document doesn't need it touched.
+    Pass a low value (e.g. 0.1) for a call whose output should stay
+    consistent across repeated runs on the same input, like a scoring/
+    recommendation judgment — otherwise the model's own sampling
+    randomness alone can shift a score by 10+ points between two
+    analyses of the identical tender, with nothing in the input having
+    changed."""
+    deepseek_payload = {
+        "model": "deepseek-chat",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 3000
+    }
+    if temperature is not None:
+        deepseek_payload["temperature"] = temperature
+
     # Try DeepSeek first (cheaper for extraction)
     try:
         response = requests.post(
@@ -81,11 +130,7 @@ def call_ai(prompt: str) -> str:
                 "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
                 "Content-Type": "application/json"
             },
-            json={
-                "model": "deepseek-chat",
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 3000
-            },
+            json=deepseek_payload,
             timeout=40
         )
         result = response.json()["choices"][0]["message"]["content"]
@@ -93,6 +138,14 @@ def call_ai(prompt: str) -> str:
             return result
     except Exception as e:
         print(f"[Analyzer] DeepSeek failed: {e}")
+
+    claude_payload = {
+        "model": "claude-sonnet-4-6",
+        "max_tokens": 3000,
+        "messages": [{"role": "user", "content": prompt}]
+    }
+    if temperature is not None:
+        claude_payload["temperature"] = temperature
 
     # Fallback to Claude
     try:
@@ -103,11 +156,7 @@ def call_ai(prompt: str) -> str:
                 "anthropic-version": "2023-06-01",
                 "content-type": "application/json"
             },
-            json={
-                "model": "claude-sonnet-4-6",
-                "max_tokens": 3000,
-                "messages": [{"role": "user", "content": prompt}]
-            },
+            json=claude_payload,
             timeout=40
         )
         return response.json()["content"][0]["text"]
@@ -117,6 +166,16 @@ def call_ai(prompt: str) -> str:
 
 def extract_tender_details(tender: dict, file_text: str) -> dict:
     """Use AI to extract structured details from tender documents."""
+    # GeM never has a real value at scrape time — "value" is hardcoded to the
+    # placeholder "See bid document" (see portals/gem.py) since GeM's listing
+    # page never shows it, only the bid PDF does. Feeding that placeholder
+    # into the prompt as if it were real portal data caused the AI to
+    # sometimes echo it straight back as its "estimated_value" answer instead
+    # of correctly reporting that the real document doesn't state one. KPPP's
+    # "value" is genuine portal data, so it's still included there.
+    portal_value = tender.get("value", "")
+    value_line = f"Value: {portal_value}\n" if portal_value and portal_value != "See bid document" else ""
+
     prompt = f"""You are a government tender analyst in India.
 
 Analyze this tender and extract all details.
@@ -127,8 +186,7 @@ Portal: {tender.get('portal', '')}
 Tender Number: {tender.get('tender_number', '')}
 Department: {tender.get('department', '')}
 Location: {tender.get('location', '')}
-Value: {tender.get('value', '')}
-Deadline: {tender.get('deadline', '')}
+{value_line}Deadline: {tender.get('deadline', '')}
 
 TENDER DOCUMENTS TEXT:
 {file_text}
@@ -193,13 +251,43 @@ Never leave any field empty."""
             response = response.split("```json")[1].split("```")[0]
         elif "```" in response:
             response = response.split("```")[1].split("```")[0]
-        return json.loads(response)
+        return sanitize_pdf_text(json.loads(response))
     except Exception as e:
         print(f"[Analyzer] JSON parse error: {e}")
         return {}
 
-def generate_analysis_pdf(tender: dict, details: dict, output_path: str):
-    """Generate clean 6-page analysis PDF using reportlab."""
+
+_PDF_UNSAFE_CHAR_REPLACEMENTS = {
+    "₹": "Rs ",
+    "—": "-",   # em dash
+    "–": "-",   # en dash
+    "‘": "'", "’": "'",   # smart single quotes
+    "“": '"', "”": '"',   # smart double quotes
+    "•": "-",                  # bullet character
+}
+
+
+def sanitize_pdf_text(value):
+    """The PDF's base font (Helvetica) doesn't reliably render several
+    characters the AI likes to use (Rupee sign, em/en dashes, smart quotes,
+    bullets) — they come out as corrupted glyphs. Recursively swap them for
+    safe plain-ASCII equivalents everywhere in any AI-generated text before
+    it reaches reportlab. Shared by extract_tender_details() here and by
+    eligibility_matcher.py's company-match output."""
+    if isinstance(value, str):
+        for bad, good in _PDF_UNSAFE_CHAR_REPLACEMENTS.items():
+            value = value.replace(bad, good)
+        return value
+    if isinstance(value, dict):
+        return {k: sanitize_pdf_text(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [sanitize_pdf_text(v) for v in value]
+    return value
+
+def generate_analysis_pdf(tender: dict, details: dict, output_path: str, match: dict = None):
+    """Generate clean analysis PDF using reportlab — 6 core pages, plus 3
+    more (Company Match, Why/Risks, Detailed Comparison) when a `match`
+    dict from eligibility_matcher.match_tender_to_company() is supplied."""
     try:
         from reportlab.lib.pagesizes import A4
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -251,6 +339,18 @@ def generate_analysis_pdf(tender: dict, details: dict, output_path: str):
             textColor=colors.HexColor("#555555"),
             leading=16
         )
+        # A Paragraph carries its own text color baked in — a table's
+        # TEXTCOLOR style command has no effect once a cell's content is
+        # already a styled Paragraph, so header cells on a dark background
+        # need this dedicated white style rather than reusing label_style
+        # (gray) and hoping TableStyle overrides it.
+        header_cell_style = ParagraphStyle(
+            "HeaderCell",
+            parent=styles["Normal"],
+            fontSize=10,
+            textColor=colors.white,
+            leading=14
+        )
 
         story = []
 
@@ -296,6 +396,193 @@ def generate_analysis_pdf(tender: dict, details: dict, output_path: str):
             story.append(t)
             story.append(Spacer(1, 0.3*cm))
 
+        # ── Company-match helpers (pages 7-9) ─────────────────
+        def _pct_color(pct):
+            if pct is None:
+                return colors.HexColor("#9CA3AF")
+            if pct >= 70:
+                return colors.HexColor("#16A34A")
+            if pct >= 40:
+                return colors.HexColor("#F59E0B")
+            return colors.HexColor("#DC2626")
+
+        def _recommendation_color(recommendation):
+            return {
+                "Recommend Bid": colors.HexColor("#16A34A"),
+                "Recommend with Caution": colors.HexColor("#F59E0B"),
+                "Do Not Recommend": colors.HexColor("#DC2626"),
+            }.get(recommendation, colors.HexColor("#6B7280"))
+
+        def add_recommendation_badge(recommendation, pct):
+            # One combined bar instead of a separate solid badge + a second
+            # "Overall Match" progress bar underneath it (which just
+            # repeated the same percentage) — the recommendation text now
+            # sits directly on a bar that's genuinely only filled to the
+            # real match percentage, same as every other percent bar in
+            # this report.
+            badge_color = _recommendation_color(recommendation)
+            pct_text = f" - {pct}% Match" if pct is not None else ""
+            badge_style = ParagraphStyle(
+                "Badge", parent=styles["Normal"], fontSize=13,
+                textColor=colors.white, alignment=0, leading=18
+            )
+            bar_width = 17*cm
+            # A floor on the visual fill width only (not the displayed
+            # number) so the recommendation text always has room to sit
+            # on the colored portion, even for a low match percentage.
+            filled = max(pct or 0, 35) / 100.0
+            filled = min(filled, 1.0)
+            filled_w = bar_width * filled
+            empty_w = bar_width - filled_w
+
+            label_cell = Paragraph(f"<b>{recommendation.upper()}{pct_text}</b>", badge_style)
+            if empty_w > 0:
+                table_data = [[label_cell, ""]]
+                col_widths = [filled_w, empty_w]
+            else:
+                table_data = [[label_cell]]
+                col_widths = [filled_w]
+
+            t = Table(table_data, colWidths=col_widths)
+            style_cmds = [
+                ("BACKGROUND", (0, 0), (0, 0), badge_color),
+                ("ALIGN", (0, 0), (0, 0), "LEFT"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (0, 0), 14),
+                ("TOPPADDING", (0, 0), (-1, -1), 10),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+                ("ROUNDEDCORNERS", [6, 6, 6, 6]),
+            ]
+            if empty_w > 0:
+                style_cmds.append(("BACKGROUND", (1, 0), (1, 0), colors.HexColor("#E5E7EB")))
+            t.setStyle(TableStyle(style_cmds))
+            story.append(t)
+            story.append(Spacer(1, 0.4*cm))
+
+        def add_category_breakdown(categories):
+            if not categories:
+                return
+            table_data = [[
+                Paragraph("<b>Category</b>", header_cell_style),
+                Paragraph("<b>Match</b>", header_cell_style),
+                Paragraph("<b>Status</b>", header_cell_style),
+                Paragraph("<b>Note</b>", header_cell_style),
+            ]]
+            row_colors = [colors.HexColor("#F8F9FA")]
+            for c in categories:
+                pct = c.get("match_percent")
+                table_data.append([
+                    Paragraph(str(c.get("category", "")), normal_style),
+                    Paragraph(f"{pct}%" if pct is not None else "N/A", normal_style),
+                    Paragraph(str(c.get("status", "")), normal_style),
+                    Paragraph(str(c.get("note", "")), normal_style),
+                ])
+                row_colors.append(_pct_color(pct))
+            t = Table(table_data, colWidths=[4.5*cm, 2*cm, 3*cm, 7.5*cm])
+            style_cmds = [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2C3E50")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("TEXTCOLOR", (0, 1), (-1, -1), colors.HexColor("#2C3E50")),
+                ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("FONTSIZE", (0, 0), (-1, -1), 9.5),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#DEE2E6")),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1),
+                 [colors.HexColor("#FFFFFF"), colors.HexColor("#F8F9FA")]),
+            ]
+            t.setStyle(TableStyle(style_cmds))
+            story.append(t)
+            story.append(Spacer(1, 0.3*cm))
+
+        def add_bullet_section(icon_title, items, accent_hex):
+            if not items:
+                return
+            accent_style = ParagraphStyle(
+                "AccentHeading", parent=styles["Heading2"], fontSize=12,
+                textColor=colors.HexColor(accent_hex), spaceBefore=8, spaceAfter=6
+            )
+            bullet_style = ParagraphStyle(
+                "Bullet", parent=normal_style, leftIndent=14, bulletIndent=2, spaceAfter=6
+            )
+            story.append(Paragraph(icon_title, accent_style))
+            for item in items:
+                # A plain hyphen instead of a bullet-glyph entity — some
+                # PDF viewers/extractors mis-render "&bull;" with the base
+                # Helvetica font, showing a broken character instead of a dot.
+                story.append(Paragraph(f"-&nbsp;&nbsp;{item}", bullet_style))
+            story.append(Spacer(1, 0.2*cm))
+
+        def add_info_card(title, body_text, accent_hex="#8E44AD"):
+            if not body_text:
+                return
+            card_title_style = ParagraphStyle(
+                "CardTitle", parent=styles["Normal"], fontSize=10.5,
+                textColor=colors.white, leading=14
+            )
+            card_body_style = ParagraphStyle(
+                "CardBody", parent=styles["Normal"], fontSize=10,
+                textColor=colors.HexColor("#2C3E50"), leading=15
+            )
+            t = Table(
+                [[Paragraph(f"<b>{title}</b>", card_title_style)],
+                 [Paragraph(body_text, card_body_style)]],
+                colWidths=[17*cm]
+            )
+            t.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (0, 0), colors.HexColor(accent_hex)),
+                ("BACKGROUND", (0, 1), (0, 1), colors.HexColor("#F8F9FA")),
+                ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#DEE2E6")),
+                ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                ("TOPPADDING", (0, 0), (-1, -1), 8),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ]))
+            story.append(t)
+            story.append(Spacer(1, 0.3*cm))
+
+        def add_comparison_table(rows):
+            if not rows:
+                return
+            table_data = [[
+                Paragraph("<b>Tender Requires</b>", header_cell_style),
+                Paragraph("<b>Our Company Status</b>", header_cell_style),
+                Paragraph("<b>Met</b>", header_cell_style),
+            ]]
+            for r in rows:
+                met = r.get("met")
+                met_text = "PASS" if met else "GAP"
+                met_style = ParagraphStyle(
+                    "MetCell", parent=normal_style, alignment=1,
+                    textColor=colors.HexColor("#16A34A") if met else colors.HexColor("#DC2626")
+                )
+                table_data.append([
+                    Paragraph(str(r.get("requirement", "")), normal_style),
+                    Paragraph(str(r.get("company_status", "")), normal_style),
+                    Paragraph(f"<b>{met_text}</b>", met_style),
+                ])
+            t = Table(table_data, colWidths=[6.5*cm, 8.5*cm, 2*cm])
+            t.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2C3E50")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+                ("ALIGN", (2, 0), (2, -1), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("FONTSIZE", (0, 0), (-1, -1), 9.5),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#DEE2E6")),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1),
+                 [colors.HexColor("#FFFFFF"), colors.HexColor("#F8F9FA")]),
+            ]))
+            story.append(t)
+            story.append(Spacer(1, 0.3*cm))
+
         # ── HEADER ──────────────────────────────────────────
         story.append(Paragraph("TENDER ANALYSIS REPORT", title_style))
         story.append(Paragraph(
@@ -325,9 +612,21 @@ def generate_analysis_pdf(tender: dict, details: dict, output_path: str):
         # ── PAGE 2: FINANCIAL DETAILS ─────────────────────────
         add_heading("2. Financial Details")
         financial = details.get("financial", {})
+
+        def _financial_value(ai_value):
+            # AI genuinely checked the real document and found nothing for
+            # this field — say so honestly instead of falling back to the
+            # scrape-time "See bid document" placeholder, which is
+            # misleading once the document has actually been read (many
+            # GeM tenders, especially multi-item ones, never publish a
+            # fixed estimated value/EMD upfront at all).
+            if not ai_value or ai_value == "Not mentioned in document":
+                return "Not disclosed in tender document"
+            return ai_value
+
         add_section_table([
-            ("Estimated Value", financial.get("estimated_value") or tender.get("value")),
-            ("EMD Amount", financial.get("emd_amount") or tender.get("emd")),
+            ("Estimated Value", _financial_value(financial.get("estimated_value"))),
+            ("EMD Amount", _financial_value(financial.get("emd_amount"))),
             ("Performance Security", financial.get("performance_security")),
             ("Payment Terms", financial.get("payment_terms")),
             ("GST Details", financial.get("gst_details"))
@@ -385,6 +684,56 @@ def generate_analysis_pdf(tender: dict, details: dict, output_path: str):
             ("Liquidated Damages", terms.get("liquidated_damages")),
             ("Special Conditions", terms.get("special_conditions"))
         ])
+
+        # ── PAGES 7-9: COMPANY MATCH & BID RECOMMENDATION ─────
+        if match:
+            story.append(PageBreak())
+
+            # PAGE 7 — Verdict & Summary
+            add_heading("7. Company Match & Bid Recommendation")
+            summary = match.get("executive_summary")
+            if summary:
+                story.append(Paragraph(f"<i>{summary}</i>", normal_style))
+                story.append(Spacer(1, 0.3*cm))
+            add_recommendation_badge(
+                match.get("overall_recommendation", "Unable to Determine"),
+                match.get("overall_match_percent")
+            )
+            story.append(Spacer(1, 0.3*cm))
+            story.append(Paragraph("Match Breakdown by Category", heading_style))
+            add_category_breakdown(match.get("category_breakdown"))
+
+            story.append(PageBreak())
+
+            # PAGE 8 — Why to Bid / Risks / Action Items
+            add_heading("8. Why to Bid, Risks & Action Items")
+            add_bullet_section("Why We Can Bid", match.get("why_to_bid"), "#16A34A")
+            add_bullet_section("Risks & Gaps", match.get("risks_and_gaps"), "#DC2626")
+            add_bullet_section("Action Needed Before Submission", match.get("action_needed"), "#8E44AD")
+            add_info_card(
+                "Closest Matching Past Project",
+                match.get("closest_matching_project"),
+                accent_hex="#2C3E50"
+            )
+            add_info_card(
+                "Financial Risk Note",
+                match.get("financial_risk_note"),
+                accent_hex="#8E44AD"
+            )
+
+            story.append(PageBreak())
+
+            # PAGE 9 — Detailed Requirement Comparison
+            add_heading("9. Detailed Requirement Comparison")
+            comparison_rows = match.get("comparison_table")
+            if comparison_rows:
+                add_comparison_table(comparison_rows)
+            else:
+                story.append(Paragraph(
+                    "No specific, individually-stated requirements were found "
+                    "in the tender document to compare line by line.",
+                    normal_style
+                ))
 
         # Build PDF
         doc.build(story)
@@ -577,6 +926,16 @@ def analyze_tender(tender: dict) -> str:
             "dates": {}, "terms": {}
         }
 
+    # Step 2b — Compare against Chipscape's own company profile (turnover,
+    # certifications, past projects) to produce the bid-recommendation pages.
+    print("[Analyzer] Matching tender against company profile...")
+    try:
+        from analysis.eligibility_matcher import match_tender_to_company
+        match = match_tender_to_company(tender, details)
+    except Exception as e:
+        print(f"[Analyzer] Company-match step failed: {e}")
+        match = None
+
     # Step 3 — Generate PDF
     safe_name = "".join(
         c for c in tender.get("tender_number", "tender")
@@ -590,7 +949,7 @@ def analyze_tender(tender: dict) -> str:
         f"{safe_name}_ANALYSIS_{datetime.now().strftime('%d%m%Y')}.pdf"
     )
 
-    success = generate_analysis_pdf(tender, details, output_path)
+    success = generate_analysis_pdf(tender, details, output_path, match=match)
 
     if success:
         print(f"[Analyzer] Done! PDF saved at: {output_path}")
