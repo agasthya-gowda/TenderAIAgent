@@ -1,21 +1,80 @@
-import sqlite3
 import os
 import json
 from datetime import datetime
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "tenders.db")
+import psycopg2
+import psycopg2.extras
+from dotenv import load_dotenv
+
+load_dotenv()
+
+PG_HOST = os.getenv("PG_HOST", "127.0.0.1")
+PG_PORT = os.getenv("PG_PORT", "5432")
+PG_DATABASE = os.getenv("PG_DATABASE", "tender_agent")
+PG_USER = os.getenv("PG_USER", "tender_app")
+PG_PASSWORD = os.getenv("PG_PASSWORD", "ChipscapeApp2026")
+
+
+class _PGCursor:
+    """Wraps a real psycopg2 cursor so existing call sites (here and in
+    orchestrator.py/gem.py/kppp.py/clear_all.py) keep working exactly as
+    they did against sqlite3 — same `?` placeholder style, same
+    dict-like row access, same execute()->fetchone()/fetchall() chaining
+    — without needing to touch any of those call sites."""
+
+    def __init__(self, cur):
+        self._cur = cur
+
+    def execute(self, sql, params=()):
+        self._cur.execute(sql.replace("?", "%s"), params)
+        return self
+
+    def fetchone(self):
+        return self._cur.fetchone()
+
+    def fetchall(self):
+        return self._cur.fetchall()
+
+
+class _PGConnection:
+    """Wraps a real psycopg2 connection the same way — lets the rest of
+    the app call conn.execute(...)/conn.cursor()/conn.executemany(...)
+    exactly like it did with sqlite3.Connection."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def execute(self, sql, params=()):
+        cur = self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(sql.replace("?", "%s"), params)
+        return _PGCursor(cur)
+
+    def executemany(self, sql, seq_of_params):
+        cur = self._conn.cursor()
+        cur.executemany(sql.replace("?", "%s"), seq_of_params)
+        return _PGCursor(cur)
+
+    def cursor(self):
+        return _PGCursor(self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor))
+
+    def commit(self):
+        self._conn.commit()
+
+    def close(self):
+        self._conn.close()
+
 
 def get_conn():
-    # WAL lets the dashboard's reads run concurrently with the background
-    # agent's writes instead of blocking behind its lock (the default
-    # rollback-journal mode serializes them, which is what caused the
-    # dashboard to randomly stall for seconds while a search was running).
-    # busy_timeout is a fallback for the brief moments even WAL still contends.
-    conn = sqlite3.connect(DB_PATH, timeout=10)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=10000")
-    conn.row_factory = sqlite3.Row
-    return conn
+    # PostgreSQL is a real multi-user database (unlike the SQLite file
+    # this replaced) — concurrent readers and writers, including several
+    # team members using the dashboard at once alongside the background
+    # agent's own writes, are handled natively without any WAL/busy-timeout
+    # workaround needed.
+    raw_conn = psycopg2.connect(
+        host=PG_HOST, port=PG_PORT, dbname=PG_DATABASE,
+        user=PG_USER, password=PG_PASSWORD
+    )
+    return _PGConnection(raw_conn)
 
 def init_db():
     conn = get_conn()
@@ -24,10 +83,10 @@ def init_db():
     # Table 1 - stores every search CEO makes
     c.execute("""
         CREATE TABLE IF NOT EXISTS ceo_searches (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             keyword TEXT NOT NULL,
             portal TEXT,
-            searched_at TEXT DEFAULT (datetime('now')),
+            searched_at TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS'),
             frequency INTEGER DEFAULT 1
         )
     """)
@@ -35,32 +94,34 @@ def init_db():
     # Table 2 - stores what agent learned from CEO
     c.execute("""
         CREATE TABLE IF NOT EXISTS learned_patterns (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             category TEXT,
             keywords TEXT,
             weight REAL DEFAULT 1.0,
             portal TEXT DEFAULT 'GeM',
-            last_updated TEXT DEFAULT (datetime('now'))
+            last_updated TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS')
         )
     """)
-    # Migration: portal was added after this table already existed on disk
-    # for some installs — CREATE TABLE IF NOT EXISTS above won't touch
-    # those, so add the column by hand if it's missing.
-    existing_pattern_cols = [r["name"] for r in c.execute("PRAGMA table_info(learned_patterns)").fetchall()]
-    if "portal" not in existing_pattern_cols:
-        c.execute("ALTER TABLE learned_patterns ADD COLUMN portal TEXT DEFAULT 'GeM'")
+    # Safety net for an older install's table that predates the portal
+    # column — a no-op on a freshly created table.
+    c.execute("ALTER TABLE learned_patterns ADD COLUMN IF NOT EXISTS portal TEXT DEFAULT 'GeM'")
 
     # Table 2c - tracks which GeM keywords have already had their one-time
     # full/unlimited-pagination pass (run by Start Agent / the 2 AM job).
     # A keyword gets the full pass exactly once, ever — every later Start
-    # Agent/2 AM run for that same keyword only does a capped, quick check
-    # for new tenders instead of re-walking every page again.
+    # Agent/2 AM run for that same keyword instead pages only until it
+    # reaches tenders whose Start Date is no newer than last_searched_at
+    # (see search_gem's stop_before_date), instead of re-walking every page
+    # or an arbitrary fixed page count again.
     c.execute("""
         CREATE TABLE IF NOT EXISTS gem_keyword_full_search_log (
             keyword TEXT PRIMARY KEY,
-            first_full_search_at TEXT DEFAULT (datetime('now'))
+            first_full_search_at TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS'),
+            last_searched_at TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS')
         )
     """)
+    # Safety net for an older install's table that predates last_searched_at.
+    c.execute("ALTER TABLE gem_keyword_full_search_log ADD COLUMN IF NOT EXISTS last_searched_at TEXT")
 
     # Table 2b - stores KPPP-specific search filters set by the CEO. KPPP has
     # no keyword search, so instead of a keyword this stores the actual
@@ -69,7 +130,7 @@ def init_db():
     # automatically on every future agent search cycle, same as GeM keywords.
     c.execute("""
         CREATE TABLE IF NOT EXISTS kppp_search_criteria (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             category TEXT,
             procuring_entity TEXT,
             tender_number TEXT,
@@ -77,20 +138,19 @@ def init_db():
             to_date TEXT,
             tender_type TEXT,
             tender_name TEXT,
-            created_at TEXT DEFAULT (datetime('now'))
+            created_at TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS'),
+            last_searched_at TEXT
         )
     """)
-    # Migration: tender_name was added after this table already existed on
-    # disk for some installs — CREATE TABLE IF NOT EXISTS above won't touch
-    # those, so add the column by hand if it's missing.
-    existing_cols = [r["name"] for r in c.execute("PRAGMA table_info(kppp_search_criteria)").fetchall()]
-    if "tender_name" not in existing_cols:
-        c.execute("ALTER TABLE kppp_search_criteria ADD COLUMN tender_name TEXT")
+    # Safety net for an older install's table that predates tender_name /
+    # last_searched_at.
+    c.execute("ALTER TABLE kppp_search_criteria ADD COLUMN IF NOT EXISTS tender_name TEXT")
+    c.execute("ALTER TABLE kppp_search_criteria ADD COLUMN IF NOT EXISTS last_searched_at TEXT")
 
     # Table 3 - stores all tenders found
     c.execute("""
         CREATE TABLE IF NOT EXISTS tenders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             title TEXT,
             portal TEXT,
             tender_number TEXT,
@@ -110,7 +170,8 @@ def init_db():
             original_pdf_path TEXT,
             analysis_pdf_path TEXT,
             status TEXT DEFAULT 'new',
-            found_at TEXT DEFAULT (datetime('now'))
+            found_at TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS'),
+            quantity TEXT
         )
     """)
 
@@ -131,7 +192,37 @@ def has_had_full_gem_search(keyword: str) -> bool:
 def mark_gem_full_search_done(keyword: str):
     conn = get_conn()
     conn.execute(
-        "INSERT OR IGNORE INTO gem_keyword_full_search_log (keyword) VALUES (?)",
+        "INSERT INTO gem_keyword_full_search_log (keyword) VALUES (?) ON CONFLICT (keyword) DO NOTHING",
+        (keyword.lower().strip(),)
+    )
+    conn.commit()
+    conn.close()
+
+def get_gem_last_searched_at(keyword: str):
+    """The Start Date cutoff for this keyword's last completed search run —
+    None if it's never been searched before (i.e. its upcoming run should be
+    the one-time full/unlimited pass, not a date-limited one)."""
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT last_searched_at FROM gem_keyword_full_search_log WHERE keyword=?",
+        (keyword.lower().strip(),)
+    ).fetchone()
+    conn.close()
+    return row["last_searched_at"] if row else None
+
+def update_gem_last_searched(keyword: str):
+    """Stamps 'now' as this keyword's last search time, run after every
+    batch search (first-time or date-limited) — this is what the NEXT run
+    uses as its Start-Date cutoff, so results already covered by this run
+    are never re-walked. Inserts the row if this was actually the
+    first-ever search for the keyword (mark_gem_full_search_done runs
+    alongside this in that case, so ON CONFLICT here just keeps the
+    first_full_search_at that call already set)."""
+    conn = get_conn()
+    conn.execute(
+        """INSERT INTO gem_keyword_full_search_log (keyword, last_searched_at)
+           VALUES (?, to_char(now(), 'YYYY-MM-DD HH24:MI:SS'))
+           ON CONFLICT (keyword) DO UPDATE SET last_searched_at = to_char(now(), 'YYYY-MM-DD HH24:MI:SS')""",
         (keyword.lower().strip(),)
     )
     conn.commit()
@@ -254,6 +345,21 @@ def get_kppp_criteria_list():
     conn.close()
     return [dict(r) for r in rows]
 
+def update_kppp_last_searched(criteria_id: int):
+    """Stamps 'now' as this saved KPPP filter's last search time — run
+    after every search of it (first-time or date-limited). KPPP's own form
+    has no Start-Date filter field (its date-range inputs filter by tender
+    closure date, a different field), so unlike GeM this is used to filter
+    results client-side after fetching rather than to shape the request
+    itself — see _run_kppp_criteria_search in orchestrator.py."""
+    conn = get_conn()
+    conn.execute(
+        "UPDATE kppp_search_criteria SET last_searched_at = to_char(now(), 'YYYY-MM-DD HH24:MI:SS') WHERE id=?",
+        (criteria_id,)
+    )
+    conn.commit()
+    conn.close()
+
 def delete_kppp_criteria(criteria_id: int):
     conn = get_conn()
     conn.execute("DELETE FROM kppp_search_criteria WHERE id=?", (criteria_id,))
@@ -312,6 +418,7 @@ def save_tender(tender: dict):
                 found_via, downloaded_files, quantity
             )
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            RETURNING id
         """, (
             tender.get("title"),
             tender.get("portal"),
@@ -331,8 +438,8 @@ def save_tender(tender: dict):
             downloaded_files,
             tender.get("quantity", "N/A")
         ))
+        row_id = c.fetchone()["id"]
         conn.commit()
-        row_id = c.lastrowid
         conn.close()
         return row_id
 
@@ -343,10 +450,10 @@ def get_all_tenders(status_filter=None, today_only=False):
     conn = get_conn()
     from datetime import datetime, date
     today = date.today().isoformat()
-    
+
     if status_filter == "new" or today_only:
         rows = conn.execute(
-            "SELECT * FROM tenders WHERE status='new' AND date(found_at) = ? ORDER BY found_at DESC",
+            "SELECT * FROM tenders WHERE status='new' AND LEFT(found_at, 10) = ? ORDER BY found_at DESC",
             (today,)
         ).fetchall()
     elif status_filter:
@@ -421,12 +528,13 @@ def get_stats():
     from datetime import date
     today = date.today().isoformat()
     conn = get_conn()
-    total = conn.execute("SELECT COUNT(*) as c FROM tenders").fetchone()["c"]
+    total = conn.execute("SELECT COUNT(*) as c FROM tenders WHERE status != 'expired'").fetchone()["c"]
     new = conn.execute(
-        "SELECT COUNT(*) as c FROM tenders WHERE status='new' AND date(found_at) = ?",
+        "SELECT COUNT(*) as c FROM tenders WHERE status='new' AND LEFT(found_at, 10) = ?",
         (today,)
     ).fetchone()["c"]
     saved = conn.execute("SELECT COUNT(*) as c FROM tenders WHERE status='saved'").fetchone()["c"]
+    expired = conn.execute("SELECT COUNT(*) as c FROM tenders WHERE status='expired'").fetchone()["c"]
     searches = conn.execute("SELECT COUNT(*) as c FROM ceo_searches").fetchone()["c"]
     patterns = conn.execute("SELECT COUNT(*) as c FROM learned_patterns").fetchone()["c"]
     conn.close()
@@ -434,6 +542,7 @@ def get_stats():
         "total_tenders": total,
         "new": new,
         "saved": saved,
+        "expired": expired,
         "ceo_searches": searches,
         "patterns_learned": patterns
     }
@@ -444,7 +553,8 @@ def get_department_counts(portal: str, top_n: int = 5):
     conn = get_conn()
     rows = conn.execute(
         """SELECT department, COUNT(*) as c FROM tenders
-           WHERE portal=? AND department IS NOT NULL AND TRIM(department) != ''
+           WHERE portal=? AND status != 'expired'
+             AND department IS NOT NULL AND TRIM(department) != ''
            GROUP BY department ORDER BY c DESC""",
         (portal,)
     ).fetchall()
@@ -497,7 +607,7 @@ def get_daily_trend(portal: str, days: int = 7):
     from datetime import date, timedelta
     conn = get_conn()
     rows = conn.execute(
-        """SELECT date(found_at) as d, COUNT(*) as c FROM tenders
+        """SELECT LEFT(found_at, 10) as d, COUNT(*) as c FROM tenders
            WHERE portal=? GROUP BY d""",
         (portal,)
     ).fetchall()
@@ -516,17 +626,20 @@ def delete_tender(tender_id: int):
     conn.commit()
     conn.close()
 
-def delete_expired_tenders() -> int:
-    """Permanently removes every tender whose deadline (End Date) has
-    already passed — a closed tender can't be bid on or usefully analyzed,
-    so there's no reason to keep it around. Only rows with a clearly
-    parseable DD-MM-YYYY date are touched; a missing/unparseable deadline
-    (e.g. "Not available") is left alone rather than risking a wrong delete.
-    Returns how many rows were removed."""
+def mark_expired_tenders() -> int:
+    """Moves every tender whose deadline (End Date) has already passed into
+    its own 'expired' status instead of deleting it — a closed tender can't
+    be bid on anymore, but the manager wants it kept around for later
+    analysis (e.g. reviewing why a bid was missed), so it's surfaced under
+    the "Expired Tenders" card rather than removed. Only rows with a clearly
+    parseable DD-MM-YYYY date are touched, and a tender already marked
+    expired is skipped; a missing/unparseable deadline (e.g. "Not
+    available") is left alone rather than risking a wrong reclassification.
+    Returns how many rows were newly marked."""
     import re
     from datetime import date
     conn = get_conn()
-    rows = conn.execute("SELECT id, deadline FROM tenders").fetchall()
+    rows = conn.execute("SELECT id, deadline FROM tenders WHERE status != 'expired'").fetchall()
     today = date.today()
     expired_ids = []
     for r in rows:
@@ -541,7 +654,7 @@ def delete_expired_tenders() -> int:
         if deadline_date < today:
             expired_ids.append(r["id"])
     if expired_ids:
-        conn.executemany("DELETE FROM tenders WHERE id=?", [(i,) for i in expired_ids])
+        conn.executemany("UPDATE tenders SET status='expired' WHERE id=?", [(i,) for i in expired_ids])
         conn.commit()
     conn.close()
     return len(expired_ids)

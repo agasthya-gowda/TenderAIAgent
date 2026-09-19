@@ -12,12 +12,45 @@ import json
 from datetime import datetime
 from database.db import (
     save_tender, get_all_ceo_searches, update_downloaded_files,
-    save_kppp_criteria, get_kppp_criteria_list, delete_expired_tenders,
+    save_kppp_criteria, get_kppp_criteria_list, mark_expired_tenders,
     save_ceo_search, save_learned_patterns,
-    has_had_full_gem_search, mark_gem_full_search_done
+    has_had_full_gem_search, mark_gem_full_search_done,
+    get_gem_last_searched_at, update_gem_last_searched,
+    update_kppp_last_searched
 )
 from agent.learner import expand_keyword_instantly, analyze_patterns, get_search_queries
 from agent.watcher import start_watching, register_callback
+
+
+def _parse_kppp_published_date(value):
+    """Parses whatever format KPPP's own results table prints its
+    Published/Start Date column in — tried loosest-to-strictest since the
+    exact format isn't guaranteed. Returns None (never raises) when it
+    can't be parsed, so a date-limited repeat search can fall back to
+    keeping the tender rather than risk silently dropping a real one."""
+    if not value or not value.strip():
+        return None
+    text = value.strip()
+    for fmt in ("%d-%m-%Y %H:%M:%S", "%d-%m-%Y %H:%M", "%d-%m-%Y", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _parse_db_timestamp(value):
+    """Parses a 'YYYY-MM-DD HH24:MI:SS' timestamp string (the format every
+    *_at/*_searched_at column in the DB stores) into a datetime — None in,
+    None out, so callers can pass a possibly-missing last-searched value
+    straight through without a separate None check."""
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value.strip(), "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+
 
 def check_relevance_ai(original_keyword: str, titles: list) -> list:
     """
@@ -249,20 +282,44 @@ def _search_portal(portal: str, keywords: list, category: str, max_pages: int = 
                 # here) give each of their keywords one full/unlimited pass
                 # too — but only the very first time that keyword is ever
                 # run through a batch cycle. Every batch run after that for
-                # the same keyword stays capped at max_pages, since by then
-                # it's just checking for what's new, not re-walking pages
-                # already confirmed to hold nothing new.
+                # the same keyword instead searches only for tenders whose
+                # Start Date is newer than the last time it was searched
+                # (see search_gem's stop_before_date) — not a re-walk of
+                # every page, and not an arbitrary fixed page count either.
                 is_first_batch_pass = primary_keyword is None and not has_had_full_gem_search(keyword)
                 do_full_pagination = is_primary or is_first_batch_pass
                 # The literal keyword the CEO typed gets every page GeM has
                 # (None = unlimited, see search_gem) so the count matches
                 # GeM's own site exactly; AI-expanded synonyms stay capped —
                 # they're bonus discovery, not the thing being compared 1:1.
-                pages_for_keyword = None if do_full_pagination else max_pages
-                log(f"🔎 [{portal}] Searching: '{keyword}'" + (" (full pagination)" if do_full_pagination else ""))
-                tenders = search_fn(keyword, category, max_pages=pages_for_keyword, should_stop=should_stop)
+                stop_before_date = None
+                if do_full_pagination:
+                    pages_for_keyword = None
+                    log(f"🔎 [{portal}] Searching: '{keyword}' (full pagination)")
+                else:
+                    stop_before_date = _parse_db_timestamp(get_gem_last_searched_at(keyword))
+                    # Unlimited pages here too — search_gem's own
+                    # stop_before_date check decides when to stop, not a
+                    # page count, since "how many pages of new tenders
+                    # exist since last time" varies run to run.
+                    pages_for_keyword = None
+                    log(
+                        f"🔎 [{portal}] Searching: '{keyword}' "
+                        f"(tenders newer than {stop_before_date or 'unknown — falling back to one capped pass'})"
+                    )
+                    if stop_before_date is None:
+                        # No recorded last-search time (shouldn't normally
+                        # happen once a keyword has had its full pass, but
+                        # fall back safely rather than accidentally paging
+                        # forever) — a capped pass instead of unlimited.
+                        pages_for_keyword = max_pages
+                tenders = search_fn(
+                    keyword, category, max_pages=pages_for_keyword,
+                    should_stop=should_stop, stop_before_date=stop_before_date
+                )
                 if is_first_batch_pass:
                     mark_gem_full_search_done(keyword)
+                update_gem_last_searched(keyword)
 
                 if is_primary:
                     # This is GeM's own "Contains" search result for the
@@ -376,8 +433,39 @@ def _run_kppp_criteria_search(criteria_list: list, respect_stop_flag: bool = Fal
                 log(f"⚠️ [KPPP] Skipping saved filter with no procuring entity or tender name: {criteria}")
                 continue
             try:
-                log(f"🔎 [KPPP] Searching with saved filter: {criteria}")
-                tenders = search_kppp_sync(criteria)
+                # A repeat search of an already-saved filter (has a DB id
+                # and has been searched before) pages only until it finds
+                # tenders already covered by that last search (KPPP lists
+                # newest-published first — see search_kppp's
+                # stop_before_date) instead of walking every one of its
+                # (often dozens of) pages again. A brand-new filter (no id
+                # yet, e.g. straight from on_kppp_search) or one never
+                # successfully searched before pages through everything,
+                # same as today.
+                criteria_id = criteria.get("id")
+                last_searched = _parse_db_timestamp(criteria.get("last_searched_at"))
+                is_repeat_search = criteria_id is not None and last_searched is not None
+                log(
+                    f"🔎 [KPPP] Searching with saved filter: {criteria}"
+                    + (f" (tenders newer than {last_searched})" if is_repeat_search else " (full search)")
+                )
+                tenders = search_kppp_sync(criteria, stop_before_date=last_searched if is_repeat_search else None)
+                if is_repeat_search:
+                    # search_kppp's own pagination already stops once it
+                    # reaches nothing newer, but the boundary page itself
+                    # can still mix a few already-seen rows in with new
+                    # ones — this client-side pass drops those (dedup in
+                    # save_tender() would also catch them, but this keeps
+                    # the "Skipped N" log accurate for troubleshooting).
+                    before = len(tenders)
+                    tenders = [
+                        t for t in tenders
+                        if (parsed := _parse_kppp_published_date(t.get("published_date")))
+                        is None or parsed > last_searched
+                    ]
+                    skipped = before - len(tenders)
+                    if skipped:
+                        log(f"⏭️ [KPPP] Skipped {skipped} tender(s) already covered by the last search")
                 for tender in tenders:
                     tender_id = save_tender(tender)
                     if tender_id:
@@ -386,6 +474,8 @@ def _run_kppp_criteria_search(criteria_list: list, respect_stop_flag: bool = Fal
                         if files:
                             update_downloaded_files(tender_id, files)
                         log(f"📄 [KPPP] Found: {tender['title'][:60]}...")
+                if criteria_id is not None:
+                    update_kppp_last_searched(criteria_id)
             except Exception as e:
                 log(f"⚠️ [KPPP] Error searching with filter {criteria}: {e}")
 
@@ -428,9 +518,9 @@ def _scheduled_search():
         conn.close()
         log("🔄 Reset old tenders — fresh start for today")
 
-        removed = delete_expired_tenders()
-        if removed:
-            log(f"🧹 Removed {removed} expired tender(s) (past their deadline)")
+        moved = mark_expired_tenders()
+        if moved:
+            log(f"🕒 Moved {moved} tender(s) to Expired (past their deadline)")
 
         log("⏰ Daily 2 AM scheduled search starting...")
 
@@ -507,9 +597,9 @@ def start_agent():
 
     log("🤖 Tender Agent started")
 
-    removed = delete_expired_tenders()
-    if removed:
-        log(f"🧹 Removed {removed} expired tender(s) (past their deadline)")
+    moved = mark_expired_tenders()
+    if moved:
+        log(f"🕒 Moved {moved} tender(s) to Expired (past their deadline)")
 
     log("👀 Watching CEO browser activity on GeM & KPPP...")
 

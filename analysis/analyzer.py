@@ -27,7 +27,12 @@ def read_pdf(file_path: str) -> str:
                 page_text = page.extract_text()
                 if page_text:
                     text += page_text + "\n"
-        return text[:8000]  # Limit to 8000 chars
+        # Government tender PDFs routinely run 30-50+ pages with the actual
+        # Eligibility Criteria table appearing well past page 8-10 (behind a
+        # table of contents, glossary and tender notification) — the old
+        # 8000-char cap cut most documents off before ever reaching it,
+        # silently starving the eligibility-checklist extraction below.
+        return text[:30000]
     except Exception as e:
         print(f"[Analyzer] PDF read error: {e}")
         return ""
@@ -82,11 +87,16 @@ def read_docx(file_path: str) -> str:
                     if para_text.strip():
                         text += para_text + "\n"
         if text.strip():
-            return text[:4000]
+            # See the matching comment in read_pdf() — the Eligibility
+            # Criteria section routinely sits tens of thousands of
+            # characters into a full RFP .docx, well past the old 4000-char
+            # cap (a real KPPP tender's criteria section started at
+            # character ~14,500 of a ~100,000-char document).
+            return text[:30000]
     except Exception as e:
         print(f"[Analyzer] DOCX read error: {e}, trying LibreOffice conversion...")
 
-    return _convert_doc_with_libreoffice(file_path)[:4000]
+    return _convert_doc_with_libreoffice(file_path)[:30000]
 
 def read_all_files(file_paths: list) -> str:
     """Read all downloaded files and combine text."""
@@ -101,7 +111,11 @@ def read_all_files(file_paths: list) -> str:
             combined += read_pdf(path)
         elif ext in [".docx", ".doc"]:
             combined += read_docx(path)
-    return combined[:15000]
+    # Raised alongside the per-file caps above for the same reason — a
+    # single full RFP document can legitimately need 20000+ characters just
+    # to reach its Eligibility Criteria section, and tenders often ship as
+    # 2-3 separate files (notification + full RFP + corrigendum).
+    return combined[:60000]
 
 def call_ai(prompt: str, temperature: float = None) -> str:
     """Call DeepSeek first, Claude as fallback.
@@ -117,7 +131,12 @@ def call_ai(prompt: str, temperature: float = None) -> str:
     deepseek_payload = {
         "model": "deepseek-chat",
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 3000
+        # 3000 was enough for the old short eligibility summary, but the
+        # granular per-item eligibility_checklist (one entry per mandatory
+        # document/requirement in the tender, sometimes 40-60+ for a large
+        # RFP) can produce a much longer JSON response — a real KPPP tender
+        # truncated mid-JSON at the old cap, breaking the whole extraction.
+        "max_tokens": 8000
     }
     if temperature is not None:
         deepseek_payload["temperature"] = temperature
@@ -141,7 +160,7 @@ def call_ai(prompt: str, temperature: float = None) -> str:
 
     claude_payload = {
         "model": "claude-sonnet-4-6",
-        "max_tokens": 3000,
+        "max_tokens": 8000,
         "messages": [{"role": "user", "content": prompt}]
     }
     if temperature is not None:
@@ -223,6 +242,9 @@ Extract ALL available details and respond ONLY in this exact JSON format:
     "documents_required": "",
     "special_clauses": ""
   }},
+  "eligibility_checklist": [
+    {{"category": "short label for the SI/criteria this belongs to, e.g. 'Bidder Eligibility (Criteria 1)' or 'Turnover Eligibility (Criteria 2)'", "requirement": "exactly ONE atomic, individually-checkable requirement or mandatory supporting document, in plain words"}}
+  ],
   "dates": {{
     "published_date": "",
     "document_download_start": "",
@@ -241,7 +263,23 @@ Extract ALL available details and respond ONLY in this exact JSON format:
 }}
 
 Use "Not mentioned in document" for any field not found.
-Never leave any field empty."""
+Never leave any field empty.
+
+For "eligibility_checklist": read the tender's full Eligibility Criteria
+section (usually a numbered table of SI/criteria with a "Mandatory
+Supporting Documents" column) and list out EVERY individual item as its
+own separate entry — do not summarize, merge, or group multiple items
+into one line. If one criteria number requires 4 separate mandatory
+documents (e.g. sub-points a, b, c, d), that is 4 separate checklist
+entries, not one. Include every distinct: minimum turnover figure,
+minimum experience/years requirement, each individual certificate or
+certification standard named (e.g. ISO 9001:2015 and ISO 14001:2015 are
+2 separate entries, not one), each individual mandatory document, each
+distinct eligibility condition (OEM/dealer status, local presence,
+blacklisting declaration, EMD, warranty period, country-of-origin
+restriction, land-border-country restriction, etc). If the tender has no
+identifiable eligibility criteria section at all, return an empty list
+for eligibility_checklist rather than inventing items."""
 
     response = call_ai(prompt)
 
@@ -397,15 +435,6 @@ def generate_analysis_pdf(tender: dict, details: dict, output_path: str, match: 
             story.append(Spacer(1, 0.3*cm))
 
         # ── Company-match helpers (pages 7-9) ─────────────────
-        def _pct_color(pct):
-            if pct is None:
-                return colors.HexColor("#9CA3AF")
-            if pct >= 70:
-                return colors.HexColor("#16A34A")
-            if pct >= 40:
-                return colors.HexColor("#F59E0B")
-            return colors.HexColor("#DC2626")
-
         def _recommendation_color(recommendation):
             return {
                 "Recommend Bid": colors.HexColor("#16A34A"),
@@ -459,33 +488,60 @@ def generate_analysis_pdf(tender: dict, details: dict, output_path: str, match: 
             story.append(t)
             story.append(Spacer(1, 0.4*cm))
 
-        def add_category_breakdown(categories):
-            if not categories:
+        def add_category_breakdown(checklist):
+            # One row per individual requirement pulled straight from the
+            # tender's own eligibility criteria (not a rolled-up percentage
+            # per broad category) — a plain Met/Not Met binary call per line,
+            # so the table alone answers "do we have this or not" without
+            # needing to read a paragraph of notes. Consecutive rows under
+            # the same category get their Category cell visually merged
+            # (via SPAN) so the grouping still reads clearly.
+            if not checklist:
+                story.append(Paragraph(
+                    "No specific, individually-stated eligibility requirements "
+                    "were found in the tender document to check off one by one.",
+                    normal_style
+                ))
+                story.append(Spacer(1, 0.3*cm))
                 return
             table_data = [[
                 Paragraph("<b>Category</b>", header_cell_style),
-                Paragraph("<b>Match</b>", header_cell_style),
-                Paragraph("<b>Status</b>", header_cell_style),
-                Paragraph("<b>Note</b>", header_cell_style),
+                Paragraph("<b>Mentioned Specification in Tender</b>", header_cell_style),
+                Paragraph("<b>Met / Not Met</b>", header_cell_style),
             ]]
-            row_colors = [colors.HexColor("#F8F9FA")]
-            for c in categories:
-                pct = c.get("match_percent")
+            span_cmds = []
+            prev_category = None
+            group_start_row = 1
+            for row_idx, item in enumerate(checklist, start=1):
+                category = str(item.get("category", ""))
+                met = item.get("met") is True
+                met_text = "MET" if met else "NOT MET"
+                met_style = ParagraphStyle(
+                    f"MetCell{row_idx}", parent=normal_style, alignment=1,
+                    textColor=colors.HexColor("#16A34A") if met else colors.HexColor("#DC2626")
+                )
+                show_category = category if category != prev_category else ""
                 table_data.append([
-                    Paragraph(str(c.get("category", "")), normal_style),
-                    Paragraph(f"{pct}%" if pct is not None else "N/A", normal_style),
-                    Paragraph(str(c.get("status", "")), normal_style),
-                    Paragraph(str(c.get("note", "")), normal_style),
+                    Paragraph(show_category, normal_style),
+                    Paragraph(str(item.get("requirement", "")), normal_style),
+                    Paragraph(f"<b>{met_text}</b>", met_style),
                 ])
-                row_colors.append(_pct_color(pct))
-            t = Table(table_data, colWidths=[4.5*cm, 2*cm, 3*cm, 7.5*cm])
+                if category != prev_category:
+                    if prev_category is not None and row_idx - 1 > group_start_row:
+                        span_cmds.append(("SPAN", (0, group_start_row), (0, row_idx - 1)))
+                    group_start_row = row_idx
+                    prev_category = category
+            if len(table_data) - 1 > group_start_row:
+                span_cmds.append(("SPAN", (0, group_start_row), (0, len(table_data) - 1)))
+            t = Table(table_data, colWidths=[4.5*cm, 10*cm, 2.5*cm], repeatRows=1)
             style_cmds = [
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2C3E50")),
                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
                 ("TEXTCOLOR", (0, 1), (-1, -1), colors.HexColor("#2C3E50")),
                 ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+                ("ALIGN", (2, 0), (2, -1), "CENTER"),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("FONTSIZE", (0, 0), (-1, -1), 9.5),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
                 ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#DEE2E6")),
                 ("LEFTPADDING", (0, 0), (-1, -1), 6),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 6),
@@ -493,7 +549,7 @@ def generate_analysis_pdf(tender: dict, details: dict, output_path: str, match: 
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
                 ("ROWBACKGROUNDS", (0, 1), (-1, -1),
                  [colors.HexColor("#FFFFFF"), colors.HexColor("#F8F9FA")]),
-            ]
+            ] + span_cmds
             t.setStyle(TableStyle(style_cmds))
             story.append(t)
             story.append(Spacer(1, 0.3*cm))
@@ -701,7 +757,7 @@ def generate_analysis_pdf(tender: dict, details: dict, output_path: str, match: 
             )
             story.append(Spacer(1, 0.3*cm))
             story.append(Paragraph("Match Breakdown by Category", heading_style))
-            add_category_breakdown(match.get("category_breakdown"))
+            add_category_breakdown(match.get("requirement_checklist"))
 
             story.append(PageBreak())
 

@@ -509,6 +509,20 @@ st.markdown("""
         font-size: 13px;
         white-space: pre-wrap;
     }
+    /* Gap between the chart row (donut + trend) and the portal/search/sort
+       filter bar below it: an invisible spacer sits between them, so the
+       page's flex `gap` (16px) applies twice — once on each side of the
+       spacer's own empty slot — for 32px of blank space. Hiding that one
+       spacer (matched narrowly via :has(+ ...) so no other spacer on the
+       page is affected) collapses it to a single 16px gap; pulling the
+       filter bar up the rest of the way tightens it to a few px. Applies
+       on every screen size, unlike the mobile-only rules further down. */
+    div[data-testid="stElementContainer"]:has(+ div[data-testid="stLayoutWrapper"] div.col-marker-portal) {
+        display: none !important;
+    }
+    div[data-testid="stLayoutWrapper"]:has(> div[data-testid="stHorizontalBlock"] div.col-marker-portal) {
+        margin-top: -13px !important;
+    }
     div[data-testid="stColumn"]:has(.col-marker-portal) {
         flex: 0 0 auto !important;
         min-width: 190px !important;
@@ -644,6 +658,21 @@ st.markdown("""
         border: none !important;
     }
 
+    /* Gap between the "N tenders — Page X of Y" caption and the table
+       below it: a manual spacer div sits between the caption and the
+       table's own card (the whole header+rows now live inside their own
+       st.container(), so the card wrapper — not the header row itself —
+       is the caption's actual flex sibling), each claiming a full 16px
+       gap-slot. Hiding the spacer collapses that to one 16px gap; pulling
+       the card wrapper itself up the rest of the way tightens it further.
+       Applies on every screen size, unlike the mobile-only rules below. */
+    div[data-testid="stElementContainer"]:has(+ div[data-testid="stLayoutWrapper"] div.table-card-marker) {
+        display: none !important;
+    }
+    div[data-testid="stLayoutWrapper"]:has(> div[data-testid="stVerticalBlock"] > div[data-testid="stElementContainer"] div.table-card-marker) {
+        margin-top: -13px !important;
+    }
+
     /* ══════════════ TENDERS TABLE: white card, refined cells ══════════════ */
     div[data-testid="stVerticalBlock"]:has(> div[data-testid="stElementContainer"] div.table-card-marker) {
         background: #FFFFFF;
@@ -736,6 +765,352 @@ st.markdown("""
         border-color: #C7D2FE !important;
         color: #4F46E5 !important;
     }
+
+    /* Streamlit's own generated CSS (not ours — a class like
+       .st-emotion-cache-1permvm) puts flex-wrap:wrap on every
+       stHorizontalBlock unconditionally, for its own responsive behavior.
+       That's normally harmless since columns just shrink, but the Trend
+       card's title/toggle/range row can end up narrower than expected
+       (it's half of the two-column chart section, further squeezed by
+       whatever width the sidebar happens to be), and once the 3 columns'
+       combined width no longer fits, Streamlit's native wrap silently
+       breaks it into two lines — on any desktop width, not just narrow
+       ones. Forcing nowrap here keeps it a single row regardless; the
+       mobile media query below still overrides this back to wrap, since
+       it's declared later in the stylesheet. */
+    div[data-testid="stHorizontalBlock"]:has(> div[data-testid="stColumn"] > div[data-testid="stVerticalBlock"] > div[data-testid="stElementContainer"] div.trend-toggle-col-marker) {
+        flex-wrap: nowrap !important;
+    }
+
+    /* ══════════════ RESPONSIVE — phones & small tablets ══════════════
+       Everything above this block was built and styled for desktop first;
+       these overrides make the same page usable and legible on a narrow
+       screen instead of the page overflowing or content getting crushed
+       into unreadable slivers. Nothing here changes desktop layout —
+       every rule is scoped inside the media query. */
+    @media (max-width: 900px) {
+        .block-container {
+            padding-left: 0.9rem !important;
+            padding-right: 0.9rem !important;
+            /* Streamlit's own top toolbar ("Deploy" / ⋮ menu) is a fixed,
+               very-high-z-index bar spanning 0-60px — with only 0.75rem
+               (12px) of top padding, the first stat card's top edge landed
+               right underneath it and got visually clipped. 2rem clears it
+               with a small gap. */
+            padding-top: 2rem !important;
+        }
+
+        /* Stat cards: the sticky/fixed-position treatment (built for a wide
+           desktop row that scrolls under a fixed header) doesn't translate
+           to a narrow screen — drop it back into the normal page flow and
+           let the 5 cards wrap into a 2-per-row grid instead of forcing
+           them onto one unreadably cramped row. */
+        div[data-testid="stHorizontalBlock"]:has(div.stats-sticky) {
+            position: static !important;
+            top: auto !important;
+            left: auto !important;
+            width: 100% !important;
+            flex-wrap: wrap !important;
+            row-gap: 8px !important;
+            padding: 0 !important;
+        }
+        div[data-testid="stLayoutWrapper"]:has(div.stats-sticky) {
+            min-height: 0 !important;
+            /* Pulls the chart row up closer, shrinking the remaining
+               single 16px flex gap (left after the two spacers below are
+               hidden) down to about 3px. */
+            margin-bottom: -13px !important;
+        }
+        /* The gap between the stat cards and the charts row below them is
+           NOT built from each element's own margin — the shared parent
+           spaces every child apart with a flex `gap`, and there are two
+           empty/invisible spacer elements (an old <br> and a blank
+           container) sitting between the two, each still claiming a full
+           gap on either side even though they render nothing. Hiding them
+           removes their gap slots too, collapsing 3 stacked gaps + their
+           own height down to one normal gap — this is why the fix is
+           display:none here rather than a margin/negative-margin tweak,
+           which fought unpredictably against the parent's own gap sizing. */
+        div[data-testid="stLayoutWrapper"]:has(div.stats-sticky) + div,
+        div[data-testid="stLayoutWrapper"]:has(div.stats-sticky) + div + div {
+            display: none !important;
+        }
+        /* 5 cards as 3 + 2: the first three fill row one (~33% each), the
+           last two fill row two (~50% each) — a fixed layout rather than
+           however many happen to fit, so it looks deliberate at any
+           mobile width instead of reflowing unpredictably. */
+        div[data-testid="stHorizontalBlock"]:has(div.stats-sticky) div[data-testid="stColumn"] {
+            /* Streamlit's own column-gap here is 16px, not 8px — 3 cards
+               in one row means 2 of those gaps (32px total) eating into
+               the row, so each card only gets a third of what's left, not
+               a flat 8px subtracted — the earlier flat subtraction left
+               the 3rd card just over the edge and wrapping to its own row. */
+            flex: 1 1 calc(33.333% - 11px) !important;
+            min-width: calc(33.333% - 11px) !important;
+            max-width: calc(33.333% - 11px) !important;
+        }
+        div[data-testid="stHorizontalBlock"]:has(div.stats-sticky) div[data-testid="stColumn"]:nth-child(4),
+        div[data-testid="stHorizontalBlock"]:has(div.stats-sticky) div[data-testid="stColumn"]:nth-child(5) {
+            flex: 1 1 calc(50% - 8px) !important;
+            min-width: calc(50% - 8px) !important;
+            max-width: calc(50% - 8px) !important;
+        }
+        .st-key-btn_all button,
+        .st-key-btn_new button,
+        .st-key-btn_saved button,
+        .st-key-btn_searches button,
+        .st-key-btn_patterns button {
+            font-size: 13px !important;
+            padding: 12px 10px !important;
+            min-height: 44px !important;
+        }
+
+        /* Portal dropdown / sort dropdown / search box+button: two rows
+           instead of squeezing 4 controls sideways into a screen that isn't
+           wide enough for any of them. Portal and sort share row 1 (both
+           are dropdowns, same width); the search box and its button stay
+           paired side by side on row 2 since they're one action. Row-gap
+           kept very tight since both rows belong to the one filter bar. */
+        div[data-testid="stHorizontalBlock"]:has(.col-marker-portal) {
+            flex-wrap: wrap !important;
+            row-gap: 3px !important;
+        }
+        div[data-testid="stColumn"]:has(.col-marker-portal) {
+            order: 1;
+            flex: 1 1 calc(50% - 8px) !important;
+            min-width: calc(50% - 8px) !important;
+            max-width: calc(50% - 8px) !important;
+        }
+        div[data-testid="stColumn"]:has(.col-marker-sort) {
+            order: 2;
+            flex: 1 1 calc(50% - 8px) !important;
+            min-width: calc(50% - 8px) !important;
+            max-width: calc(50% - 8px) !important;
+        }
+        div[data-testid="stColumn"]:has(.col-marker-search) {
+            order: 3;
+            /* Reserve the button's 44px plus Streamlit's own 16px gap
+               between columns, or the two overflow the row's real width
+               and the button wraps onto its own line below. */
+            flex: 1 1 calc(100% - 60px) !important;
+            min-width: 0 !important;
+            max-width: none !important;
+        }
+        div[data-testid="stColumn"]:has(.col-marker-search-btn) {
+            order: 4;
+        }
+
+        /* Gap between the Tenders Trend card and the filter bar below it:
+           an invisible zero-height spacer sits between them, so the
+           parent's flex `gap` (16px) applies twice — once on each side of
+           the spacer's own empty slot — for ~32px of blank space total.
+           Hiding that one specific spacer (matched via :has(+ ...) so only
+           the spacer immediately before the filter bar is affected, not
+           any other spacer elsewhere on the page) collapses that to a
+           single 16px gap; pulling the filter bar up the rest of the way
+           then tightens it to 3px, matching the row-gap inside the bar. */
+        div[data-testid="stElementContainer"]:has(+ div[data-testid="stLayoutWrapper"] > div[data-testid="stHorizontalBlock"] div.col-marker-portal) {
+            display: none !important;
+        }
+        div[data-testid="stLayoutWrapper"]:has(> div[data-testid="stHorizontalBlock"] div.col-marker-portal) {
+            margin-top: -13px !important;
+        }
+
+        /* Shorter portal/sort dropdowns and search box on mobile — the
+           38px desktop height reads oversized on a narrow screen. */
+        div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox,
+        div[data-testid="stColumn"]:has(.col-marker-sort) .react-aria-ComboBox {
+            height: 28px !important;
+            min-height: 28px !important;
+        }
+        div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox input,
+        div[data-testid="stColumn"]:has(.col-marker-sort) .react-aria-ComboBox input {
+            font-size: 12px !important;
+        }
+        div[data-testid="stColumn"]:has(.col-marker-search) div[data-testid="stTextInput"] input {
+            height: 28px !important;
+            min-height: 28px !important;
+            padding-top: 2px !important;
+            padding-bottom: 2px !important;
+        }
+        div[class*="st-key-apply_table_search_btn"] button {
+            height: 28px !important;
+            min-height: 28px !important;
+        }
+
+        /* Tender table: rather than crushing 10 columns into illegible
+           slivers, keep them at a readable width and let the table's own
+           card scroll sideways — a normal, familiar pattern for wide data
+           tables on a small screen (the rest of the page never scrolls
+           horizontally, only this box does). */
+        div[data-testid="stVerticalBlock"]:has(> div[data-testid="stElementContainer"] div.table-card-marker) {
+            overflow-x: auto !important;
+            /* Streamlit's own generated class sets a plain overflow:auto
+               (both axes) on this element — its content is a few px taller
+               than the box, so that native overflow-y:auto was adding a
+               second, unwanted vertical scrollbar inside the card on top
+               of the intended horizontal one. */
+            overflow-y: hidden !important;
+            -webkit-overflow-scrolling: touch;
+            padding: 12px 12px 4px !important;
+        }
+        div[data-testid="stHorizontalBlock"]:has(div.tbl-header-row),
+        div[data-testid="stHorizontalBlock"]:has(div.tbl-data-row) {
+            flex-wrap: nowrap !important;
+            width: 780px !important;
+            /* Streamlit's own class caps this at max-width:100% — a
+               separate property from width, so !important on width alone
+               doesn't beat it; max-width must be cleared too or the row
+               stays clamped to the (narrow) viewport regardless. */
+            max-width: none !important;
+            flex: none !important;
+        }
+        /* Streamlit gives every column a large built-in min-width of its
+           own (its native safeguard that would otherwise auto-stack them
+           on a narrow screen) — forcing the row above to a fixed width
+           does nothing until each column's own min-width is cleared too,
+           otherwise the row still balloons to fit all 10 columns' native
+           minimums (~700px+ each) instead of sharing the 780px total. */
+        div[data-testid="stHorizontalBlock"]:has(div.tbl-header-row) div[data-testid="stColumn"],
+        div[data-testid="stHorizontalBlock"]:has(div.tbl-data-row) div[data-testid="stColumn"] {
+            min-width: 0 !important;
+        }
+        /* The View/Save/Delete action columns are narrow enough that their
+           button label wraps onto one letter per line — shrink the text
+           and kill the wrap so "View" reads as one word, not a stack. */
+        div[data-testid="stHorizontalBlock"]:has(div.tbl-data-row) [class*="st-key-view_"] button {
+            font-size: 10.5px !important;
+            padding: 6px 4px !important;
+            white-space: nowrap !important;
+        }
+
+        /* Tenders Trend header: title / portal toggle / date-range dropdown
+           natively stack into 3 separate rows on a narrow screen — put the
+           toggle and dropdown on one shared row instead (title keeps its
+           own full-width row above them), so the card's header takes less
+           vertical space and the chart below reads as more prominent. */
+        /* :has() matches an ancestor at ANY depth, not just the nearest
+           one — a plain :has(.st-key-chart_trend_portal) also matched the
+           much bigger OUTER 2-column row (dept chart | trend chart) that
+           wraps this whole card, since it too technically "has" that
+           descendant far below. That silently forced the entire Trend
+           card's outer column to shrink to content width instead of
+           staying full-width. Requiring the marker to be a DIRECT CHILD's
+           descendant (the same proven pattern used for table-card-marker
+           and dept-chart-card-marker above) avoids that — the outer
+           column's direct child is a different element type entirely, so
+           it can no longer match by accident. */
+        div[data-testid="stHorizontalBlock"]:has(> div[data-testid="stColumn"] > div[data-testid="stVerticalBlock"] > div[data-testid="stElementContainer"] div.trend-toggle-col-marker) {
+            flex-wrap: wrap !important;
+            row-gap: 8px !important;
+        }
+        /* "Tenders Trend" heading itself is dropped on mobile (the toggle
+           and dropdown alone make it clear what the chart shows), which
+           also removes its own full-width row and shrinks the card. */
+        div[data-testid="stHorizontalBlock"]:has(> div[data-testid="stColumn"] > div[data-testid="stVerticalBlock"] > div[data-testid="stElementContainer"] div.trend-toggle-col-marker) > div[data-testid="stColumn"]:nth-child(1) {
+            display: none !important;
+        }
+        div[data-testid="stColumn"]:has(> div[data-testid="stVerticalBlock"] > div[data-testid="stElementContainer"] div.trend-toggle-col-marker) {
+            order: 2;
+            flex: 1 1 auto !important;
+            min-width: 0 !important;
+            max-width: none !important;
+        }
+        div[data-testid="stColumn"]:has(> div[data-testid="stVerticalBlock"] > div[data-testid="stElementContainer"] div.trend-range-col-marker) {
+            order: 3;
+            flex: 0 0 auto !important;
+            min-width: 0 !important;
+            max-width: none !important;
+        }
+        /* The Trend card's own uniform 15px padding leaves a tall blank
+           strip above the GeM/KPPP toggle now that the heading above it is
+           gone. Can't shrink the card's own padding directly — the only
+           selector reaching the card container from the marker also
+           matches an unrelated outer page wrapper (Streamlit repeats the
+           same VerticalBlock>LayoutWrapper>HorizontalBlock nesting pattern
+           at multiple depths, and nested :has() isn't supported here to
+           disambiguate them). Pulling the toggle row itself up with a
+           negative margin — on the one selector already proven unique
+           above — gives the same visual result instead. */
+        div[data-testid="stHorizontalBlock"]:has(> div[data-testid="stColumn"] > div[data-testid="stVerticalBlock"] > div[data-testid="stElementContainer"] div.trend-toggle-col-marker) {
+            margin-top: -9px !important;
+        }
+        /* Same 15px card padding on the bottom side, below the chart —
+           a plain marker (rather than fighting :has() ambiguity again)
+           right after the chart gives a clean, unambiguous handle to pull
+           the card's visual bottom edge up. */
+        div[data-testid="stElementContainer"]:has(div.trend-chart-bottom-marker) {
+            margin-bottom: -10px !important;
+        }
+
+        /* Touch targets — every button gets a comfortable minimum tap
+           height on top of whatever desktop sizing it already has. */
+        div[data-testid="stButton"] button {
+            min-height: 40px;
+        }
+
+        /* "Tenders by Department" donut chart card — hidden entirely on
+           mobile (heading, GeM/KPPP toggle, donut, and its legend list all
+           together), per explicit request. Desktop/laptop is untouched —
+           this rule only exists inside this mobile media query. */
+        div[data-testid="stVerticalBlock"]:has(> div[data-testid="stElementContainer"] div.dept-chart-card-marker) {
+            display: none !important;
+        }
+
+        /* Prev / page-number / Next pagination row below the table: the
+           4-column split (a wide empty spacer + 3 narrow columns) wraps
+           each control onto its own row on a narrow screen — force one
+           row instead, dropping the spacer and letting each control size
+           to its own content. */
+        div[data-testid="stHorizontalBlock"]:has(div.pgn-prev-marker) {
+            flex-wrap: nowrap !important;
+            justify-content: center !important;
+            gap: 10px !important;
+        }
+        div[data-testid="stHorizontalBlock"]:has(div.pgn-prev-marker) > div[data-testid="stColumn"]:first-child {
+            display: none !important;
+        }
+        /* flex-basis:auto would normally shrink-to-fit each column to its
+           content's natural width, but Streamlit's own element wrapper
+           inside the column carries an explicit width:100% — that breaks
+           the browser's intrinsic-size calculation (a definite width
+           doesn't contribute to the parent's shrink-to-fit sizing the way
+           natural content would), collapsing the column to near 0 instead
+           of the button's real width. Fixed pixel widths sized to each
+           label sidestep that entirely. */
+        div[data-testid="stColumn"]:has(div.pgn-prev-marker),
+        div[data-testid="stColumn"]:has(div.pgn-next-marker) {
+            flex: 0 0 100px !important;
+            min-width: 0 !important;
+            max-width: none !important;
+        }
+        div[data-testid="stColumn"]:has(div.pgn-page-marker) {
+            flex: 0 0 60px !important;
+            min-width: 0 !important;
+            max-width: none !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+        }
+        div[data-testid="stColumn"]:has(div.pgn-prev-marker) button,
+        div[data-testid="stColumn"]:has(div.pgn-next-marker) button {
+            white-space: nowrap !important;
+            width: 100% !important;
+            padding: 8px 6px !important;
+        }
+        /* Gap between the table and the Prev/Next row: a "---" divider
+           (an <hr> with its own ~1em top/bottom margin) sits between them,
+           each side also claiming a full 16px flex gap — hiding it and
+           pulling the row up closes the ~81px blank strip down to 2px. */
+        div[data-testid="stElementContainer"]:has(+ div[data-testid="stLayoutWrapper"] div.pgn-prev-marker) {
+            display: none !important;
+        }
+        div[data-testid="stHorizontalBlock"]:has(div.pgn-prev-marker) {
+            margin-top: -14px !important;
+        }
+    }
+
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -838,6 +1213,26 @@ with st.sidebar:
                 on_kppp_search(criteria)
                 st.success("Searching KPPP — this filter will keep running automatically from now on.")
 
+    with st.expander(f"🔎 Search History ({get_stats()['ceo_searches']})", expanded=False):
+        searches = get_all_ceo_searches()
+        if searches:
+            for s in searches:
+                col_s, col_d = st.columns([4, 1])
+                with col_s:
+                    st.markdown(f"""
+                    <div class='tender-card'>
+                        <div class='tender-title'>🔍 {s['keyword']}</div>
+                        <div class='tender-meta'>Portal: {s['portal']} | Searched {s['frequency']} times | Last: {s['searched_at'][:16]}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                with col_d:
+                    if st.button("🗑️", key=f"del_search_{s['id']}", help="Delete this search"):
+                        delete_ceo_search(s['id'])
+                        st.success(f"Deleted '{s['keyword']}' — the agent will stop searching for it.")
+                        st.rerun()
+        else:
+            st.info("No searches yet.")
+
     state = get_state()
     status = state.get("status", "idle")
     status_colors = {
@@ -913,11 +1308,11 @@ with c3:
 
 with c4:
     if st.button(
-        f"🔎  {stats['ceo_searches']}\nSearch History",
+        f"🕒  {stats['expired']}\nExpired Tenders",
         key="btn_searches", use_container_width=True,
-        type="primary" if active == "searches" else "secondary"
+        type="primary" if active == "expired" else "secondary"
     ):
-        st.session_state.active_section = "searches"
+        st.session_state.active_section = "expired"
         st.session_state.page_num = 1
         st.session_state.chart_drill_filter = None
         st.session_state.trend_chart_reset_counter += 1
@@ -1043,6 +1438,7 @@ def _render_dept_chart():
     # genuine new department click escalates to a full app rerun (needed so
     # the drilled-down table below can update).
     with st.container(border=True):
+        st.markdown('<div class="dept-chart-card-marker"></div>', unsafe_allow_html=True)
         dept_title_col, dept_toggle_col = st.columns([2, 2])
         with dept_title_col:
             st.markdown("**Tenders by Department**")
@@ -1239,12 +1635,14 @@ def _render_trend_chart():
     # date is picked, since the drilled-down table lives outside this
     # fragment and needs a full rerun to update.
     with st.container(border=True):
-        trend_title_col, trend_toggle_col, trend_range_col = st.columns([2, 2, 2])
+        trend_title_col, trend_toggle_col, trend_range_col = st.columns([2, 2, 2], vertical_alignment="center")
         with trend_title_col:
             st.markdown("**Tenders Trend**")
         with trend_toggle_col:
+            st.markdown('<div class="trend-toggle-col-marker"></div>', unsafe_allow_html=True)
             trend_portal = _chart_portal_toggle("chart_trend_portal")
         with trend_range_col:
+            st.markdown('<div class="trend-range-col-marker"></div>', unsafe_allow_html=True)
             trend_range = st.selectbox(
                 "Range", ["Last 7 Days", "Last 14 Days", "Last 30 Days"],
                 key="chart_trend_range", label_visibility="collapsed", filter_mode=None,
@@ -1283,11 +1681,16 @@ def _render_trend_chart():
         click_points = alt.Chart(trend_df).mark_point(size=120, filled=True, color="#4F46E5", opacity=1).encode(
             x=trend_x, y=trend_y, tooltip=trend_tooltip,
         ).add_params(trend_click)
-        trend_chart_obj = (base_line + click_points).properties(height=190)
+        # 190 would match the donut chart's own plot height, but the
+        # rotated "05 Sep" x-axis tick labels below it add extra vertical
+        # space the donut side doesn't have (it has a legend instead) —
+        # trimmed here so the two cards end up the same overall height.
+        trend_chart_obj = (base_line + click_points).properties(height=174)
         trend_event = st.altair_chart(
             trend_chart_obj, width='stretch', on_select="rerun",
             key=f"trend_chart_select_{st.session_state.trend_chart_reset_counter}",
         )
+        st.markdown('<div class="trend-chart-bottom-marker"></div>', unsafe_allow_html=True)
 
         clicked_points = trend_event.selection.get("trend_click") if trend_event and trend_event.selection else None
         if clicked_points:
@@ -1353,29 +1756,8 @@ if st.session_state.scroll_to_table:
 
 section = st.session_state.active_section
 
-# ── CEO SEARCHES ──────────────────────────────────────────
-if section == "searches":
-    searches = get_all_ceo_searches()
-    if searches:
-        for s in searches:
-            col_s, col_d = st.columns([4, 1])
-            with col_s:
-                st.markdown(f"""
-                <div class='tender-card'>
-                    <div class='tender-title'>🔍 {s['keyword']}</div>
-                    <div class='tender-meta'>Portal: {s['portal']} | Searched {s['frequency']} times | Last: {s['searched_at'][:16]}</div>
-                </div>
-                """, unsafe_allow_html=True)
-            with col_d:
-                if st.button("🗑️ Delete", key=f"del_search_{s['id']}"):
-                    delete_ceo_search(s['id'])
-                    st.success(f"Deleted '{s['keyword']}' — the agent will stop searching for it.")
-                    st.rerun()
-    else:
-        st.info("No searches yet.")
-
 # ── PATTERNS ──────────────────────────────────────────────
-elif section == "patterns":
+if section == "patterns":
     patterns = get_learned_patterns()
     if patterns:
         for p in patterns:
@@ -1454,8 +1836,14 @@ else:
         elif section == "saved":
             tenders = get_all_tenders("saved")
             section_title = "💾 Saved Tenders"
+        elif section == "expired":
+            tenders = get_all_tenders("expired")
+            section_title = "🕒 Expired Tenders"
         else:
-            tenders = get_all_tenders()
+            # "All Tenders" means everything still active — a tender past
+            # its deadline moves to its own Expired card instead of
+            # cluttering this list with closed-out bids.
+            tenders = [t for t in get_all_tenders() if t.get("status") != "expired"]
             section_title = "📋 All Tenders"
 
         current_portal_filter = st.session_state.get("portal_filter_value", "GeM")
@@ -1820,80 +2208,88 @@ else:
             end = start + page_size
             page_tenders = tenders[start:end]
 
-            # Table header
-            st.markdown('<div class="table-card-marker"></div>', unsafe_allow_html=True)
-            h1, h2, h3, h4, h5, h6, h7, h8, h9, h10 = st.columns([0.5, 1.5, 2.1, 1.3, 1.6, 1.2, 1.2, 0.8, 0.8, 0.8])
-            h1.markdown('<span class="th-cell">Sl No</span>', unsafe_allow_html=True)
-            h2.markdown('<span class="th-cell">Bid Number</span>', unsafe_allow_html=True)
-            h3.markdown('<span class="th-cell">Item Name</span>', unsafe_allow_html=True)
-            h4.markdown('<span class="th-cell">Department</span>', unsafe_allow_html=True)
-            qty_col_label = "Location" if current_portal_filter == "KPPP" else "Qty"
-            h5.markdown(f'<span class="th-cell">{qty_col_label}</span>', unsafe_allow_html=True)
-            h6.markdown('<span class="th-cell">Start Date</span>', unsafe_allow_html=True)
-            h7.markdown('<span class="th-cell">End Date</span>', unsafe_allow_html=True)
-            h8.markdown("")
-            h9.markdown("")
-            h10.markdown("")
-            # st.markdown("---")
+            # Table header — the header + all data rows live inside their
+            # own container so the horizontal-scroll CSS (mobile only) can
+            # scope overflow-x to just this box instead of the whole page;
+            # previously these were plain top-level elements, so scrolling
+            # the wide table on mobile dragged the entire page sideways too.
+            with st.container():
+                st.markdown('<div class="table-card-marker"></div>', unsafe_allow_html=True)
+                h1, h2, h3, h4, h5, h6, h7, h8, h9, h10 = st.columns([0.5, 1.5, 2.1, 1.3, 1.6, 1.2, 1.2, 0.8, 0.8, 0.8])
+                h1.markdown('<div class="tbl-header-row"></div><span class="th-cell">Sl No</span>', unsafe_allow_html=True)
+                h2.markdown('<span class="th-cell">Bid Number</span>', unsafe_allow_html=True)
+                h3.markdown('<span class="th-cell">Item Name</span>', unsafe_allow_html=True)
+                h4.markdown('<span class="th-cell">Department</span>', unsafe_allow_html=True)
+                qty_col_label = "Location" if current_portal_filter == "KPPP" else "Qty"
+                h5.markdown(f'<span class="th-cell">{qty_col_label}</span>', unsafe_allow_html=True)
+                h6.markdown('<span class="th-cell">Start Date</span>', unsafe_allow_html=True)
+                h7.markdown('<span class="th-cell">End Date</span>', unsafe_allow_html=True)
+                h8.markdown("")
+                h9.markdown("")
+                h10.markdown("")
+                # st.markdown("---")
 
-            for idx, tender in enumerate(page_tenders):
-                tid = tender["id"]
-                sl_no = start + idx + 1
-                bid_number = tender.get("tender_number", "N/A")
-                title = tender.get("title", "Unknown")
-                department = tender.get("department", "N/A")
-                # KPPP tenders have no quantity field at all (never scraped —
-                # the portal doesn't expose one); its own site shows Location
-                # in that spot instead, which we do have real data for.
-                if (tender.get("portal") or "").upper() == "KPPP":
-                    quantity = tender.get("location") or "N/A"
-                else:
-                    quantity = tender.get("quantity", "N/A")
-                start_date = tender.get("published_date", "N/A")
-                end_date = tender.get("deadline", "N/A")
-                portal = tender.get("portal", "")
-                portal_chip_class = "portal-chip-kppp" if portal.upper() == "KPPP" else "portal-chip-gem"
-
-                r1, r2, r3, r4, r5, r6, r7, r8, r9, r10 = st.columns([0.5, 1.5, 2.1, 1.3, 1.6, 1.2, 1.2, 0.8, 0.8, 0.8])
-                r1.markdown(f'<span class="td-slno">{sl_no}</span>', unsafe_allow_html=True)
-                r2.markdown(
-                    f'<div class="mono td-bid">{bid_number}</div>'
-                    f'<span class="portal-chip {portal_chip_class}">{portal or "N/A"}</span>',
-                    unsafe_allow_html=True,
-                )
-                r3.markdown(f"{title[:60]}")
-                r4.markdown(f'<span class="td-dept">{department[:30] if department else "N/A"}</span>', unsafe_allow_html=True)
-                r5.markdown(f'<span class="mono td-qty">{quantity}</span>', unsafe_allow_html=True)
-                r6.markdown(f'<span class="mono td-date">{start_date}</span>', unsafe_allow_html=True)
-                r7.markdown(f'<span class="mono enddate-chip">{end_date}</span>', unsafe_allow_html=True)
-                with r8:
-                    if st.button("View", key=f"view_{tid}_{section}"):
-                        st.session_state.viewing_tender_id = tid
-                        st.rerun()
-                with r9:
-                    tender_status = tender.get("status", "new")
-                    if tender_status == "saved":
-                        if st.button("🔓", key=f"table_unsave_{tid}_{section}", help="Unsave this tender"):
-                            update_tender_status(tid, "new")
-                            st.rerun()
+                for idx, tender in enumerate(page_tenders):
+                    tid = tender["id"]
+                    sl_no = start + idx + 1
+                    bid_number = tender.get("tender_number", "N/A")
+                    title = tender.get("title", "Unknown")
+                    department = tender.get("department", "N/A")
+                    # KPPP tenders have no quantity field at all (never scraped —
+                    # the portal doesn't expose one); its own site shows Location
+                    # in that spot instead, which we do have real data for.
+                    if (tender.get("portal") or "").upper() == "KPPP":
+                        quantity = tender.get("location") or "N/A"
                     else:
-                        if st.button("💾", key=f"table_save_{tid}_{section}", help="Save this tender"):
-                            update_tender_status(tid, "saved")
+                        quantity = tender.get("quantity", "N/A")
+                    start_date = tender.get("published_date", "N/A")
+                    end_date = tender.get("deadline", "N/A")
+                    portal = tender.get("portal", "")
+                    portal_chip_class = "portal-chip-kppp" if portal.upper() == "KPPP" else "portal-chip-gem"
+
+                    r1, r2, r3, r4, r5, r6, r7, r8, r9, r10 = st.columns([0.5, 1.5, 2.1, 1.3, 1.6, 1.2, 1.2, 0.8, 0.8, 0.8])
+                    r1.markdown(f'<div class="tbl-data-row"></div><span class="td-slno">{sl_no}</span>', unsafe_allow_html=True)
+                    r2.markdown(
+                        f'<div class="mono td-bid">{bid_number}</div>'
+                        f'<span class="portal-chip {portal_chip_class}">{portal or "N/A"}</span>',
+                        unsafe_allow_html=True,
+                    )
+                    r3.markdown(f"{title[:60]}")
+                    r4.markdown(f'<span class="td-dept">{department[:30] if department else "N/A"}</span>', unsafe_allow_html=True)
+                    r5.markdown(f'<span class="mono td-qty">{quantity}</span>', unsafe_allow_html=True)
+                    r6.markdown(f'<span class="mono td-date">{start_date}</span>', unsafe_allow_html=True)
+                    r7.markdown(f'<span class="mono enddate-chip">{end_date}</span>', unsafe_allow_html=True)
+                    with r8:
+                        if st.button("View", key=f"view_{tid}_{section}"):
+                            st.session_state.viewing_tender_id = tid
                             st.rerun()
-                with r10:
-                    if st.button("🗑️", key=f"table_delete_{tid}_{section}", help="Delete this tender"):
-                        delete_tender(tid)
-                        st.rerun()
+                    with r9:
+                        tender_status = tender.get("status", "new")
+                        if tender_status == "saved":
+                            if st.button("🔓", key=f"table_unsave_{tid}_{section}", help="Unsave this tender"):
+                                update_tender_status(tid, "new")
+                                st.rerun()
+                        else:
+                            if st.button("💾", key=f"table_save_{tid}_{section}", help="Save this tender"):
+                                update_tender_status(tid, "saved")
+                                st.rerun()
+                    with r10:
+                        if st.button("🗑️", key=f"table_delete_{tid}_{section}", help="Delete this tender"):
+                            delete_tender(tid)
+                            st.rerun()
 
             st.markdown("---")
             _, col_prev2, col_page2, col_next2 = st.columns([5, 1, 1, 1])
             with col_prev2:
+                st.markdown('<div class="pgn-prev-marker"></div>', unsafe_allow_html=True)
                 if st.button("◀ Prev", disabled=st.session_state.page_num <= 1, key="prev_btn2"):
                     st.session_state.page_num -= 1
                     st.rerun()
             with col_page2:
+                st.markdown('<div class="pgn-page-marker"></div>', unsafe_allow_html=True)
                 st.markdown(f"**{st.session_state.page_num}/{total_pages}**")
             with col_next2:
+                st.markdown('<div class="pgn-next-marker"></div>', unsafe_allow_html=True)
                 if st.button("Next ▶", disabled=st.session_state.page_num >= total_pages, key="next_btn2"):
                     st.session_state.page_num += 1
                     st.rerun()

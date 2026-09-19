@@ -12,13 +12,12 @@ from analysis.company_profile import load_company_profile, company_profile_as_te
 
 MATCH_SCHEMA_EXAMPLE = """{
   "overall_recommendation": "Recommend Bid",
-  "overall_match_percent": 78,
   "executive_summary": "One plain-English sentence summarizing the verdict and the main blocker if any.",
-  "category_breakdown": [
-    {"category": "Turnover Eligibility", "match_percent": 100, "status": "Met", "note": "Short reason."},
-    {"category": "Certifications", "match_percent": 80, "status": "Partially Met", "note": "Short reason."},
-    {"category": "Past Project Experience", "match_percent": 90, "status": "Met", "note": "Short reason."},
-    {"category": "Financial Capacity", "match_percent": 100, "status": "Met", "note": "Short reason."}
+  "requirement_checklist": [
+    {"category": "Bidder Eligibility (Criteria 1)", "requirement": "Minimum 3 years experience in Supply of Body Worn/Surveillance Cameras", "met": true},
+    {"category": "Bidder Eligibility (Criteria 1)", "requirement": "Company/Firm/establishment Registration certificate", "met": true},
+    {"category": "Certifications (Criteria 7)", "requirement": "ISO 9001:2015", "met": true},
+    {"category": "Certifications (Criteria 7)", "requirement": "ISO 14001:2015", "met": false}
   ],
   "why_to_bid": ["Concrete real reason 1", "Concrete real reason 2"],
   "risks_and_gaps": ["Concrete real gap or risk 1", "Concrete real gap or risk 2"],
@@ -37,6 +36,15 @@ def _build_prompt(tender: dict, details: dict, company_text: str) -> str:
     financial = details.get("financial", {}) or {}
     scope = details.get("scope", {}) or {}
     eligibility = details.get("eligibility", {}) or {}
+    checklist_items = details.get("eligibility_checklist") or []
+
+    if checklist_items:
+        checklist_block = "\n".join(
+            f"{i+1}. [{item.get('category', 'General')}] {item.get('requirement', '')}"
+            for i, item in enumerate(checklist_items)
+        )
+    else:
+        checklist_block = "(No itemized eligibility checklist was extracted from this tender's documents.)"
 
     return f"""You are a senior bid-strategy analyst for an Indian government-tender bidding company called Chipscape.
 
@@ -56,19 +64,22 @@ Certifications Required (from tender, if stated): {eligibility.get('certificatio
 Documents Required (from tender, if stated): {eligibility.get('documents_required', '')}
 Special Clauses: {eligibility.get('special_clauses', '')}
 
+ELIGIBILITY CHECKLIST — every individual requirement/mandatory document pulled from the tender's own Eligibility Criteria section, numbered in the order they appeared:
+{checklist_block}
+
 {company_text}
 
-Now produce a bid-eligibility comparison. Respond ONLY with valid JSON in exactly this shape (numbers as plain ints, no % signs, "met" as true/false):
+Now produce a bid-eligibility comparison. Respond ONLY with valid JSON in exactly this shape ("met" as true/false, no other value):
 {MATCH_SCHEMA_EXAMPLE}
 
 Rules:
 - Always write currency amounts as "Rs" (e.g. "Rs 1.5 Cr") — never use the Rupee symbol, it does not render correctly in the PDF report.
 - Use only plain ASCII punctuation — a plain hyphen "-" instead of an em/en dash, and straight quotes ' and " instead of curly/smart quotes. Special characters do not render correctly in the PDF report.
-- overall_match_percent must be a single integer 0-100 reflecting how well Chipscape's real profile matches this tender's real stated requirements.
-- category_breakdown must always include all 4 categories (Turnover Eligibility, Certifications, Past Project Experience, Financial Capacity) even if a category is "Not specified in tender" — in that case set match_percent to 100 and note "Tender does not specify this requirement."
-- comparison_table should list every concrete requirement the tender actually states, matched against the real company data. Do not fabricate requirements that aren't in the tender text.
+- requirement_checklist MUST contain exactly one output entry for every single numbered item in the ELIGIBILITY CHECKLIST above, in the same order, with the same "category" and "requirement" text carried over unchanged — you are only adding the "met" true/false decision for each one, never merging, dropping, reordering, or adding items. If the ELIGIBILITY CHECKLIST above is empty, return an empty list for requirement_checklist.
+- Decide "met": true only when Chipscape's real company data (given above) actually satisfies that specific requirement. If the company data is silent on a requirement (no matching turnover figure, no matching certificate, no matching document/experience), mark it "met": false — never assume something is satisfied just because the tender doesn't specify a strict minimum.
+- comparison_table should list every concrete requirement the tender actually states, matched against the real company data, with a short explanation of the company's real status for each. Do not fabricate requirements that aren't in the tender text.
 - why_to_bid and risks_and_gaps must be concrete and specific (mention real numbers, real cert names, real project names) — never generic filler.
-- Each certification line in the company data below carries a "Cross-check" note showing whether it was independently verified against the real certificate PDF, found to mismatch it, or could not be verified (e.g. a scanned certificate with no readable text). Treat "Cross-check: Mismatch Found" as a genuine risk worth listing under risks_and_gaps — a certificate that disagrees with its own register entry is a real compliance concern, not a minor detail. Treat "Cross-check: Not Independently Verifiable" as a normal certification (still counts toward eligibility) but you may note in passing that it wasn't independently confirmed, without treating it as a strong risk.
+- Each certification line in the company data below carries a "Cross-check" note showing whether it was independently verified against the real certificate PDF, found to mismatch it, or could not be verified (e.g. a scanned certificate with no readable text). Treat "Cross-check: Mismatch Found" as a genuine risk worth listing under risks_and_gaps, and mark that specific certificate's requirement_checklist entry as "met": false — a certificate that disagrees with its own register entry is a real compliance concern, not a minor detail. Treat "Cross-check: Not Independently Verifiable" as a normal certification (still counts as "met": true) but you may note in passing that it wasn't independently confirmed, without treating it as a strong risk.
 - overall_recommendation must be exactly one of: "Recommend Bid", "Recommend with Caution", "Do Not Recommend"."""
 
 
@@ -97,7 +108,16 @@ def match_tender_to_company(tender: dict, details: dict, max_attempts: int = 3) 
             elif "```" in response:
                 response = response.split("```")[1].split("```")[0]
             result = json.loads(response)
-            if result.get("category_breakdown") and result.get("overall_recommendation"):
+            if "requirement_checklist" in result and result.get("overall_recommendation"):
+                checklist = result.get("requirement_checklist") or []
+                # Derived directly from the binary checklist rather than a
+                # separate AI guess, so the headline percentage can never
+                # disagree with what the table itself shows.
+                if checklist:
+                    met_count = sum(1 for item in checklist if item.get("met") is True)
+                    result["overall_match_percent"] = round(100 * met_count / len(checklist))
+                else:
+                    result["overall_match_percent"] = None
                 return sanitize_pdf_text(result)
             last_error = "response missing required fields"
         except Exception as e:
@@ -109,7 +129,7 @@ def match_tender_to_company(tender: dict, details: dict, max_attempts: int = 3) 
         "overall_recommendation": "Unable to Determine",
         "overall_match_percent": None,
         "executive_summary": "Company-match comparison could not be generated for this tender — please review manually.",
-        "category_breakdown": [],
+        "requirement_checklist": [],
         "why_to_bid": [],
         "risks_and_gaps": [],
         "action_needed": [],

@@ -28,6 +28,30 @@ def clean(text: str) -> str:
         return "Not available"
     return " ".join(text.strip().split())
 
+_START_DATE_RE = re.compile(
+    r"Start\s+Date[:\s]+(\d{2})-(\d{2})-(\d{4})\s+(\d{1,2}):(\d{2})\s*([AP]M)",
+    re.IGNORECASE
+)
+
+
+def _extract_start_datetime(card_text: str):
+    """Parses the "Start Date" GeM prints on a bid card (DD-MM-YYYY
+    hh:mm AM/PM) into a datetime, or None if the card has no parseable
+    Start Date — used to decide, page by page, whether a date-limited
+    search has reached tenders already covered by an earlier run."""
+    from datetime import datetime
+    match = _START_DATE_RE.search(card_text)
+    if not match:
+        return None
+    day, month, year, hour, minute, meridiem = match.groups()
+    try:
+        return datetime.strptime(
+            f"{day}-{month}-{year} {hour}:{minute} {meridiem.upper()}",
+            "%d-%m-%Y %I:%M %p"
+        )
+    except ValueError:
+        return None
+
 def download_file(url: str, save_path: str) -> bool:
     """Download a file from URL and save to path.
 
@@ -85,7 +109,7 @@ def find_supporting_documents_in_pdf1(pdf1_path: str) -> list:
         print(f"[GeM] Found {len(urls)} supporting document(s) in PDF 1")
     return urls
 
-async def search_gem(keyword: str, category: str = "", max_pages: int = 5, should_stop=None) -> list:
+async def search_gem(keyword: str, category: str = "", max_pages: int = 5, should_stop=None, stop_before_date=None) -> list:
     """
     Search GeM portal for tenders matching keyword.
     Extracts all details from bid cards.
@@ -95,6 +119,13 @@ async def search_gem(keyword: str, category: str = "", max_pages: int = 5, shoul
     between cards — when it returns True, the search stops early and
     returns whatever tenders were already extracted, instead of running
     the remaining pages/cards to completion regardless.
+
+    stop_before_date: optional datetime — once a full page of results comes
+    back with not a single card's Start Date newer than this, pagination
+    stops after that page (GeM's own listing sorts newest Start Date
+    first, so once a page has nothing newer, every following page would
+    too). Used for a keyword's repeat searches — the first-ever search for
+    a keyword always leaves this None and pages through everything.
     """
     try:
         from playwright.async_api import async_playwright
@@ -181,6 +212,25 @@ async def search_gem(keyword: str, category: str = "", max_pages: int = 5, shoul
                 if should_stop and should_stop():
                     print("[GeM] Stop requested — ending pagination early")
                     break
+
+                # Date-limited repeat search: GeM lists newest Start Date
+                # first, so once a whole page has nothing newer than the
+                # last time this keyword was searched, everything from here
+                # on has already been seen — stop instead of paging further.
+                if stop_before_date is not None:
+                    page_has_newer = False
+                    for card in bid_cards:
+                        card_text = await card.inner_text()
+                        card_dt = _extract_start_datetime(card_text)
+                        if card_dt and card_dt > stop_before_date:
+                            page_has_newer = True
+                            break
+                    if not page_has_newer:
+                        print(
+                            f"[GeM] Page {page_num + 1} had no tenders newer than "
+                            f"{stop_before_date} — stopping (date-limited repeat search)"
+                        )
+                        break
 
                 # Try to go to next page
                 next_btn = await page.query_selector("a:has-text('Next')")
@@ -465,6 +515,6 @@ def download_gem_documents_sync(bid_no: str, bid_url: str = "") -> list:
     return asyncio.run(download_gem_documents(bid_no, bid_url))
 
 
-def search_gem_sync(keyword: str, category: str = "", max_pages: int = 5, should_stop=None) -> list:
+def search_gem_sync(keyword: str, category: str = "", max_pages: int = 5, should_stop=None, stop_before_date=None) -> list:
     """Synchronous wrapper for search_gem."""
-    return asyncio.run(search_gem(keyword, category, max_pages, should_stop=should_stop))
+    return asyncio.run(search_gem(keyword, category, max_pages, should_stop=should_stop, stop_before_date=stop_before_date))

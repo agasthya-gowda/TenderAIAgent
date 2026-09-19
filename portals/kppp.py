@@ -18,7 +18,36 @@ load_dotenv()
 
 DOWNLOAD_PATH = os.getenv("DOWNLOAD_PATH", "downloads")
 
-async def _search_kppp_once(criteria: dict) -> tuple:
+
+def _parse_kppp_datetime(text: str):
+    """Parses KPPP's results-table 'NIT Published' column (confirmed live
+    as DD-MM-YYYY HH:MM:SS, e.g. '18-09-2026 19:10:33') into a datetime —
+    None (never raises) if it doesn't match, so a date-limited repeat
+    search can safely fall back to not skipping a row it can't parse."""
+    from datetime import datetime
+    if not text or not text.strip():
+        return None
+    for fmt in ("%d-%m-%Y %H:%M:%S", "%d-%m-%Y %H:%M", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(text.strip(), fmt)
+        except ValueError:
+            continue
+    return None
+
+
+async def _get_visible_results_table(page):
+    """KPPP keeps Goods/Works/Services as 3 separate <table> elements in
+    the DOM at once (only the active tab's is actually on screen) — a
+    plain 'table tbody tr' selector matches rows from all 3, so every
+    caller needs the one that's actually visible, not just the first
+    match. Returns None if none are visible yet."""
+    tables = await page.query_selector_all("table")
+    for t in tables:
+        if await t.is_visible():
+            return t
+    return None
+
+async def _search_kppp_once(criteria: dict, max_pages=None, stop_before_date=None) -> tuple:
     """
     Run one full attempt at searching KPPP using its real search form
     fields. Returns (tenders, entity_verified) — entity_verified is False
@@ -26,6 +55,18 @@ async def _search_kppp_once(criteria: dict) -> tuple:
     actually stick (KPPP's Angular app can reset/reload the entity list
     right after the category changes), in which case `tenders` is the
     unfiltered/wrong-filter list and must NOT be trusted by the caller.
+
+    max_pages: None means "page through every result KPPP has" (its own
+    ngx-pagination widget, confirmed live to run into the dozens of pages
+    for a broad category), same unlimited-by-default meaning as GeM's
+    search_gem. A number caps it.
+
+    stop_before_date: optional datetime — once a full page comes back with
+    not a single row's "NIT Published" date newer than this, pagination
+    stops after that page (KPPP lists newest-published first, confirmed
+    live — page 2 continued in descending order from where page 1 left
+    off). Used for a filter's repeat searches; a first-ever search leaves
+    this None and pages through everything.
 
     KPPP's own "Search Tenders" form takes Category, Procuring Entity,
     Tender Number, a tender-closure date range, a Regular/Prequalification/
@@ -263,88 +304,140 @@ async def _search_kppp_once(criteria: dict) -> tuple:
                 print(f"[KPPP] Search submitted with filter: {criteria}")
 
             # ── EXTRACT RESULTS ───────────────────────────
+            # Pages through KPPP's own ngx-pagination widget the same way
+            # search_gem pages through GeM's "Next" link — previously this
+            # only ever read the first page's first 10 rows (KPPP's real
+            # page size is 20, confirmed live, so even a single page was
+            # having half its own rows silently dropped), with no way to
+            # reach anything beyond page 1 at all.
             await page.wait_for_timeout(2000)
-            rows = await page.query_selector_all("table tbody tr")
-            print(f"[KPPP] Found {len(rows)} tenders")
-            total_rows = min(10, len(rows))
+            HARD_PAGE_CEILING = 200
+            page_num = 0
 
-            for row_index in range(total_rows):
-                try:
-                    # Re-query rows each time to avoid stale elements
-                    rows = await page.query_selector_all("table tbody tr")
-                    if row_index >= len(rows):
+            while max_pages is None or page_num < max_pages:
+                if page_num >= HARD_PAGE_CEILING:
+                    print(f"[KPPP] Hit hard safety ceiling of {HARD_PAGE_CEILING} pages, stopping")
+                    break
+
+                table = await _get_visible_results_table(page)
+                rows = await table.query_selector_all("tbody tr") if table else []
+                print(f"[KPPP] Page {page_num + 1}: found {len(rows)} rows")
+
+                page_has_newer = stop_before_date is None
+                for row_index in range(len(rows)):
+                    try:
+                        # Re-query rows each time to avoid stale elements
+                        # after a previous iteration's own DOM reads.
+                        table = await _get_visible_results_table(page)
+                        rows = await table.query_selector_all("tbody tr") if table else []
+                        if row_index >= len(rows):
+                            break
+                        row = rows[row_index]
+
+                        cols = await row.query_selector_all("td")
+                        if len(cols) < 8:
+                            continue
+
+                        procuring_entity = " ".join((await cols[1].inner_text()).strip().split())
+                        location         = " ".join((await cols[2].inner_text()).strip().split())
+                        tender_number    = " ".join((await cols[3].inner_text()).strip().split())
+                        tender_name      = " ".join((await cols[4].inner_text()).strip().split())
+                        tender_type      = " ".join((await cols[5].inner_text()).strip().split())
+                        estimated_value  = " ".join((await cols[6].inner_text()).strip().split())
+                        published_date   = " ".join((await cols[7].inner_text()).strip().split())
+                        deadline         = " ".join((await cols[8].inner_text()).strip().split()) if len(cols) > 8 else "Not available"
+
+                        if not estimated_value or estimated_value == "---":
+                            estimated_value = "Not available"
+                        if not deadline or deadline == "---":
+                            deadline = "Not available"
+
+                        if stop_before_date is not None:
+                            parsed = _parse_kppp_datetime(published_date)
+                            if parsed is None or parsed > stop_before_date:
+                                page_has_newer = True
+
+                        tender_url = "https://kppp.karnataka.gov.in/#/portal/searchTender/live"
+
+                        # Skip if already in database
+                        from database.db import get_conn
+                        conn = get_conn()
+                        existing = conn.execute(
+                            "SELECT id FROM tenders WHERE tender_number=?", (tender_number,)
+                        ).fetchone()
+                        conn.close()
+                        if existing:
+                            print(f"[KPPP] Skipping {tender_number} — already in database")
+                            continue
+
+                        # ── DOWNLOAD ──────────────────────────
+                        # Skip download during search — just collect data
+                        downloaded_files = []
+
+                        tenders.append({
+                            "title": tender_name,
+                            "portal": "KPPP",
+                            "url": tender_url,
+                            "category": category,
+                            "found_via": found_via_label,
+                            "tender_number": tender_number,
+                            "department": procuring_entity,
+                            "location": location,
+                            "tender_type": tender_type,
+                            "value": estimated_value,
+                            "deadline": deadline,
+                            "published_date": published_date,
+                            "emd": "See tender document",
+                            "description": f"KPPP tender by {procuring_entity}",
+                            "downloaded_files": downloaded_files,
+                            "relevance_score": 0.75
+                        })
+
+                        print(f"[KPPP] ✅ {tender_name[:60]}...")
+
+                    except Exception as e:
+                        print(f"[KPPP] Row error: {e}")
+                        continue
+
+                if not page_has_newer:
+                    print(
+                        f"[KPPP] Page {page_num + 1} had no tenders newer than "
+                        f"{stop_before_date} — stopping (date-limited repeat search)"
+                    )
+                    break
+
+                # Find this table's own visible "Next" control — KPPP keeps
+                # a separate ngx-pagination widget per tab's table, only
+                # one of which is ever visible at a time (see
+                # _get_visible_results_table). A disabled/last-page Next
+                # renders as a plain <span>, not an <a>, so its absence is
+                # the "no more pages" signal.
+                next_lis = await page.query_selector_all("li.pagination-next")
+                next_link = None
+                for li in next_lis:
+                    if await li.is_visible():
+                        next_link = await li.query_selector("a")
                         break
-                    row = rows[row_index]
-
-                    cols = await row.query_selector_all("td")
-                    if len(cols) < 8:
-                        continue
-
-                    procuring_entity = " ".join((await cols[1].inner_text()).strip().split())
-                    location         = " ".join((await cols[2].inner_text()).strip().split())
-                    tender_number    = " ".join((await cols[3].inner_text()).strip().split())
-                    tender_name      = " ".join((await cols[4].inner_text()).strip().split())
-                    tender_type      = " ".join((await cols[5].inner_text()).strip().split())
-                    estimated_value  = " ".join((await cols[6].inner_text()).strip().split())
-                    published_date   = " ".join((await cols[7].inner_text()).strip().split())
-                    deadline         = " ".join((await cols[8].inner_text()).strip().split()) if len(cols) > 8 else "Not available"
-
-                    if not estimated_value or estimated_value == "---":
-                        estimated_value = "Not available"
-                    if not deadline or deadline == "---":
-                        deadline = "Not available"
-
-                    tender_url = "https://kppp.karnataka.gov.in/#/portal/searchTender/live"
-
-                    # Skip if already in database
-                    from database.db import get_conn
-                    conn = get_conn()
-                    existing = conn.execute(
-                        "SELECT id FROM tenders WHERE tender_number=?", (tender_number,)
-                    ).fetchone()
-                    conn.close()
-                    if existing:
-                        print(f"[KPPP] Skipping {tender_number} — already in database")
-                        continue
-
-                    # ── DOWNLOAD ──────────────────────────
-                    # Skip download during search — just collect data
-                    downloaded_files = []
-
-                    tenders.append({
-                        "title": tender_name,
-                        "portal": "KPPP",
-                        "url": tender_url,
-                        "category": category,
-                        "found_via": found_via_label,
-                        "tender_number": tender_number,
-                        "department": procuring_entity,
-                        "location": location,
-                        "tender_type": tender_type,
-                        "value": estimated_value,
-                        "deadline": deadline,
-                        "published_date": published_date,
-                        "emd": "See tender document",
-                        "description": f"KPPP tender by {procuring_entity}",
-                        "downloaded_files": downloaded_files,
-                        "relevance_score": 0.75
-                    })
-
-                    print(f"[KPPP] ✅ {tender_name[:60]}...")
-
-                except Exception as e:
-                    print(f"[KPPP] Row error: {e}")
-                    continue
+                more_pages_allowed = max_pages is None or page_num < max_pages - 1
+                if next_link and more_pages_allowed:
+                    try:
+                        await next_link.click()
+                        await page.wait_for_timeout(2500)
+                    except Exception:
+                        break
+                else:
+                    break
+                page_num += 1
 
             await browser.close()
-            print(f"[KPPP] Done. Total: {len(tenders)} tenders")
+            print(f"[KPPP] Done. Total: {len(tenders)} tenders across {page_num + 1} page(s)")
             return tenders, entity_verified
 
     except Exception as e:
         print(f"[KPPP] Fatal error: {e}")
         return [], False
 
-async def search_kppp(criteria: dict, max_attempts: int = 7) -> list:
+async def search_kppp(criteria: dict, max_attempts: int = 7, max_pages=None, stop_before_date=None) -> list:
     """
     Search KPPP, retrying the whole attempt (fresh browser + CAPTCHA) when
     a requested procuring-entity filter didn't actually stick, instead of
@@ -352,9 +445,14 @@ async def search_kppp(criteria: dict, max_attempts: int = 7) -> list:
     Only returns tenders once the filter is confirmed applied — or once
     max_attempts is exhausted, in which case it returns nothing rather than
     ever return mismatched-department tenders under the requested filter.
+
+    max_pages / stop_before_date: passed straight through to
+    _search_kppp_once — see its docstring. Left None (unlimited, full
+    search) for a first-ever search of a filter; a repeat search passes
+    stop_before_date instead.
     """
     for attempt in range(1, max_attempts + 1):
-        tenders, entity_verified = await _search_kppp_once(criteria)
+        tenders, entity_verified = await _search_kppp_once(criteria, max_pages=max_pages, stop_before_date=stop_before_date)
         if entity_verified:
             return tenders
         print(f"[KPPP] Attempt {attempt}/{max_attempts} did not confirm the requested filter, retrying search...")
@@ -363,6 +461,6 @@ async def search_kppp(criteria: dict, max_attempts: int = 7) -> list:
     print(f"[KPPP] Giving up after {max_attempts} attempts — not returning unfiltered results")
     return []
 
-def search_kppp_sync(criteria: dict) -> list:
+def search_kppp_sync(criteria: dict, max_pages=None, stop_before_date=None) -> list:
     """Synchronous wrapper for search_kppp."""
-    return asyncio.run(search_kppp(criteria))
+    return asyncio.run(search_kppp(criteria, max_pages=max_pages, stop_before_date=stop_before_date))
