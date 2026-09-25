@@ -5,6 +5,7 @@ Tender Agent Dashboard
 import streamlit as st
 import os
 import json
+import html
 import pandas as pd
 import altair as alt
 from rapidfuzz import fuzz
@@ -15,6 +16,14 @@ from database.db import (
     get_stats as _get_stats,
     get_department_counts as _get_department_counts,
     get_daily_trend as _get_daily_trend,
+    get_company_turnover_list, add_company_turnover, update_company_turnover, delete_company_turnover,
+    get_company_credentials_list, add_company_credential, update_company_credential, delete_company_credential,
+    get_partners_list, add_partner, update_partner, delete_partner,
+    get_partner_credentials_list, add_partner_credential, update_partner_credential, delete_partner_credential,
+    get_project_references_list, add_project_reference, update_project_reference, delete_project_reference,
+    get_project_quantities_list, add_project_quantity, update_project_quantity, delete_project_quantity,
+    get_relevant_keywords_list, delete_relevant_keyword,
+    get_relevant_tenders_list,
 )
 
 
@@ -39,11 +48,360 @@ def get_department_counts(portal: str, top_n: int = 5):
 @st.cache_data(ttl=4)
 def get_daily_trend(portal: str, days: int = 7):
     return _get_daily_trend(portal, days)
+
+
+# ── ADMIN: generic insert/update/query CRUD section ────────
+# One reusable renderer instead of five near-identical blocks — the manager
+# asked that Chipscape's own credentials/turnover and any partner's
+# credentials live as real, editable database records ("if we got any new
+# certificate than it'll easily we can add that or update"). Each call below
+# just supplies the field list and the matching db.py functions.
+def _admin_crud_section(key_prefix, get_list_fn, add_fn, update_fn, delete_fn, fields, row_title_fn, entity_label="Record"):
+    """
+    fields: list of dicts, each {"key", "label", "type": "text"|"number"|"textarea"|"select",
+            "options": [...] (for select)}.
+    add_fn(**{field key: value}) / update_fn(row_id, **{field key: value}) / delete_fn(row_id)
+
+    The Modify action sits inside the table, one "✏️" button per row — not
+    a separate selection step. Add is the one button below the whole table.
+    Both open as a popup dialog, not an inline form taking up page space.
+    """
+    rows = get_list_fn()
+
+    @st.dialog(f"➕ Add {entity_label}")
+    def _add_dialog():
+        values = {}
+        for f in fields:
+            values[f["key"]] = _admin_field_input(f, default=None, key=f"{key_prefix}_dlg_add_{f['key']}")
+        if st.button("➕ Add", type="primary", use_container_width=True, key=f"{key_prefix}_dlg_add_submit"):
+            required_ok = all(values.get(f["key"]) not in (None, "") for f in fields if f.get("required"))
+            if not required_ok:
+                st.warning("Please fill in all required fields.")
+            else:
+                add_fn(**values)
+                st.rerun()
+
+    @st.dialog(f"✏️ Edit {entity_label}")
+    def _edit_dialog(row):
+        st.caption(row_title_fn(row))
+        values = {}
+        for f in fields:
+            values[f["key"]] = _admin_field_input(f, default=row.get(f["key"]), key=f"{key_prefix}_dlg_edit_{row['id']}_{f['key']}")
+        col_save, col_del = st.columns(2)
+        if col_save.button("💾 Update", type="primary", use_container_width=True, key=f"{key_prefix}_dlg_update"):
+            update_fn(row["id"], **values)
+            st.rerun()
+        if col_del.button("🗑️ Delete", use_container_width=True, key=f"{key_prefix}_dlg_delete"):
+            delete_fn(row["id"])
+            st.rerun()
+
+    if rows:
+        col_widths = [2] * len(fields) + [1]
+        header_cols = st.columns(col_widths)
+        for col, f in zip(header_cols[:-1], fields):
+            col.markdown(f"**{f['label']}**")
+        header_cols[-1].markdown("**Action**")
+        st.markdown("<hr style='margin:2px 0 8px 0;'>", unsafe_allow_html=True)
+
+        for r in rows:
+            row_cols = st.columns(col_widths)
+            for col, f in zip(row_cols[:-1], fields):
+                value = r.get(f["key"])
+                col.write(value if value not in (None, "") else "—")
+            if row_cols[-1].button("✏️", key=f"{key_prefix}_modify_{r['id']}", help=f"Modify {row_title_fn(r)}"):
+                _edit_dialog(r)
+    else:
+        st.caption("No records yet — add the first one below.")
+
+    st.markdown("<div style='margin-top:10px;'></div>", unsafe_allow_html=True)
+    if st.button(f"➕ Add {entity_label}", use_container_width=True, key=f"{key_prefix}_add_btn"):
+        _add_dialog()
+
+
+def _admin_field_input(f, default, key):
+    ftype = f.get("type", "text")
+    label = f["label"]
+    if ftype == "number":
+        return st.number_input(label, value=float(default) if default not in (None, "") else 0.0, key=key)
+    if ftype == "textarea":
+        return st.text_area(label, value=default or "", key=key)
+    if ftype == "select":
+        options = f["options"]
+        index = options.index(default) if default in options else 0
+        return st.selectbox(label, options, index=index, key=key)
+    return st.text_input(label, value=default or "", key=key, placeholder=f.get("placeholder", ""))
+
+
+def render_admin_page():
+    # A little breathing room above the heading — the page's tight
+    # block-container top padding (set globally for the main dashboard)
+    # otherwise crops the top of this heading's tall letters.
+    st.markdown("<div style='margin-top:18px;'></div>", unsafe_allow_html=True)
+    st.markdown("## 🛠️ Admin — Company Profile & Credentials")
+    st.caption(
+        "Chipscape's turnover, credentials, past-project references and any "
+        "subcontractor/system-integrator partner credentials — all stored as "
+        "database records here so a new certificate or next year's turnover "
+        "can be added or updated any time, instead of editing a spreadsheet."
+    )
+    if st.button("← Back to Dashboard", key="admin_back_btn"):
+        st.session_state.show_admin = False
+        st.rerun()
+
+    st.markdown("---")
+
+    tab_turnover, tab_creds, tab_partners, tab_projects, tab_quantities = st.tabs([
+        "💰 Turnover", "📜 Chipscape Credentials", "🤝 Partner Credentials",
+        "📁 Project References", "📦 Project Quantities"
+    ])
+
+    with tab_turnover:
+        _admin_crud_section(
+            "turnover", get_company_turnover_list, add_company_turnover, update_company_turnover, delete_company_turnover,
+            fields=[
+                {"key": "financial_year", "label": "Financial Year", "type": "text", "placeholder": "e.g. 2026-27", "required": True},
+                {"key": "turnover", "label": "Turnover", "type": "number", "required": True},
+                {"key": "total_with_gst", "label": "Total incl. GST", "type": "number"},
+                {"key": "status", "label": "Status", "type": "select", "options": ["Audited", "Unaudited", "Provisional"]},
+            ],
+            row_title_fn=lambda r: f"{r['financial_year']} — Rs {r['turnover']:,.0f}" if r.get("turnover") is not None else r['financial_year'],
+            entity_label="Turnover Year",
+        )
+
+    with tab_creds:
+        # db.py's add/update_company_credential take a "ctype" keyword (not
+        # "type", which would shadow the builtin) — bridge the field key here.
+        def _add_company_cred(**kw):
+            kw["ctype"] = kw.pop("type")
+            add_company_credential(**kw)
+
+        def _update_company_cred(rid, **kw):
+            kw["ctype"] = kw.pop("type")
+            update_company_credential(rid, **kw)
+
+        _admin_crud_section(
+            "company_cred", get_company_credentials_list,
+            _add_company_cred, _update_company_cred, delete_company_credential,
+            fields=[
+                {"key": "name", "label": "Certificate/Registration Name", "type": "text", "required": True},
+                {"key": "type", "label": "Type", "type": "text", "placeholder": "e.g. Certification, License, Registration"},
+                {"key": "issuing_authority", "label": "Issuing Authority", "type": "text"},
+                {"key": "certificate_no", "label": "Certificate No.", "type": "text"},
+                {"key": "issue_date", "label": "Issue Date", "type": "text", "placeholder": "DD-MM-YYYY"},
+                {"key": "expiry_date", "label": "Expiry Date", "type": "text", "placeholder": "DD-MM-YYYY or 'No expiry'"},
+                {"key": "status", "label": "Status", "type": "select", "options": ["Valid", "Expired"]},
+            ],
+            row_title_fn=lambda r: f"{r['name']} (expires {r.get('expiry_date') or 'N/A'})",
+            entity_label="Credential",
+        )
+
+    with tab_partners:
+        st.markdown("#### Partners")
+        partners = get_partners_list()
+        _admin_crud_section(
+            "partner", get_partners_list, add_partner, update_partner, delete_partner,
+            fields=[
+                {"key": "name", "label": "Partner Name", "type": "text", "required": True},
+                {"key": "role", "label": "Role", "type": "text", "placeholder": "e.g. Subcontractor, System Integrator, OEM Dealer"},
+                {"key": "notes", "label": "Notes", "type": "textarea"},
+            ],
+            row_title_fn=lambda r: f"{r['name']} ({r.get('role') or 'Partner'})",
+            entity_label="Partner",
+        )
+
+        st.markdown("---")
+        st.markdown("#### Partner Credentials")
+        partners = get_partners_list()
+        if not partners:
+            st.caption("Add a partner above first, then its credentials here.")
+        else:
+            partner_names = {p["id"]: p["name"] for p in partners}
+            selected_partner_id = st.selectbox(
+                "Select Partner", options=list(partner_names.keys()),
+                format_func=lambda pid: partner_names[pid], key="admin_partner_select"
+            )
+
+            # Same "type" -> "ctype" bridge as the Chipscape credentials tab.
+            def _add_partner_cred(**kw):
+                kw["ctype"] = kw.pop("type")
+                add_partner_credential(selected_partner_id, **kw)
+
+            def _update_partner_cred(rid, **kw):
+                kw["ctype"] = kw.pop("type")
+                update_partner_credential(rid, **kw)
+
+            _admin_crud_section(
+                f"partner_cred_{selected_partner_id}",
+                lambda: get_partner_credentials_list(selected_partner_id),
+                _add_partner_cred, _update_partner_cred, delete_partner_credential,
+                fields=[
+                    {"key": "name", "label": "Certificate/Authorization Name", "type": "text", "required": True},
+                    {"key": "type", "label": "Type", "type": "text"},
+                    {"key": "issuing_authority", "label": "Issuing Authority", "type": "text"},
+                    {"key": "certificate_no", "label": "Certificate No.", "type": "text"},
+                    {"key": "issue_date", "label": "Issue Date", "type": "text", "placeholder": "DD-MM-YYYY"},
+                    {"key": "expiry_date", "label": "Expiry Date", "type": "text", "placeholder": "DD-MM-YYYY or 'No expiry'"},
+                    {"key": "status", "label": "Status", "type": "select", "options": ["Valid", "Expired"]},
+                ],
+                row_title_fn=lambda r: f"{r['name']} (expires {r.get('expiry_date') or 'N/A'})",
+                entity_label="Partner Credential",
+            )
+
+    with tab_projects:
+        _admin_crud_section(
+            "project_ref", get_project_references_list,
+            lambda **kw: add_project_reference(kw),
+            lambda rid, **kw: update_project_reference(rid, kw),
+            delete_project_reference,
+            fields=[
+                {"key": "project_name", "label": "Project Name", "type": "text", "required": True},
+                {"key": "customer", "label": "Customer", "type": "text"},
+                {"key": "department_type", "label": "Department Type", "type": "text"},
+                {"key": "location", "label": "Location", "type": "text"},
+                {"key": "solution_category", "label": "Solution Category", "type": "text"},
+                {"key": "eligibility_tags", "label": "Eligibility Tags", "type": "text"},
+                {"key": "project_scope", "label": "Project Scope", "type": "textarea"},
+                {"key": "project_value", "label": "Project Value", "type": "number"},
+                {"key": "government_project", "label": "Government Project", "type": "select", "options": ["Yes", "No"]},
+                {"key": "financial_year", "label": "Financial Year", "type": "text", "placeholder": "e.g. 2025-26"},
+                {"key": "project_status", "label": "Project Status", "type": "text", "placeholder": "e.g. Completed, Ongoing"},
+            ],
+            row_title_fn=lambda r: f"{r['project_name']} ({r.get('customer') or 'N/A'})",
+            entity_label="Project Reference",
+        )
+
+    with tab_quantities:
+        _admin_crud_section(
+            "project_qty", get_project_quantities_list,
+            lambda **kw: add_project_quantity(kw),
+            lambda rid, **kw: update_project_quantity(rid, kw),
+            delete_project_quantity,
+            fields=[
+                {"key": "project_name", "label": "Project Name", "type": "text", "required": True},
+                {"key": "solution_category", "label": "Solution Category", "type": "text"},
+                {"key": "quantity_category", "label": "Quantity Category", "type": "text", "placeholder": "e.g. Cameras Supplied"},
+                {"key": "quantity_executed", "label": "Quantity", "type": "text"},
+                {"key": "unit", "label": "Unit", "type": "text", "placeholder": "e.g. Units, Nodes"},
+                {"key": "customer", "label": "Customer", "type": "text"},
+            ],
+            row_title_fn=lambda r: f"{r['project_name']} — {r.get('quantity_executed') or ''} {r.get('unit') or ''}",
+            entity_label="Quantity Record",
+        )
+
+
 from agent.orchestrator import (
     start_agent, stop_agent, get_state,
-    get_log, trigger_manual_search
+    get_log, trigger_manual_search,
+    add_relevant_keyword_and_scan, update_relevant_keyword_and_rescan,
 )
 from analysis.analyzer import analyze_tender
+
+
+def render_relevant_keywords_page():
+    """Full-screen page (sidebar 'Relevant Tenders Keyword' entry) for
+    managing the standing keyword list. Adding or editing a keyword here
+    kicks off a one-time full scan of the Total Tenders table in the
+    background (see agent/orchestrator.py's run_relevant_keyword_matching),
+    so it also catches tenders already in the database before the keyword
+    existed — not just tenders fetched from now on."""
+    st.markdown("<div style='margin-top:18px;'></div>", unsafe_allow_html=True)
+    st.markdown("## 🎯 Relevant Tenders — Keywords")
+    st.caption(
+        "Keywords here are matched (fuzzy search) against tenders already saved in "
+        "Total Tenders, and every match gets flagged into the Relevant Tenders card "
+        "with full L2 analysis (documents + analysis PDF) run automatically. "
+        "New tenders fetched on every Start Agent run are checked against this list too."
+    )
+    if st.button("← Back to Dashboard", key="relkw_back_btn"):
+        st.session_state.show_relevant_keywords = False
+        st.rerun()
+
+    st.markdown("---")
+
+    _admin_crud_section(
+        "relevant_kw", get_relevant_keywords_list,
+        lambda **kw: add_relevant_keyword_and_scan(kw["keyword"]),
+        lambda rid, **kw: update_relevant_keyword_and_rescan(rid, kw["keyword"]),
+        delete_relevant_keyword,
+        fields=[
+            {"key": "keyword", "label": "Keyword", "type": "text", "required": True, "placeholder": "e.g. cctv camera"},
+        ],
+        row_title_fn=lambda r: r["keyword"],
+        entity_label="Keyword",
+    )
+
+
+def render_patterns_learned_page():
+    """Full-screen page (sidebar 'Patterns Learned' entry) — same content
+    that used to live in a sidebar dropdown, moved here for more room and
+    consistency with Admin/Relevant Tenders Keyword."""
+    st.markdown("<div style='margin-top:18px;'></div>", unsafe_allow_html=True)
+    st.markdown("## 🧠 Patterns Learned")
+    st.caption("Categories and keyword weights the agent has learned from CEO search activity.")
+    if st.button("← Back to Dashboard", key="patterns_back_btn"):
+        st.session_state.show_patterns_learned = False
+        st.rerun()
+
+    st.markdown("---")
+
+    patterns = get_learned_patterns()
+    if patterns:
+        for p in patterns:
+            try:
+                kws = json.loads(p['keywords'])
+            except Exception:
+                kws = []
+            pattern_portal = p['portal'] if p['portal'] else "GeM"
+            portal_badge = "🔵 GeM" if pattern_portal == "GeM" else "🟠 KPPP (KA)"
+            col_p, col_d = st.columns([4, 1])
+            with col_p:
+                st.markdown(f"""
+                <div class='tender-card'>
+                    <div class='tender-title'>📂 {p['category']} <span style="font-size:0.75em;font-weight:500;color:#64748B;">— {portal_badge}</span></div>
+                    <div class='tender-meta'>Weight: {p['weight']} | Keywords: {', '.join(kws[:5])}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            with col_d:
+                if st.button("🗑️ Delete", key=f"page_del_pattern_{p['id']}", help="Delete this pattern"):
+                    delete_pattern(p['id'])
+                    st.rerun()
+    else:
+        st.info("No patterns learned yet.")
+
+
+def render_search_history_page():
+    """Full-screen page (sidebar 'Search History' entry) — same content
+    that used to live in a sidebar dropdown, moved here for more room and
+    consistency with Admin/Relevant Tenders Keyword."""
+    st.markdown("<div style='margin-top:18px;'></div>", unsafe_allow_html=True)
+    st.markdown("## 🔎 Search History")
+    st.caption("Every keyword the CEO has searched for — the agent keeps re-running these automatically.")
+    if st.button("← Back to Dashboard", key="searchhist_back_btn"):
+        st.session_state.show_search_history = False
+        st.rerun()
+
+    st.markdown("---")
+
+    searches = get_all_ceo_searches()
+    if searches:
+        for s in searches:
+            col_s, col_d = st.columns([4, 1])
+            with col_s:
+                st.markdown(f"""
+                <div class='tender-card'>
+                    <div class='tender-title'>🔍 {s['keyword']}</div>
+                    <div class='tender-meta'>Portal: {s['portal']} | Searched {s['frequency']} times | Last: {s['searched_at'][:16]}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            with col_d:
+                if st.button("🗑️ Delete", key=f"page_del_search_{s['id']}", help="Delete this search"):
+                    delete_ceo_search(s['id'])
+                    st.success(f"Deleted '{s['keyword']}' — the agent will stop searching for it.")
+                    st.rerun()
+    else:
+        st.info("No searches yet.")
+
+
 from portals.data.kppp_options import (
     CATEGORIES as KPPP_CATEGORIES,
     PROCURING_ENTITIES as KPPP_ENTITIES,
@@ -240,6 +598,24 @@ st.markdown("""
         background: #263449 !important;
         border-color: #475569 !important;
     }
+
+    /* Admin / Relevant Tenders Keyword — plain nav-style buttons, matched
+       to the same transparent panel look as the expanders around them
+       instead of the more solid default secondary-button fill. */
+    section[data-testid="stSidebar"] .st-key-btn_open_admin div[data-testid="stButton"] button[kind="secondary"],
+    section[data-testid="stSidebar"] .st-key-btn_open_relevant_keywords div[data-testid="stButton"] button[kind="secondary"],
+    section[data-testid="stSidebar"] .st-key-btn_open_patterns div[data-testid="stButton"] button[kind="secondary"],
+    section[data-testid="stSidebar"] .st-key-btn_open_search_history div[data-testid="stButton"] button[kind="secondary"] {
+        background: rgba(15, 23, 42, 0.9) !important;
+        border: 1px solid #1E293B !important;
+    }
+    section[data-testid="stSidebar"] .st-key-btn_open_admin div[data-testid="stButton"] button[kind="secondary"]:hover,
+    section[data-testid="stSidebar"] .st-key-btn_open_relevant_keywords div[data-testid="stButton"] button[kind="secondary"]:hover,
+    section[data-testid="stSidebar"] .st-key-btn_open_patterns div[data-testid="stButton"] button[kind="secondary"]:hover,
+    section[data-testid="stSidebar"] .st-key-btn_open_search_history div[data-testid="stButton"] button[kind="secondary"]:hover {
+        background: rgba(15, 23, 42, 0.9) !important;
+        border-color: #334155 !important;
+    }
     section[data-testid="stSidebar"] div[data-testid="stButton"] button[kind="primary"] {
         background: linear-gradient(90deg, #7C3AED, #4F46E5) !important;
         border: 1px solid rgba(129, 140, 248, 0.4) !important;
@@ -411,7 +787,7 @@ st.markdown("""
     .st-key-btn_new button,
     .st-key-btn_saved button,
     .st-key-btn_searches button,
-    .st-key-btn_patterns button {
+    .st-key-btn_relevant button {
         border-radius: 12px !important;
         border: 1px solid #E2E8F0 !important;
         box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
@@ -424,14 +800,14 @@ st.markdown("""
     .st-key-btn_new button[kind="secondary"]:hover,
     .st-key-btn_saved button[kind="secondary"]:hover,
     .st-key-btn_searches button[kind="secondary"]:hover,
-    .st-key-btn_patterns button[kind="secondary"]:hover {
+    .st-key-btn_relevant button[kind="secondary"]:hover {
         border-color: #CBD5E1 !important;
     }
     .st-key-btn_all button[kind="primary"],
     .st-key-btn_new button[kind="primary"],
     .st-key-btn_saved button[kind="primary"],
     .st-key-btn_searches button[kind="primary"],
-    .st-key-btn_patterns button[kind="primary"] {
+    .st-key-btn_relevant button[kind="primary"] {
         background-color: #FFFFFF !important;
     }
     .st-key-btn_all button[kind="primary"] {
@@ -454,10 +830,10 @@ st.markdown("""
         border: 1.5px solid #3B82F6 !important;
         box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12) !important;
     }
-    .st-key-btn_patterns button[kind="primary"] {
-        color: #BE185D !important;
-        border: 1.5px solid #EC4899 !important;
-        box-shadow: 0 0 0 3px rgba(236, 72, 153, 0.12) !important;
+    .st-key-btn_relevant button[kind="primary"] {
+        color: #6D28D9 !important;
+        border: 1.5px solid #7C3AED !important;
+        box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.12) !important;
     }
     .agent-header {
         background: linear-gradient(135deg, #2C3E50, #8E44AD);
@@ -859,7 +1235,7 @@ st.markdown("""
         .st-key-btn_new button,
         .st-key-btn_saved button,
         .st-key-btn_searches button,
-        .st-key-btn_patterns button {
+        .st-key-btn_relevant button {
             font-size: 13px !important;
             padding: 12px 10px !important;
             min-height: 44px !important;
@@ -1137,6 +1513,27 @@ if "dept_chart_last_portal" not in st.session_state:
     st.session_state.dept_chart_last_portal = "GeM"
 if "scroll_to_table" not in st.session_state:
     st.session_state.scroll_to_table = False
+if "show_admin" not in st.session_state:
+    st.session_state.show_admin = False
+if "show_relevant_keywords" not in st.session_state:
+    st.session_state.show_relevant_keywords = False
+if "show_patterns_learned" not in st.session_state:
+    st.session_state.show_patterns_learned = False
+if "show_search_history" not in st.session_state:
+    st.session_state.show_search_history = False
+
+_SIDEBAR_PANEL_KEYS = [
+    "show_admin", "show_relevant_keywords",
+    "show_patterns_learned", "show_search_history",
+]
+
+
+def _open_sidebar_panel(panel_key):
+    """Opens one sidebar full-screen panel (Admin / Relevant Tenders Keyword /
+    Patterns Learned / Search History) and closes any other one that was
+    left open — only one of these should ever be on screen at a time."""
+    for k in _SIDEBAR_PANEL_KEYS:
+        st.session_state[k] = (k == panel_key)
 
 
 # ── SIDEBAR ───────────────────────────────────────────────
@@ -1162,7 +1559,7 @@ with st.sidebar:
             st.session_state.agent_started = False
             st.rerun()
 
-    with st.expander("🔍 GeM Search Filters", expanded=True):
+    with st.expander("🔍 GeM Search Filters", expanded=False):
         keyword_input = st.text_input("Search Tenders", placeholder="Enter keyword e.g. cctv")
         if st.button("Search", icon=":material/search:", use_container_width=True, type="primary", key="gem_search_btn"):
             if keyword_input.strip():
@@ -1180,7 +1577,7 @@ with st.sidebar:
     # one field and searching is enough, same as on KPPP's own site.
     # Saved filters are re-applied automatically on every future search
     # cycle, same as GeM keywords.
-    with st.expander("🏛️ KPPP Search Filters", expanded=True):
+    with st.expander("🏛️ KPPP Search Filters", expanded=False):
         kppp_category = st.selectbox(
             "Category", KPPP_CATEGORIES, key="kppp_category"
         )
@@ -1213,25 +1610,21 @@ with st.sidebar:
                 on_kppp_search(criteria)
                 st.success("Searching KPPP — this filter will keep running automatically from now on.")
 
-    with st.expander(f"🔎 Search History ({get_stats()['ceo_searches']})", expanded=False):
-        searches = get_all_ceo_searches()
-        if searches:
-            for s in searches:
-                col_s, col_d = st.columns([4, 1])
-                with col_s:
-                    st.markdown(f"""
-                    <div class='tender-card'>
-                        <div class='tender-title'>🔍 {s['keyword']}</div>
-                        <div class='tender-meta'>Portal: {s['portal']} | Searched {s['frequency']} times | Last: {s['searched_at'][:16]}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                with col_d:
-                    if st.button("🗑️", key=f"del_search_{s['id']}", help="Delete this search"):
-                        delete_ceo_search(s['id'])
-                        st.success(f"Deleted '{s['keyword']}' — the agent will stop searching for it.")
-                        st.rerun()
-        else:
-            st.info("No searches yet.")
+    if st.button("🛠️ Admin", use_container_width=True, key="btn_open_admin"):
+        _open_sidebar_panel("show_admin")
+        st.rerun()
+
+    if st.button("🎯 Relevant Tenders Keyword", use_container_width=True, key="btn_open_relevant_keywords"):
+        _open_sidebar_panel("show_relevant_keywords")
+        st.rerun()
+
+    if st.button(f"🧠 Patterns Learned ({get_stats()['patterns_learned']})", use_container_width=True, key="btn_open_patterns"):
+        _open_sidebar_panel("show_patterns_learned")
+        st.rerun()
+
+    if st.button(f"🔎 Search History ({get_stats()['ceo_searches']})", use_container_width=True, key="btn_open_search_history"):
+        _open_sidebar_panel("show_search_history")
+        st.rerun()
 
     state = get_state()
     status = state.get("status", "idle")
@@ -1250,9 +1643,28 @@ with st.sidebar:
     """, unsafe_allow_html=True)
 
     st.markdown("---")
-    
 
-   
+
+
+# ── ADMIN FULL-SCREEN OVERRIDE ──────────────────────────────
+# Takes over the whole main area instead of the normal dashboard content
+# when open, same idea as the single-tender detail view further below.
+if st.session_state.show_admin:
+    render_admin_page()
+    st.stop()
+
+if st.session_state.show_relevant_keywords:
+    render_relevant_keywords_page()
+    st.stop()
+
+if st.session_state.show_patterns_learned:
+    render_patterns_learned_page()
+    st.stop()
+
+if st.session_state.show_search_history:
+    render_search_history_page()
+    st.stop()
+
 # ── FILTER BAR ────────────────────────────────────────────
 
 
@@ -1276,6 +1688,7 @@ with c1:
         st.session_state.trend_chart_reset_counter += 1
         st.session_state.dept_chart_reset_counter += 1
         st.session_state.scroll_to_table = True
+        st.session_state.viewing_tender_id = None
         st.rerun()
 
 with c2:
@@ -1290,6 +1703,7 @@ with c2:
         st.session_state.trend_chart_reset_counter += 1
         st.session_state.dept_chart_reset_counter += 1
         st.session_state.scroll_to_table = True
+        st.session_state.viewing_tender_id = None
         st.rerun()
 
 with c3:
@@ -1304,6 +1718,7 @@ with c3:
         st.session_state.trend_chart_reset_counter += 1
         st.session_state.dept_chart_reset_counter += 1
         st.session_state.scroll_to_table = True
+        st.session_state.viewing_tender_id = None
         st.rerun()
 
 with c4:
@@ -1318,20 +1733,22 @@ with c4:
         st.session_state.trend_chart_reset_counter += 1
         st.session_state.dept_chart_reset_counter += 1
         st.session_state.scroll_to_table = True
+        st.session_state.viewing_tender_id = None
         st.rerun()
 
 with c5:
     if st.button(
-        f"🧠  {stats['patterns_learned']}\nPatterns Learned",
-        key="btn_patterns", use_container_width=True,
-        type="primary" if active == "patterns" else "secondary"
+        f"🎯  {stats['relevant']}\nRelevant Tenders",
+        key="btn_relevant", use_container_width=True,
+        type="primary" if active == "relevant" else "secondary"
     ):
-        st.session_state.active_section = "patterns"
+        st.session_state.active_section = "relevant"
         st.session_state.page_num = 1
         st.session_state.chart_drill_filter = None
         st.session_state.trend_chart_reset_counter += 1
         st.session_state.dept_chart_reset_counter += 1
         st.session_state.scroll_to_table = True
+        st.session_state.viewing_tender_id = None
         st.rerun()
 
 # Keeps the stat-card row's fixed position/size synced to the actual main
@@ -1839,6 +2256,9 @@ else:
         elif section == "expired":
             tenders = get_all_tenders("expired")
             section_title = "🕒 Expired Tenders"
+        elif section == "relevant":
+            tenders = get_relevant_tenders_list()
+            section_title = "🎯 Relevant Tenders"
         else:
             # "All Tenders" means everything still active — a tender past
             # its deadline moves to its own Expired card instead of
@@ -1857,439 +2277,457 @@ else:
     else:
         tenders = sorted(tenders, key=lambda x: x.get("relevance_score", 0), reverse=True)
 
-    # ── DETAIL PAGE ───────────────────────────────────────
-    if st.session_state.viewing_tender_id is not None:
-        tid = st.session_state.viewing_tender_id
-        match = [t for t in tenders if t["id"] == tid]
-        if not match:
-            match = [t for t in get_all_tenders() if t["id"] == tid]
-        if not match:
-            st.warning("Tender not found.")
-            if st.button("◀ Back to list"):
-                st.session_state.viewing_tender_id = None
-                st.rerun()
-        else:
-            tender = match[0]
-            portal = tender.get("portal", "")
-            value = tender.get("value", "N/A")
-            deadline = tender.get("deadline", "N/A")
-            found_via = tender.get("found_via", "")
-            status_val = tender.get("status", "new")
+    # A single st.empty() placeholder around this whole detail/list
+    # toggle — clicking View/Back-to-list otherwise showed a brief flash
+    # of the old table mixed with the new page while Streamlit streamed
+    # the rerun's content in piece by piece. Writing into one placeholder
+    # replaces its entire contents as a single atomic swap instead, so
+    # the old and new content never render mixed together mid-transition.
+    _detail_or_list_placeholder = st.empty()
+    with _detail_or_list_placeholder.container():
+        # ── DETAIL PAGE ───────────────────────────────────────
+        if st.session_state.viewing_tender_id is not None:
+            tid = st.session_state.viewing_tender_id
+            match = [t for t in tenders if t["id"] == tid]
+            if not match:
+                match = [t for t in get_all_tenders() if t["id"] == tid]
+            if not match:
+                st.warning("Tender not found.")
+                if st.button("◀ Back to list"):
+                    st.session_state.viewing_tender_id = None
+                    st.rerun()
+            else:
+                tender = match[0]
+                portal = tender.get("portal", "")
+                value = tender.get("value", "N/A")
+                deadline = tender.get("deadline", "N/A")
+                found_via = tender.get("found_via", "")
+                status_val = tender.get("status", "new")
 
-            if st.button("◀ Back to list"):
-                st.session_state.viewing_tender_id = None
-                st.rerun()
+                if st.button("◀ Back to list"):
+                    st.session_state.viewing_tender_id = None
+                    st.rerun()
 
-            st.markdown(f"### {tender.get('title', 'Unknown')}")
-            st.markdown("---")
+                st.markdown(f"### {tender.get('title', 'Unknown')}")
+                st.markdown("---")
 
-            col_a, col_b = st.columns(2)
+                col_a, col_b = st.columns(2)
 
-            with col_a:
-                st.markdown("#### 📋 Tender Details")
-                details_data = [
-                    ("Tender Title", tender.get("title")),
-                    ("Tender Number", tender.get("tender_number")),
-                    ("Portal", portal),
-                    ("Department", tender.get("department")),
-                    ("Location", tender.get("location")),
-                    ("Tender Type", tender.get("tender_type")),
-                    ("Estimated Value", value),
-                    ("EMD Amount", tender.get("emd")),
-                    ("Published Date", tender.get("published_date")),
-                    ("Submission Deadline", deadline),
-                    ("Category", tender.get("category")),
-                    ("Found Via Search", found_via),
-                ]
-                # GeM has no page that displays a single tender's info — the
-                # bid number link on GeM's own site always downloads the bid
-                # PDF, even there. So this points at GeM's generic search
-                # landing page rather than the stored per-tender doc URL,
-                # which would silently trigger a PDF download instead of
-                # opening a page.
-                portal_home_urls = {
-                    "GeM": "https://bidplus.gem.gov.in/all-bids",
-                    "KPPP": "https://kppp.karnataka.gov.in/#/portal/searchTender/live",
-                }
-                portal_home_url = portal_home_urls.get(portal, "")
+                with col_a:
+                    st.markdown("#### 📋 Tender Details")
+                    details_data = [
+                        ("Tender Title", tender.get("title")),
+                        ("Tender Number", tender.get("tender_number")),
+                        ("Portal", portal),
+                        ("Department", tender.get("department")),
+                        ("Location", tender.get("location")),
+                        ("Tender Type", tender.get("tender_type")),
+                        ("Estimated Value", value),
+                        ("EMD Amount", tender.get("emd")),
+                        ("Published Date", tender.get("published_date")),
+                        ("Submission Deadline", deadline),
+                        ("Category", tender.get("category")),
+                        ("Found Via Search", found_via),
+                    ]
+                    # GeM has no page that displays a single tender's info — the
+                    # bid number link on GeM's own site always downloads the bid
+                    # PDF, even there. So this points at GeM's generic search
+                    # landing page rather than the stored per-tender doc URL,
+                    # which would silently trigger a PDF download instead of
+                    # opening a page.
+                    portal_home_urls = {
+                        "GeM": "https://bidplus.gem.gov.in/all-bids",
+                        "KPPP": "https://kppp.karnataka.gov.in/#/portal/searchTender/live",
+                    }
+                    portal_home_url = portal_home_urls.get(portal, "")
 
-                for label, val in details_data:
-                    if val and val not in ["", "None", "null"]:
-                        if label == "Tender Number" and portal_home_url:
-                            value_html = f"<a href='{portal_home_url}' target='_blank'>{val}</a>"
-                        else:
-                            value_html = f"<span class='detail-value'>{val}</span>"
+                    for label, val in details_data:
+                        if val and val not in ["", "None", "null"]:
+                            if label == "Tender Number" and portal_home_url:
+                                value_html = f"<a href='{portal_home_url}' target='_blank'>{val}</a>"
+                            else:
+                                value_html = f"<span class='detail-value'>{val}</span>"
+                            st.markdown(
+                                f"<span class='detail-label'>{label}:</span> {value_html}",
+                                unsafe_allow_html=True
+                            )
+
+                with col_b:
+                    st.markdown("#### 📁 Downloads")
+
+                    downloaded_files = tender.get("downloaded_files", [])
+                    if isinstance(downloaded_files, str):
+                        try:
+                            downloaded_files = json.loads(downloaded_files)
+                        except:
+                            downloaded_files = []
+
+                    if portal == "KPPP":
+                        fresh = [t for t in get_all_tenders() if t['id'] == tid]
+                        if fresh:
+                            fresh_files = fresh[0].get("downloaded_files", [])
+                            if isinstance(fresh_files, str):
+                                try:
+                                    fresh_files = json.loads(fresh_files)
+                                except:
+                                    fresh_files = []
+                            if fresh_files:
+                                downloaded_files = fresh_files
+
+                    if not downloaded_files and portal == "KPPP":
+                        st.caption("📄 Documents will appear after analysis")
+
+                    if downloaded_files:
+                        st.markdown("**📁 Downloaded Tender Files:**")
+                        for file_path in downloaded_files:
+                            if os.path.exists(file_path):
+                                filename = os.path.basename(file_path)
+                                with open(file_path, "rb") as f:
+                                    file_bytes = f.read()
+                                st.download_button(
+                                    label=f"⬇️ {filename}",
+                                    data=file_bytes,
+                                    file_name=filename,
+                                    key=f"file_{tid}_{filename}_detail"
+                                )
+                    else:
+                        if portal == "GeM":
+                            st.caption("No files downloaded yet")
+
+                    st.markdown("---")
+
+                    analysis_path = tender.get("analysis_pdf_path", "")
+
+                    if analysis_path and os.path.exists(analysis_path):
+                        with open(analysis_path, "rb") as f:
+                            pdf_bytes = f.read()
+
+                        # Chrome blocks top-level navigation to both data: URLs
+                        # and file:// URLs from an http(s) page (both were tried
+                        # and both silently failed to open a new tab). The only
+                        # reliable way to open the PDF in its own tab is to serve
+                        # it over http like a real resource — Streamlit serves
+                        # anything placed in dashboard/static/ at /app/static/
+                        # when server.enableStaticServing is on (see
+                        # .streamlit/config.toml), so copy the report there under
+                        # a stable per-tender name and link to that.
+                        static_dir = os.path.join(os.path.dirname(__file__), "static")
+                        os.makedirs(static_dir, exist_ok=True)
+                        static_name = f"analysis_{tid}.pdf"
+                        static_path = os.path.join(static_dir, static_name)
+                        if not os.path.exists(static_path) or os.path.getmtime(analysis_path) > os.path.getmtime(static_path):
+                            with open(static_path, "wb") as f:
+                                f.write(pdf_bytes)
+
+                        # Cache-bust with the file's own mtime so the browser can't
+                        # keep serving a stale cached copy of this same URL after
+                        # Re-analyze produces a newer file — without this, "View
+                        # Analysis" could silently keep showing an old report.
+                        cache_bust = int(os.path.getmtime(analysis_path))
                         st.markdown(
-                            f"<span class='detail-label'>{label}:</span> {value_html}",
+                            f'<a href="app/static/{static_name}?v={cache_bust}" target="_blank" style="text-decoration:none;">'
+                            f'<button style="width:100%;padding:10px;background:#8E44AD;'
+                            f'color:white;border:none;border-radius:6px;cursor:pointer;'
+                            f'font-size:14px;margin-bottom:8px;">👁️ View Analysis</button></a>',
                             unsafe_allow_html=True
                         )
 
-            with col_b:
-                st.markdown("#### 📁 Downloads")
+                        st.download_button(
+                            label="⬇️ Download Analysis",
+                            data=pdf_bytes,
+                            file_name=os.path.basename(analysis_path),
+                            mime="application/pdf",
+                            key=f"analysis_{tid}_detail",
+                        )
 
-                downloaded_files = tender.get("downloaded_files", [])
-                if isinstance(downloaded_files, str):
-                    try:
-                        downloaded_files = json.loads(downloaded_files)
-                    except:
-                        downloaded_files = []
-
-                if portal == "KPPP":
-                    fresh = [t for t in get_all_tenders() if t['id'] == tid]
-                    if fresh:
-                        fresh_files = fresh[0].get("downloaded_files", [])
-                        if isinstance(fresh_files, str):
-                            try:
-                                fresh_files = json.loads(fresh_files)
-                            except:
-                                fresh_files = []
-                        if fresh_files:
-                            downloaded_files = fresh_files
-
-                if not downloaded_files and portal == "KPPP":
-                    st.caption("📄 Documents will appear after analysis")
-
-                if downloaded_files:
-                    st.markdown("**📁 Downloaded Tender Files:**")
-                    for file_path in downloaded_files:
-                        if os.path.exists(file_path):
-                            filename = os.path.basename(file_path)
-                            with open(file_path, "rb") as f:
-                                file_bytes = f.read()
-                            st.download_button(
-                                label=f"⬇️ {filename}",
-                                data=file_bytes,
-                                file_name=filename,
-                                key=f"file_{tid}_{filename}_detail"
-                            )
-                else:
-                    if portal == "GeM":
-                        st.caption("No files downloaded yet")
-
-                st.markdown("---")
-
-                analysis_path = tender.get("analysis_pdf_path", "")
-
-                if analysis_path and os.path.exists(analysis_path):
-                    with open(analysis_path, "rb") as f:
-                        pdf_bytes = f.read()
-
-                    # Chrome blocks top-level navigation to both data: URLs
-                    # and file:// URLs from an http(s) page (both were tried
-                    # and both silently failed to open a new tab). The only
-                    # reliable way to open the PDF in its own tab is to serve
-                    # it over http like a real resource — Streamlit serves
-                    # anything placed in dashboard/static/ at /app/static/
-                    # when server.enableStaticServing is on (see
-                    # .streamlit/config.toml), so copy the report there under
-                    # a stable per-tender name and link to that.
-                    static_dir = os.path.join(os.path.dirname(__file__), "static")
-                    os.makedirs(static_dir, exist_ok=True)
-                    static_name = f"analysis_{tid}.pdf"
-                    static_path = os.path.join(static_dir, static_name)
-                    if not os.path.exists(static_path) or os.path.getmtime(analysis_path) > os.path.getmtime(static_path):
-                        with open(static_path, "wb") as f:
-                            f.write(pdf_bytes)
-
-                    # Cache-bust with the file's own mtime so the browser can't
-                    # keep serving a stale cached copy of this same URL after
-                    # Re-analyze produces a newer file — without this, "View
-                    # Analysis" could silently keep showing an old report.
-                    cache_bust = int(os.path.getmtime(analysis_path))
-                    st.markdown(
-                        f'<a href="app/static/{static_name}?v={cache_bust}" target="_blank" style="text-decoration:none;">'
-                        f'<button style="width:100%;padding:10px;background:#8E44AD;'
-                        f'color:white;border:none;border-radius:6px;cursor:pointer;'
-                        f'font-size:14px;margin-bottom:8px;">👁️ View Analysis</button></a>',
-                        unsafe_allow_html=True
-                    )
-
-                    st.download_button(
-                        label="⬇️ Download Analysis",
-                        data=pdf_bytes,
-                        file_name=os.path.basename(analysis_path),
-                        mime="application/pdf",
-                        key=f"analysis_{tid}_detail",
-                    )
-
-                    if st.session_state.analyzing.get(tid):
-                        st.info("⏳ Re-analyzing... please wait")
-                    elif st.button(
-                        "🔄 Re-analyze",
-                        key=f"reanalyze_{tid}_detail",
-                        help="Redo the analysis from scratch — use this if a "
-                             "past attempt failed partway (e.g. a KPPP CAPTCHA "
-                             "failure left no real documents to read).",
-                    ):
-                        clear_tender_analysis(tid)
-                        st.session_state.analyzing[tid] = True
-                        with st.spinner("🤖 Re-analyzing tender documents..."):
-                            fresh_tender = dict(tender)
-                            fresh_tender["downloaded_files"] = []
-                            fresh_tender["analysis_pdf_path"] = None
-                            path = analyze_tender(fresh_tender)
-                        if path and os.path.exists(path):
-                            update_tender_pdfs(tid, analysis_path=path)
-                            st.session_state.analyzing[tid] = False
-                            st.success("✅ Re-analysis ready!")
-                            st.rerun()
-                        else:
-                            st.session_state.analyzing[tid] = False
-                            st.error("❌ Re-analysis failed. Try again.")
-                else:
-                    if st.session_state.analyzing.get(tid):
-                        st.info("⏳ Generating analysis... please wait")
-                    else:
-                        if st.button(
-                            "📊 Get Full Analysis",
-                            key=f"analyze_{tid}_detail_{status_val}",
-                            type="primary"
+                        if st.session_state.analyzing.get(tid):
+                            st.info("⏳ Re-analyzing... please wait")
+                        elif st.button(
+                            "🔄 Re-analyze",
+                            key=f"reanalyze_{tid}_detail",
+                            help="Redo the analysis from scratch — use this if a "
+                                 "past attempt failed partway (e.g. a KPPP CAPTCHA "
+                                 "failure left no real documents to read).",
                         ):
+                            clear_tender_analysis(tid)
                             st.session_state.analyzing[tid] = True
-                            with st.spinner("🤖 Analyzing tender documents..."):
-                                path = analyze_tender(tender)
+                            with st.spinner("🤖 Re-analyzing tender documents..."):
+                                fresh_tender = dict(tender)
+                                fresh_tender["downloaded_files"] = []
+                                fresh_tender["analysis_pdf_path"] = None
+                                path = analyze_tender(fresh_tender)
                             if path and os.path.exists(path):
                                 update_tender_pdfs(tid, analysis_path=path)
                                 st.session_state.analyzing[tid] = False
-                                st.success("✅ Analysis ready!")
+                                st.success("✅ Re-analysis ready!")
                                 st.rerun()
                             else:
-                                st.error("❌ Analysis failed. Try again.")
                                 st.session_state.analyzing[tid] = False
-
-            st.markdown("---")
-            col_x, col_y, col_z = st.columns(3)
-
-            with col_x:
-                if status_val == "saved":
-                    if st.button("🔓 Unsave", key=f"unsave_{tid}_detail"):
-                        update_tender_status(tid, "new")
-                        st.rerun()
-                else:
-                    if st.button("💾 Save", key=f"save_{tid}_detail"):
-                        update_tender_status(tid, "saved")
-                        st.success("Saved!")
-                        st.rerun()
-
-            with col_y:
-                if st.button("🗑️ Delete", key=f"delete_{tid}_detail"):
-                    st.session_state[f"confirm_delete_{tid}"] = True
-
-                if st.session_state.get(f"confirm_delete_{tid}"):
-                    st.warning("Are you sure you want to delete?")
-                    col_yes, col_no = st.columns(2)
-                    with col_yes:
-                        if st.button("✅ Yes Delete", key=f"yes_{tid}_detail"):
-                            delete_tender(tid)
-                            st.session_state[f"confirm_delete_{tid}"] = False
-                            st.session_state.viewing_tender_id = None
-                            st.rerun()
-                    with col_no:
-                        if st.button("❌ Cancel", key=f"no_{tid}_detail"):
-                            st.session_state[f"confirm_delete_{tid}"] = False
-                            st.rerun()
-
-            with col_z:
-                if status_val == "saved":
-                    st.success("✅ Saved")
-                elif status_val == "skipped":
-                    st.warning("⬜ Skipped")
-                else:
-                    st.info("🟢 New")
-
-    # ── TABLE LIST VIEW ───────────────────────────────────
-    else:
-        if drill:
-            if drill.get("type") == "date":
-                banner_text = f"📅 Showing {len(tenders)} tender(s) found on **{drill.get('label', drill['date'])}** — {drill['portal']}"
-            else:
-                banner_text = f"🏢 Showing {len(tenders)} tender(s) for **{drill.get('label', drill['department'])}** — {drill['portal']}"
-            banner_col, clear_col = st.columns([5, 1], vertical_alignment="center")
-            with banner_col:
-                st.info(banner_text)
-            with clear_col:
-                st.markdown("""
-                <style>
-                div[class*="st-key-clear_chart_drill"] button {
-                    background-color: #EF4444 !important;
-                    border-color: #EF4444 !important;
-                    color: #FFFFFF !important;
-                }
-                div[class*="st-key-clear_chart_drill"] button:hover {
-                    background-color: #DC2626 !important;
-                    border-color: #DC2626 !important;
-                    color: #FFFFFF !important;
-                }
-                div[class*="st-key-clear_chart_drill"] button:focus:not(:active) {
-                    color: #FFFFFF !important;
-                    box-shadow: none !important;
-                }
-                </style>
-                """, unsafe_allow_html=True)
-                if st.button("✖ Clear", key="clear_chart_drill", use_container_width=True):
-                    st.session_state.chart_drill_filter = None
-                    st.session_state.trend_chart_reset_counter += 1
-                    st.session_state.dept_chart_reset_counter += 1
-                    st.rerun()
-
-        col_portal, col_search, col_search_btn, col_sort = st.columns(
-            [0.2, 0.5, 0.08, 0.22], vertical_alignment="center"
-        )
-        with col_portal:
-            st.markdown('<div class="col-marker-portal"></div>', unsafe_allow_html=True)
-            st.segmented_control(
-                "Portal",
-                PORTAL_FILTER_OPTIONS,
-                default=PORTAL_FILTER_DEFAULT,
-                key="portal_filter_display",
-                label_visibility="collapsed",
-                on_change=_sync_portal_from_pills,
-            )
-            st.selectbox(
-                "Portal",
-                PORTAL_FILTER_OPTIONS,
-                key="portal_filter_dropdown",
-                label_visibility="collapsed",
-                on_change=_sync_portal_from_dropdown,
-                filter_mode=None,
-            )
-        with col_search:
-            st.markdown('<div class="col-marker-search"></div>', unsafe_allow_html=True)
-            # st_keyup (a third-party "Components v2" widget) was used here for
-            # live-as-you-type filtering, but its browser<->Python round-trip
-            # can silently fail to land a typed value in Python — reproduced
-            # with a full bid number like "GEM/2026/B/7915789": the input
-            # correctly showed the typed text, but st.session_state never
-            # picked it up, so the table stayed unfiltered. st.text_input is
-            # Streamlit's own well-tested widget — it updates on Enter/blur
-            # instead of every keystroke, which is a minor UX trade for
-            # actually returning the right results every time.
-            search_query = st.text_input(
-                "Search tenders",
-                key="table_search_query",
-                placeholder="🔍 Search by bid number, item name, department...",
-                on_change=lambda: st.session_state.update(page_num=1),
-                label_visibility="collapsed",
-            )
-        with col_search_btn:
-            st.markdown('<div class="col-marker-search-btn"></div>', unsafe_allow_html=True)
-            # Clicking this button blurs the text input first (same as
-            # clicking anywhere else), which is what actually commits its
-            # typed value in Streamlit — the button itself doesn't need to
-            # do anything beyond that click triggering the rerun.
-            st.button(
-                "", icon=":material/search:", key="apply_table_search_btn",
-                use_container_width=True, type="primary", help="Search"
-            )
-        with col_sort:
-            st.markdown('<div class="col-marker-sort"></div>', unsafe_allow_html=True)
-            st.selectbox(
-                "Sort By",
-                ["Relevance", "Newest First", "Deadline"],
-                key="sort_by_select",
-                label_visibility="collapsed",
-                filter_mode=None,
-            )
-        tenders = fuzzy_filter_tenders(tenders, search_query)
-
-        if not tenders:
-            st.info("🔍 No tenders found yet.")
-        else:
-            page_size = 10
-            total_pages = max(1, (len(tenders) - 1) // page_size + 1)
-
-            if st.session_state.page_num > total_pages:
-                st.session_state.page_num = 1
-
-            st.caption(f"{len(tenders)} tenders — Page {st.session_state.page_num} of {total_pages}")
-            st.markdown("<div style='margin-bottom:8px;'></div>", unsafe_allow_html=True)
-
-            start = (st.session_state.page_num - 1) * page_size
-            end = start + page_size
-            page_tenders = tenders[start:end]
-
-            # Table header — the header + all data rows live inside their
-            # own container so the horizontal-scroll CSS (mobile only) can
-            # scope overflow-x to just this box instead of the whole page;
-            # previously these were plain top-level elements, so scrolling
-            # the wide table on mobile dragged the entire page sideways too.
-            with st.container():
-                st.markdown('<div class="table-card-marker"></div>', unsafe_allow_html=True)
-                h1, h2, h3, h4, h5, h6, h7, h8, h9, h10 = st.columns([0.5, 1.5, 2.1, 1.3, 1.6, 1.2, 1.2, 0.8, 0.8, 0.8])
-                h1.markdown('<div class="tbl-header-row"></div><span class="th-cell">Sl No</span>', unsafe_allow_html=True)
-                h2.markdown('<span class="th-cell">Bid Number</span>', unsafe_allow_html=True)
-                h3.markdown('<span class="th-cell">Item Name</span>', unsafe_allow_html=True)
-                h4.markdown('<span class="th-cell">Department</span>', unsafe_allow_html=True)
-                qty_col_label = "Location" if current_portal_filter == "KPPP" else "Qty"
-                h5.markdown(f'<span class="th-cell">{qty_col_label}</span>', unsafe_allow_html=True)
-                h6.markdown('<span class="th-cell">Start Date</span>', unsafe_allow_html=True)
-                h7.markdown('<span class="th-cell">End Date</span>', unsafe_allow_html=True)
-                h8.markdown("")
-                h9.markdown("")
-                h10.markdown("")
-                # st.markdown("---")
-
-                for idx, tender in enumerate(page_tenders):
-                    tid = tender["id"]
-                    sl_no = start + idx + 1
-                    bid_number = tender.get("tender_number", "N/A")
-                    title = tender.get("title", "Unknown")
-                    department = tender.get("department", "N/A")
-                    # KPPP tenders have no quantity field at all (never scraped —
-                    # the portal doesn't expose one); its own site shows Location
-                    # in that spot instead, which we do have real data for.
-                    if (tender.get("portal") or "").upper() == "KPPP":
-                        quantity = tender.get("location") or "N/A"
+                                st.error("❌ Re-analysis failed. Try again.")
                     else:
-                        quantity = tender.get("quantity", "N/A")
-                    start_date = tender.get("published_date", "N/A")
-                    end_date = tender.get("deadline", "N/A")
-                    portal = tender.get("portal", "")
-                    portal_chip_class = "portal-chip-kppp" if portal.upper() == "KPPP" else "portal-chip-gem"
-
-                    r1, r2, r3, r4, r5, r6, r7, r8, r9, r10 = st.columns([0.5, 1.5, 2.1, 1.3, 1.6, 1.2, 1.2, 0.8, 0.8, 0.8])
-                    r1.markdown(f'<div class="tbl-data-row"></div><span class="td-slno">{sl_no}</span>', unsafe_allow_html=True)
-                    r2.markdown(
-                        f'<div class="mono td-bid">{bid_number}</div>'
-                        f'<span class="portal-chip {portal_chip_class}">{portal or "N/A"}</span>',
-                        unsafe_allow_html=True,
-                    )
-                    r3.markdown(f"{title[:60]}")
-                    r4.markdown(f'<span class="td-dept">{department[:30] if department else "N/A"}</span>', unsafe_allow_html=True)
-                    r5.markdown(f'<span class="mono td-qty">{quantity}</span>', unsafe_allow_html=True)
-                    r6.markdown(f'<span class="mono td-date">{start_date}</span>', unsafe_allow_html=True)
-                    r7.markdown(f'<span class="mono enddate-chip">{end_date}</span>', unsafe_allow_html=True)
-                    with r8:
-                        if st.button("View", key=f"view_{tid}_{section}"):
-                            st.session_state.viewing_tender_id = tid
-                            st.rerun()
-                    with r9:
-                        tender_status = tender.get("status", "new")
-                        if tender_status == "saved":
-                            if st.button("🔓", key=f"table_unsave_{tid}_{section}", help="Unsave this tender"):
-                                update_tender_status(tid, "new")
-                                st.rerun()
+                        if st.session_state.analyzing.get(tid):
+                            st.info("⏳ Generating analysis... please wait")
                         else:
-                            if st.button("💾", key=f"table_save_{tid}_{section}", help="Save this tender"):
-                                update_tender_status(tid, "saved")
-                                st.rerun()
-                    with r10:
-                        if st.button("🗑️", key=f"table_delete_{tid}_{section}", help="Delete this tender"):
-                            delete_tender(tid)
+                            if st.button(
+                                "📊 Get Full Analysis",
+                                key=f"analyze_{tid}_detail_{status_val}",
+                                type="primary"
+                            ):
+                                st.session_state.analyzing[tid] = True
+                                with st.spinner("🤖 Analyzing tender documents..."):
+                                    path = analyze_tender(tender)
+                                if path and os.path.exists(path):
+                                    update_tender_pdfs(tid, analysis_path=path)
+                                    st.session_state.analyzing[tid] = False
+                                    st.success("✅ Analysis ready!")
+                                    st.rerun()
+                                else:
+                                    st.error("❌ Analysis failed. Try again.")
+                                    st.session_state.analyzing[tid] = False
+
+                st.markdown("---")
+                col_x, col_y, col_z = st.columns(3)
+
+                with col_x:
+                    if status_val == "saved":
+                        if st.button("🔓 Unsave", key=f"unsave_{tid}_detail"):
+                            update_tender_status(tid, "new")
+                            st.rerun()
+                    else:
+                        if st.button("💾 Save", key=f"save_{tid}_detail"):
+                            update_tender_status(tid, "saved")
+                            st.success("Saved!")
                             st.rerun()
 
-            st.markdown("---")
-            _, col_prev2, col_page2, col_next2 = st.columns([5, 1, 1, 1])
-            with col_prev2:
-                st.markdown('<div class="pgn-prev-marker"></div>', unsafe_allow_html=True)
-                if st.button("◀ Prev", disabled=st.session_state.page_num <= 1, key="prev_btn2"):
-                    st.session_state.page_num -= 1
-                    st.rerun()
-            with col_page2:
-                st.markdown('<div class="pgn-page-marker"></div>', unsafe_allow_html=True)
-                st.markdown(f"**{st.session_state.page_num}/{total_pages}**")
-            with col_next2:
-                st.markdown('<div class="pgn-next-marker"></div>', unsafe_allow_html=True)
-                if st.button("Next ▶", disabled=st.session_state.page_num >= total_pages, key="next_btn2"):
-                    st.session_state.page_num += 1
-                    st.rerun()
+                with col_y:
+                    if st.button("🗑️ Delete", key=f"delete_{tid}_detail"):
+                        st.session_state[f"confirm_delete_{tid}"] = True
+
+                    if st.session_state.get(f"confirm_delete_{tid}"):
+                        st.warning("Are you sure you want to delete?")
+                        col_yes, col_no = st.columns(2)
+                        with col_yes:
+                            if st.button("✅ Yes Delete", key=f"yes_{tid}_detail"):
+                                delete_tender(tid)
+                                st.session_state[f"confirm_delete_{tid}"] = False
+                                st.session_state.viewing_tender_id = None
+                                st.rerun()
+                        with col_no:
+                            if st.button("❌ Cancel", key=f"no_{tid}_detail"):
+                                st.session_state[f"confirm_delete_{tid}"] = False
+                                st.rerun()
+
+                with col_z:
+                    if status_val == "saved":
+                        st.success("✅ Saved")
+                    elif status_val == "skipped":
+                        st.warning("⬜ Skipped")
+                    else:
+                        st.info("🟢 New")
+
+        # ── TABLE LIST VIEW ───────────────────────────────────
+        else:
+            if drill:
+                if drill.get("type") == "date":
+                    banner_text = f"📅 Showing {len(tenders)} tender(s) found on **{drill.get('label', drill['date'])}** — {drill['portal']}"
+                else:
+                    banner_text = f"🏢 Showing {len(tenders)} tender(s) for **{drill.get('label', drill['department'])}** — {drill['portal']}"
+                banner_col, clear_col = st.columns([5, 1], vertical_alignment="center")
+                with banner_col:
+                    st.info(banner_text)
+                with clear_col:
+                    st.markdown("""
+                    <style>
+                    div[class*="st-key-clear_chart_drill"] button {
+                        background-color: #EF4444 !important;
+                        border-color: #EF4444 !important;
+                        color: #FFFFFF !important;
+                    }
+                    div[class*="st-key-clear_chart_drill"] button:hover {
+                        background-color: #DC2626 !important;
+                        border-color: #DC2626 !important;
+                        color: #FFFFFF !important;
+                    }
+                    div[class*="st-key-clear_chart_drill"] button:focus:not(:active) {
+                        color: #FFFFFF !important;
+                        box-shadow: none !important;
+                    }
+                    </style>
+                    """, unsafe_allow_html=True)
+                    if st.button("✖ Clear", key="clear_chart_drill", use_container_width=True):
+                        st.session_state.chart_drill_filter = None
+                        st.session_state.trend_chart_reset_counter += 1
+                        st.session_state.dept_chart_reset_counter += 1
+                        st.rerun()
+
+            col_portal, col_search, col_search_btn, col_sort = st.columns(
+                [0.2, 0.5, 0.08, 0.22], vertical_alignment="center"
+            )
+            with col_portal:
+                st.markdown('<div class="col-marker-portal"></div>', unsafe_allow_html=True)
+                st.segmented_control(
+                    "Portal",
+                    PORTAL_FILTER_OPTIONS,
+                    default=PORTAL_FILTER_DEFAULT,
+                    key="portal_filter_display",
+                    label_visibility="collapsed",
+                    on_change=_sync_portal_from_pills,
+                )
+                st.selectbox(
+                    "Portal",
+                    PORTAL_FILTER_OPTIONS,
+                    key="portal_filter_dropdown",
+                    label_visibility="collapsed",
+                    on_change=_sync_portal_from_dropdown,
+                    filter_mode=None,
+                )
+            with col_search:
+                st.markdown('<div class="col-marker-search"></div>', unsafe_allow_html=True)
+                # st_keyup (a third-party "Components v2" widget) was used here for
+                # live-as-you-type filtering, but its browser<->Python round-trip
+                # can silently fail to land a typed value in Python — reproduced
+                # with a full bid number like "GEM/2026/B/7915789": the input
+                # correctly showed the typed text, but st.session_state never
+                # picked it up, so the table stayed unfiltered. st.text_input is
+                # Streamlit's own well-tested widget — it updates on Enter/blur
+                # instead of every keystroke, which is a minor UX trade for
+                # actually returning the right results every time.
+                search_query = st.text_input(
+                    "Search tenders",
+                    key="table_search_query",
+                    placeholder="🔍 Search by bid number, item name, department...",
+                    on_change=lambda: st.session_state.update(page_num=1),
+                    label_visibility="collapsed",
+                )
+            with col_search_btn:
+                st.markdown('<div class="col-marker-search-btn"></div>', unsafe_allow_html=True)
+                # Clicking this button blurs the text input first (same as
+                # clicking anywhere else), which is what actually commits its
+                # typed value in Streamlit — the button itself doesn't need to
+                # do anything beyond that click triggering the rerun.
+                st.button(
+                    "", icon=":material/search:", key="apply_table_search_btn",
+                    use_container_width=True, type="primary", help="Search"
+                )
+            with col_sort:
+                st.markdown('<div class="col-marker-sort"></div>', unsafe_allow_html=True)
+                st.selectbox(
+                    "Sort By",
+                    ["Relevance", "Newest First", "Deadline"],
+                    key="sort_by_select",
+                    label_visibility="collapsed",
+                    filter_mode=None,
+                )
+            tenders = fuzzy_filter_tenders(tenders, search_query)
+
+            if not tenders:
+                st.info("🔍 No tenders found yet.")
+            else:
+                page_size = 10
+                total_pages = max(1, (len(tenders) - 1) // page_size + 1)
+
+                if st.session_state.page_num > total_pages:
+                    st.session_state.page_num = 1
+
+                st.caption(f"{len(tenders)} tenders — Page {st.session_state.page_num} of {total_pages}")
+                st.markdown("<div style='margin-bottom:8px;'></div>", unsafe_allow_html=True)
+
+                start = (st.session_state.page_num - 1) * page_size
+                end = start + page_size
+                page_tenders = tenders[start:end]
+
+                # Table header — the header + all data rows live inside their
+                # own container so the horizontal-scroll CSS (mobile only) can
+                # scope overflow-x to just this box instead of the whole page;
+                # previously these were plain top-level elements, so scrolling
+                # the wide table on mobile dragged the entire page sideways too.
+                with st.container():
+                    st.markdown('<div class="table-card-marker"></div>', unsafe_allow_html=True)
+                    h1, h2, h3, h4, h5, h6, h7, h8, h9, h10 = st.columns([0.5, 1.5, 2.1, 1.3, 1.6, 1.2, 1.2, 0.8, 0.8, 0.8])
+                    h1.markdown('<div class="tbl-header-row"></div><span class="th-cell">Sl No</span>', unsafe_allow_html=True)
+                    h2.markdown('<span class="th-cell">Bid Number</span>', unsafe_allow_html=True)
+                    h3.markdown('<span class="th-cell">Item Name</span>', unsafe_allow_html=True)
+                    h4.markdown('<span class="th-cell">Department</span>', unsafe_allow_html=True)
+                    qty_col_label = "Location" if current_portal_filter == "KPPP" else "Qty"
+                    h5.markdown(f'<span class="th-cell">{qty_col_label}</span>', unsafe_allow_html=True)
+                    h6.markdown('<span class="th-cell">Start Date</span>', unsafe_allow_html=True)
+                    h7.markdown('<span class="th-cell">End Date</span>', unsafe_allow_html=True)
+                    h8.markdown("")
+                    h9.markdown("")
+                    h10.markdown("")
+                    # st.markdown("---")
+
+                    for idx, tender in enumerate(page_tenders):
+                        tid = tender["id"]
+                        sl_no = start + idx + 1
+                        bid_number = tender.get("tender_number", "N/A")
+                        title = tender.get("title", "Unknown")
+                        department = tender.get("department", "N/A")
+                        # KPPP tenders have no quantity field at all (never scraped —
+                        # the portal doesn't expose one); its own site shows Location
+                        # in that spot instead, which we do have real data for.
+                        if (tender.get("portal") or "").upper() == "KPPP":
+                            quantity = tender.get("location") or "N/A"
+                        else:
+                            quantity = tender.get("quantity", "N/A")
+                        start_date = tender.get("published_date", "N/A")
+                        end_date = tender.get("deadline", "N/A")
+                        portal = tender.get("portal", "")
+                        portal_chip_class = "portal-chip-kppp" if portal.upper() == "KPPP" else "portal-chip-gem"
+
+                        r1, r2, r3, r4, r5, r6, r7, r8, r9, r10 = st.columns([0.5, 1.5, 2.1, 1.3, 1.6, 1.2, 1.2, 0.8, 0.8, 0.8])
+                        r1.markdown(f'<div class="tbl-data-row"></div><span class="td-slno">{sl_no}</span>', unsafe_allow_html=True)
+                        r2.markdown(
+                            f'<div class="mono td-bid">{bid_number}</div>'
+                            f'<span class="portal-chip {portal_chip_class}">{portal or "N/A"}</span>',
+                            unsafe_allow_html=True,
+                        )
+                        # Hover shows the full stored title (same idea as
+                        # GeM's own site) — the visible cell still shows
+                        # just the first 60 chars so the table stays
+                        # compact, but a long bundled item list (GeM bids
+                        # often pack many items into one title) is no
+                        # longer only visible by opening the tender.
+                        title_suffix = "..." if len(title) > 60 else ""
+                        r3.markdown(
+                            f'<span title="{html.escape(title)}">{html.escape(title[:60])}{title_suffix}</span>',
+                            unsafe_allow_html=True,
+                        )
+                        r4.markdown(f'<span class="td-dept">{department[:30] if department else "N/A"}</span>', unsafe_allow_html=True)
+                        r5.markdown(f'<span class="mono td-qty">{quantity}</span>', unsafe_allow_html=True)
+                        r6.markdown(f'<span class="mono td-date">{start_date}</span>', unsafe_allow_html=True)
+                        r7.markdown(f'<span class="mono enddate-chip">{end_date}</span>', unsafe_allow_html=True)
+                        with r8:
+                            if st.button("View", key=f"view_{tid}_{section}"):
+                                st.session_state.viewing_tender_id = tid
+                                st.rerun()
+                        with r9:
+                            tender_status = tender.get("status", "new")
+                            if tender_status == "saved":
+                                if st.button("🔓", key=f"table_unsave_{tid}_{section}", help="Unsave this tender"):
+                                    update_tender_status(tid, "new")
+                                    st.rerun()
+                            else:
+                                if st.button("💾", key=f"table_save_{tid}_{section}", help="Save this tender"):
+                                    update_tender_status(tid, "saved")
+                                    st.rerun()
+                        with r10:
+                            if st.button("🗑️", key=f"table_delete_{tid}_{section}", help="Delete this tender"):
+                                delete_tender(tid)
+                                st.rerun()
+
+                st.markdown("---")
+                _, col_prev2, col_page2, col_next2 = st.columns([5, 1, 1, 1])
+                with col_prev2:
+                    st.markdown('<div class="pgn-prev-marker"></div>', unsafe_allow_html=True)
+                    if st.button("◀ Prev", disabled=st.session_state.page_num <= 1, key="prev_btn2"):
+                        st.session_state.page_num -= 1
+                        st.rerun()
+                with col_page2:
+                    st.markdown('<div class="pgn-page-marker"></div>', unsafe_allow_html=True)
+                    st.markdown(f"**{st.session_state.page_num}/{total_pages}**")
+                with col_next2:
+                    st.markdown('<div class="pgn-next-marker"></div>', unsafe_allow_html=True)
+                    if st.button("Next ▶", disabled=st.session_state.page_num >= total_pages, key="next_btn2"):
+                        st.session_state.page_num += 1
+                        st.rerun()

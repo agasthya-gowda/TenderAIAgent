@@ -17,6 +17,34 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DOWNLOAD_PATH = os.getenv("DOWNLOAD_PATH", "downloads")
 
+def _patch_reportlab_culprit_bug():
+    # reportlab's own Table._culprit() (used only to build a diagnostic
+    # message when a table splits across a page) crashes with
+    # "'>' not supported between instances of 'NoneType' and 'int'" on
+    # `max(rh)` whenever a row height list contains None — which aborts
+    # the entire PDF build even though the underlying page split itself
+    # is harmless. Long eligibility/comparison tables (50+ rows) that
+    # span multiple pages trigger this reliably. Wrapping it so a failure
+    # here can't take down the whole build.
+    try:
+        from reportlab.platypus.tables import Table
+        if getattr(Table, "_culprit_patched", False):
+            return
+        original_culprit = Table._culprit
+
+        def _safe_culprit(self):
+            try:
+                return original_culprit(self)
+            except Exception:
+                return "<table row too large to describe>"
+
+        Table._culprit = _safe_culprit
+        Table._culprit_patched = True
+    except Exception:
+        pass
+
+_patch_reportlab_culprit_bug()
+
 def read_pdf(file_path: str) -> str:
     """Extract text from PDF file."""
     try:
@@ -29,10 +57,11 @@ def read_pdf(file_path: str) -> str:
                     text += page_text + "\n"
         # Government tender PDFs routinely run 30-50+ pages with the actual
         # Eligibility Criteria table appearing well past page 8-10 (behind a
-        # table of contents, glossary and tender notification) — the old
-        # 8000-char cap cut most documents off before ever reaching it,
-        # silently starving the eligibility-checklist extraction below.
-        return text[:30000]
+        # table of contents, glossary and tender notification) — even the
+        # 30000-char cap cut off a real 23-page GeM bid document (65000+
+        # chars) right before its eligibility section, so this is raised
+        # further to comfortably cover full-length bid documents.
+        return text[:70000]
     except Exception as e:
         print(f"[Analyzer] PDF read error: {e}")
         return ""
@@ -92,11 +121,11 @@ def read_docx(file_path: str) -> str:
             # characters into a full RFP .docx, well past the old 4000-char
             # cap (a real KPPP tender's criteria section started at
             # character ~14,500 of a ~100,000-char document).
-            return text[:30000]
+            return text[:70000]
     except Exception as e:
         print(f"[Analyzer] DOCX read error: {e}, trying LibreOffice conversion...")
 
-    return _convert_doc_with_libreoffice(file_path)[:30000]
+    return _convert_doc_with_libreoffice(file_path)[:70000]
 
 def read_all_files(file_paths: list) -> str:
     """Read all downloaded files and combine text."""
@@ -115,7 +144,7 @@ def read_all_files(file_paths: list) -> str:
     # single full RFP document can legitimately need 20000+ characters just
     # to reach its Eligibility Criteria section, and tenders often ship as
     # 2-3 separate files (notification + full RFP + corrigendum).
-    return combined[:60000]
+    return combined[:150000]
 
 def call_ai(prompt: str, temperature: float = None) -> str:
     """Call DeepSeek first, Claude as fallback.
@@ -347,6 +376,17 @@ def generate_analysis_pdf(tender: dict, details: dict, output_path: str, match: 
 
         styles = getSampleStyleSheet()
 
+        def _clip_cell_text(text, limit=600):
+            # An unusually long, AI-generated cell value (occasionally the
+            # model dumps an entire clause into one field) can make a table
+            # row taller than a single page, which reportlab can't split —
+            # it then fails with a LayoutError, and a bug in reportlab's own
+            # error-reporting code (tables.py _culprit()) masks that as an
+            # unrelated "'>' not supported between NoneType and int" crash.
+            # Capping cell text keeps every row well within one page.
+            text = str(text or "")
+            return text if len(text) <= limit else text[:limit].rstrip() + "..."
+
         # Custom styles
         title_style = ParagraphStyle(
             "CustomTitle",
@@ -412,7 +452,14 @@ def generate_analysis_pdf(tender: dict, details: dict, output_path: str, match: 
                 if value and value != "Not mentioned in document":
                     table_data.append([
                         Paragraph(f"<b>{label}</b>", label_style),
-                        Paragraph(str(value), normal_style)
+                        # A single very long field (e.g. a raw Specifications
+                        # dump copied from the tender) can make its table row
+                        # taller than a whole page — a Table row is atomic and
+                        # can't split across pages, so reportlab fails with
+                        # "too large on page N". Capped generously (a few
+                        # pages worth of text) so this can't happen while
+                        # still showing effectively the full value normally.
+                        Paragraph(_clip_cell_text(value, limit=2500), normal_style)
                     ])
             if not table_data:
                 return
@@ -435,59 +482,6 @@ def generate_analysis_pdf(tender: dict, details: dict, output_path: str, match: 
             story.append(Spacer(1, 0.3*cm))
 
         # ── Company-match helpers (pages 7-9) ─────────────────
-        def _recommendation_color(recommendation):
-            return {
-                "Recommend Bid": colors.HexColor("#16A34A"),
-                "Recommend with Caution": colors.HexColor("#F59E0B"),
-                "Do Not Recommend": colors.HexColor("#DC2626"),
-            }.get(recommendation, colors.HexColor("#6B7280"))
-
-        def add_recommendation_badge(recommendation, pct):
-            # One combined bar instead of a separate solid badge + a second
-            # "Overall Match" progress bar underneath it (which just
-            # repeated the same percentage) — the recommendation text now
-            # sits directly on a bar that's genuinely only filled to the
-            # real match percentage, same as every other percent bar in
-            # this report.
-            badge_color = _recommendation_color(recommendation)
-            pct_text = f" - {pct}% Match" if pct is not None else ""
-            badge_style = ParagraphStyle(
-                "Badge", parent=styles["Normal"], fontSize=13,
-                textColor=colors.white, alignment=0, leading=18
-            )
-            bar_width = 17*cm
-            # A floor on the visual fill width only (not the displayed
-            # number) so the recommendation text always has room to sit
-            # on the colored portion, even for a low match percentage.
-            filled = max(pct or 0, 35) / 100.0
-            filled = min(filled, 1.0)
-            filled_w = bar_width * filled
-            empty_w = bar_width - filled_w
-
-            label_cell = Paragraph(f"<b>{recommendation.upper()}{pct_text}</b>", badge_style)
-            if empty_w > 0:
-                table_data = [[label_cell, ""]]
-                col_widths = [filled_w, empty_w]
-            else:
-                table_data = [[label_cell]]
-                col_widths = [filled_w]
-
-            t = Table(table_data, colWidths=col_widths)
-            style_cmds = [
-                ("BACKGROUND", (0, 0), (0, 0), badge_color),
-                ("ALIGN", (0, 0), (0, 0), "LEFT"),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("LEFTPADDING", (0, 0), (0, 0), 14),
-                ("TOPPADDING", (0, 0), (-1, -1), 10),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
-                ("ROUNDEDCORNERS", [6, 6, 6, 6]),
-            ]
-            if empty_w > 0:
-                style_cmds.append(("BACKGROUND", (1, 0), (1, 0), colors.HexColor("#E5E7EB")))
-            t.setStyle(TableStyle(style_cmds))
-            story.append(t)
-            story.append(Spacer(1, 0.4*cm))
-
         def add_category_breakdown(checklist):
             # One row per individual requirement pulled straight from the
             # tender's own eligibility criteria (not a rolled-up percentage
@@ -509,9 +503,6 @@ def generate_analysis_pdf(tender: dict, details: dict, output_path: str, match: 
                 Paragraph("<b>Mentioned Specification in Tender</b>", header_cell_style),
                 Paragraph("<b>Met / Not Met</b>", header_cell_style),
             ]]
-            span_cmds = []
-            prev_category = None
-            group_start_row = 1
             for row_idx, item in enumerate(checklist, start=1):
                 category = str(item.get("category", ""))
                 met = item.get("met") is True
@@ -520,19 +511,16 @@ def generate_analysis_pdf(tender: dict, details: dict, output_path: str, match: 
                     f"MetCell{row_idx}", parent=normal_style, alignment=1,
                     textColor=colors.HexColor("#16A34A") if met else colors.HexColor("#DC2626")
                 )
-                show_category = category if category != prev_category else ""
+                # The category is repeated on every row rather than visually
+                # merged (SPAN) across consecutive same-category rows — a
+                # SPANned block can't be split across a page break, so a
+                # category with many items could force an unsplittable block
+                # taller than a page and crash the whole PDF build.
                 table_data.append([
-                    Paragraph(show_category, normal_style),
-                    Paragraph(str(item.get("requirement", "")), normal_style),
+                    Paragraph(_clip_cell_text(category), normal_style),
+                    Paragraph(_clip_cell_text(item.get("requirement", "")), normal_style),
                     Paragraph(f"<b>{met_text}</b>", met_style),
                 ])
-                if category != prev_category:
-                    if prev_category is not None and row_idx - 1 > group_start_row:
-                        span_cmds.append(("SPAN", (0, group_start_row), (0, row_idx - 1)))
-                    group_start_row = row_idx
-                    prev_category = category
-            if len(table_data) - 1 > group_start_row:
-                span_cmds.append(("SPAN", (0, group_start_row), (0, len(table_data) - 1)))
             t = Table(table_data, colWidths=[4.5*cm, 10*cm, 2.5*cm], repeatRows=1)
             style_cmds = [
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2C3E50")),
@@ -549,54 +537,8 @@ def generate_analysis_pdf(tender: dict, details: dict, output_path: str, match: 
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
                 ("ROWBACKGROUNDS", (0, 1), (-1, -1),
                  [colors.HexColor("#FFFFFF"), colors.HexColor("#F8F9FA")]),
-            ] + span_cmds
+            ]
             t.setStyle(TableStyle(style_cmds))
-            story.append(t)
-            story.append(Spacer(1, 0.3*cm))
-
-        def add_bullet_section(icon_title, items, accent_hex):
-            if not items:
-                return
-            accent_style = ParagraphStyle(
-                "AccentHeading", parent=styles["Heading2"], fontSize=12,
-                textColor=colors.HexColor(accent_hex), spaceBefore=8, spaceAfter=6
-            )
-            bullet_style = ParagraphStyle(
-                "Bullet", parent=normal_style, leftIndent=14, bulletIndent=2, spaceAfter=6
-            )
-            story.append(Paragraph(icon_title, accent_style))
-            for item in items:
-                # A plain hyphen instead of a bullet-glyph entity — some
-                # PDF viewers/extractors mis-render "&bull;" with the base
-                # Helvetica font, showing a broken character instead of a dot.
-                story.append(Paragraph(f"-&nbsp;&nbsp;{item}", bullet_style))
-            story.append(Spacer(1, 0.2*cm))
-
-        def add_info_card(title, body_text, accent_hex="#8E44AD"):
-            if not body_text:
-                return
-            card_title_style = ParagraphStyle(
-                "CardTitle", parent=styles["Normal"], fontSize=10.5,
-                textColor=colors.white, leading=14
-            )
-            card_body_style = ParagraphStyle(
-                "CardBody", parent=styles["Normal"], fontSize=10,
-                textColor=colors.HexColor("#2C3E50"), leading=15
-            )
-            t = Table(
-                [[Paragraph(f"<b>{title}</b>", card_title_style)],
-                 [Paragraph(body_text, card_body_style)]],
-                colWidths=[17*cm]
-            )
-            t.setStyle(TableStyle([
-                ("BACKGROUND", (0, 0), (0, 0), colors.HexColor(accent_hex)),
-                ("BACKGROUND", (0, 1), (0, 1), colors.HexColor("#F8F9FA")),
-                ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#DEE2E6")),
-                ("LEFTPADDING", (0, 0), (-1, -1), 10),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 10),
-                ("TOPPADDING", (0, 0), (-1, -1), 8),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-            ]))
             story.append(t)
             story.append(Spacer(1, 0.3*cm))
 
@@ -616,8 +558,8 @@ def generate_analysis_pdf(tender: dict, details: dict, output_path: str, match: 
                     textColor=colors.HexColor("#16A34A") if met else colors.HexColor("#DC2626")
                 )
                 table_data.append([
-                    Paragraph(str(r.get("requirement", "")), normal_style),
-                    Paragraph(str(r.get("company_status", "")), normal_style),
+                    Paragraph(_clip_cell_text(r.get("requirement", "")), normal_style),
+                    Paragraph(_clip_cell_text(r.get("company_status", "")), normal_style),
                     Paragraph(f"<b>{met_text}</b>", met_style),
                 ])
             t = Table(table_data, colWidths=[6.5*cm, 8.5*cm, 2*cm])
@@ -751,36 +693,13 @@ def generate_analysis_pdf(tender: dict, details: dict, output_path: str, match: 
             if summary:
                 story.append(Paragraph(f"<i>{summary}</i>", normal_style))
                 story.append(Spacer(1, 0.3*cm))
-            add_recommendation_badge(
-                match.get("overall_recommendation", "Unable to Determine"),
-                match.get("overall_match_percent")
-            )
-            story.append(Spacer(1, 0.3*cm))
             story.append(Paragraph("Match Breakdown by Category", heading_style))
             add_category_breakdown(match.get("requirement_checklist"))
 
             story.append(PageBreak())
 
-            # PAGE 8 — Why to Bid / Risks / Action Items
-            add_heading("8. Why to Bid, Risks & Action Items")
-            add_bullet_section("Why We Can Bid", match.get("why_to_bid"), "#16A34A")
-            add_bullet_section("Risks & Gaps", match.get("risks_and_gaps"), "#DC2626")
-            add_bullet_section("Action Needed Before Submission", match.get("action_needed"), "#8E44AD")
-            add_info_card(
-                "Closest Matching Past Project",
-                match.get("closest_matching_project"),
-                accent_hex="#2C3E50"
-            )
-            add_info_card(
-                "Financial Risk Note",
-                match.get("financial_risk_note"),
-                accent_hex="#8E44AD"
-            )
-
-            story.append(PageBreak())
-
-            # PAGE 9 — Detailed Requirement Comparison
-            add_heading("9. Detailed Requirement Comparison")
+            # PAGE 8 — Detailed Requirement Comparison
+            add_heading("8. Detailed Requirement Comparison")
             comparison_rows = match.get("comparison_table")
             if comparison_rows:
                 add_comparison_table(comparison_rows)
@@ -981,6 +900,20 @@ def analyze_tender(tender: dict) -> str:
             "scope": {}, "eligibility": {},
             "dates": {}, "terms": {}
         }
+    elif tender.get("id") is not None:
+        # Bid value / EMD / turnover requirement genuinely aren't on either
+        # portal's search results page (see the typed-column comment in
+        # database/db.py) — only knowable once the real document is read,
+        # i.e. right here at L2. Fill in the typed columns now that they are.
+        from database.db import update_tender_l2_financials
+        financial = details.get("financial", {})
+        eligibility = details.get("eligibility", {})
+        update_tender_l2_financials(
+            tender["id"],
+            estimated_value=financial.get("estimated_value"),
+            emd_amount=financial.get("emd_amount"),
+            turnover_required=eligibility.get("turnover_required"),
+        )
 
     # Step 2b — Compare against Chipscape's own company profile (turnover,
     # certifications, past projects) to produce the bid-recommendation pages.

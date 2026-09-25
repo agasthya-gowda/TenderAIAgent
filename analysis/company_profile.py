@@ -1,8 +1,15 @@
 """
 Company Profile Loader
-Reads Chipscape's own turnover, credentials, and past-project data from the
-spreadsheets in company_data/ and turns them into a compact summary that can
-be handed to the AI for tender-eligibility matching (see eligibility_matcher.py).
+Reads Chipscape's own turnover, credentials, past-project data and
+subcontractor/system-integrator partner credentials from the database
+(managed via the dashboard's Admin section — see database/db.py) and turns
+them into a compact summary that can be handed to the AI for
+tender-eligibility matching (see eligibility_matcher.py).
+
+The loaders below (_load_turnover etc.) also still read the original Excel
+files in company_data/ — kept only so scripts/migrate_company_data_to_db.py
+has a one-time source to migrate from. Nothing at runtime reads Excel
+anymore; the database is the source of truth.
 """
 
 import os
@@ -31,7 +38,8 @@ def _fmt_date(value):
 
 
 def _load_turnover():
-    """Financial-year turnover history, most recent year last."""
+    """Financial-year turnover history, most recent year last. Only used by
+    the one-time Excel migration script, not at runtime."""
     import openpyxl
     years = []
     if not os.path.exists(TURNOVER_FILE):
@@ -55,7 +63,8 @@ def _load_turnover():
 
 
 def _load_credentials():
-    """Registrations, licenses and certifications with validity."""
+    """Registrations, licenses and certifications with validity. Only used
+    by the one-time Excel migration script, not at runtime."""
     import openpyxl
     creds = []
     if not os.path.exists(REGISTER_FILE):
@@ -86,7 +95,8 @@ def _load_credentials():
 
 def _load_project_references():
     """Past completed projects with category, tags, and value — used to
-    judge relevant prior experience against a new tender's scope."""
+    judge relevant prior experience against a new tender's scope. Only used
+    by the one-time Excel migration script, not at runtime."""
     import openpyxl
     projects = []
     if not os.path.exists(REGISTER_FILE):
@@ -118,7 +128,8 @@ def _load_project_quantities():
     """Itemized quantities actually supplied on past projects (e.g. '20
     ANPR Cameras', '500 Wireless Nodes') — lets the matcher back up a
     quantity-based eligibility clause ("must have supplied 15+ units of X")
-    with a real, specific past number instead of just a project name."""
+    with a real, specific past number instead of just a project name. Only
+    used by the one-time Excel migration script, not at runtime."""
     import openpyxl
     quantities = []
     if not os.path.exists(REGISTER_FILE):
@@ -142,25 +153,61 @@ def _load_project_quantities():
 
 
 def load_company_profile(force_reload: bool = False) -> dict:
-    """Loads and caches Chipscape's turnover, credentials and project
-    history in one place, ready to hand to the AI matcher."""
+    """Loads and caches Chipscape's turnover, credentials, project history
+    and partner credentials from the database, ready to hand to the AI
+    matcher."""
     global _cached_profile
     if _cached_profile is not None and not force_reload:
         return _cached_profile
 
-    turnover = _load_turnover()
-    credentials = _load_credentials()
-    projects = _load_project_references()
-    project_quantities = _load_project_quantities()
+    from database.db import (
+        get_company_turnover_list, get_company_credentials_list,
+        get_project_references_list, get_project_quantities_list,
+        get_partners_list, get_partner_credentials_list,
+    )
+
+    turnover = get_company_turnover_list()
+    credentials = get_company_credentials_list()
+    projects = get_project_references_list()
+    project_quantities = get_project_quantities_list()
+
+    partners = get_partners_list()
+    partner_credentials = get_partner_credentials_list()
+    creds_by_partner = {}
+    for pc in partner_credentials:
+        creds_by_partner.setdefault(pc["partner_id"], []).append(pc)
+    partners_with_credentials = [
+        {**p, "credentials": creds_by_partner.get(p["id"], [])}
+        for p in partners
+    ]
+
+    today = datetime.now()
+
+    def _status_with_expiry_check(cred):
+        expiry = cred.get("expiry_date")
+        if expiry and expiry != "No expiry":
+            try:
+                if datetime.strptime(expiry, "%d-%m-%Y") < today:
+                    return "Expired"
+            except ValueError:
+                pass
+        return cred.get("status") or "Valid"
+
+    for c in credentials:
+        c["status"] = _status_with_expiry_check(c)
+    for p in partners_with_credentials:
+        for c in p["credentials"]:
+            c["status"] = _status_with_expiry_check(c)
+
+    audited_years = [y for y in turnover if (y.get("status") or "").upper() == "AUDITED"]
 
     _cached_profile = {
         "turnover_history": turnover,
-        "latest_audited_turnover": next(
-            (y for y in reversed(turnover) if y["status"].upper() == "AUDITED"), None
-        ),
+        "latest_audited_turnover": audited_years[-1] if audited_years else None,
         "credentials": credentials,
         "project_references": projects,
         "project_quantities": project_quantities,
+        "partners": partners_with_credentials,
     }
     return _cached_profile
 
@@ -200,6 +247,20 @@ def company_profile_as_text(profile: dict = None) -> str:
             f"Valid until: {c['expiry_date']} | Status: {c['status']}{v_note}"
         )
 
+    if profile.get("partners"):
+        lines.append(
+            "\n=== SUBCONTRACTOR / SYSTEM-INTEGRATOR PARTNER CREDENTIALS ===\n"
+            "(Only relevant if the tender allows bidding through a partner/OEM "
+            "dealer relationship rather than requiring Chipscape's own credential.)"
+        )
+        for p in profile["partners"]:
+            lines.append(f"- Partner: {p['name']} ({p.get('role') or 'Partner'})")
+            for c in p["credentials"]:
+                lines.append(
+                    f"    - {c['name']} ({c['type']}) | Issuer: {c['issuing_authority']} | "
+                    f"Valid until: {c['expiry_date']} | Status: {c['status']}"
+                )
+
     lines.append("\n=== CHIPSCAPE PAST PROJECT EXPERIENCE (completed/ongoing) ===")
     for p in profile["project_references"]:
         lines.append(
@@ -218,7 +279,10 @@ def company_profile_as_text(profile: dict = None) -> str:
         )
         for q in profile["project_quantities"]:
             qty = q["quantity_executed"]
-            qty_text = f"{qty:g}" if isinstance(qty, (int, float)) else str(qty or "")
+            try:
+                qty_text = f"{float(qty):g}"
+            except (TypeError, ValueError):
+                qty_text = str(qty or "")
             lines.append(
                 f"- {q['project_name']} | Category: {q['solution_category']} | "
                 f"{q['quantity_category']}: {qty_text} {q['unit']} | Customer: {q['customer']}"

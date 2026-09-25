@@ -50,11 +50,13 @@ async def _get_visible_results_table(page):
 async def _search_kppp_once(criteria: dict, max_pages=None, stop_before_date=None) -> tuple:
     """
     Run one full attempt at searching KPPP using its real search form
-    fields. Returns (tenders, entity_verified) — entity_verified is False
-    when a procuring entity was requested but the dropdown selection didn't
-    actually stick (KPPP's Angular app can reset/reload the entity list
-    right after the category changes), in which case `tenders` is the
-    unfiltered/wrong-filter list and must NOT be trusted by the caller.
+    fields. Returns (tenders, filter_verified) — filter_verified is False
+    when a procuring entity or tender-name filter was requested but didn't
+    actually stick (KPPP's Angular app can silently reset/reload either
+    field, the entity dropdown right after the category changes and the
+    tender-name box for reasons not fully pinned down), in which case
+    `tenders` is the unfiltered/wrong-filter list and must NOT be trusted
+    by the caller.
 
     max_pages: None means "page through every result KPPP has" (its own
     ngx-pagination widget, confirmed live to run into the dozens of pages
@@ -125,9 +127,30 @@ async def _search_kppp_once(criteria: dict, max_pages=None, stop_before_date=Non
             # ── SOLVE CAPTCHA ─────────────────────────────
             captcha_solved = False
 
-            for attempt in range(3):
+            # 6 attempts, not 3 — now that each retry actually gets a fresh
+            # CAPTCHA image (see the reload click above) instead of
+            # re-guessing the same one, more attempts meaningfully raise
+            # the odds of the local OCR fallback landing on a readable one.
+            for attempt in range(6):
                 try:
                     print(f"[KPPP] CAPTCHA attempt {attempt + 1}...")
+
+                    if attempt > 0:
+                        # A wrong guess must get a genuinely new CAPTCHA
+                        # before retrying — confirmed live that simply
+                        # re-screenshotting the canvas after a failed
+                        # attempt captures the exact same (still-wrong)
+                        # image every time, since KPPP doesn't auto-refresh
+                        # it on failure. The page has its own reload control
+                        # for this (the "↻" icon next to the CAPTCHA,
+                        # a.cpt-btn.reload) — without clicking it, all 3
+                        # attempts were really just 3 guesses at one image.
+                        reload_btn = await page.query_selector("a.cpt-btn.reload")
+                        if reload_btn:
+                            await reload_btn.click()
+                            await page.wait_for_timeout(1000)
+                        else:
+                            print("[KPPP] CAPTCHA reload button not found — retrying against the same image")
 
                     await page.wait_for_selector("canvas", timeout=5000)
                     captcha_container = await page.query_selector("canvas")
@@ -168,235 +191,174 @@ async def _search_kppp_once(criteria: dict, max_pages=None, stop_before_date=Non
                     print(f"[KPPP] CAPTCHA error: {e}")
 
             if not captcha_solved:
-                print("[KPPP] CAPTCHA failed after 3 attempts")
+                print("[KPPP] CAPTCHA failed after 6 attempts")
                 await browser.close()
                 return [], False
 
             # ── SEARCH ────────────────────────────────────
-            # Fill in KPPP's actual search fields (selectors/options
-            # confirmed against the live form — see portals/data/kppp_options.py).
-            await page.wait_for_timeout(2000)
+            # KPPP's Angular app calls its own real JSON API for every
+            # search and "Next" click — confirmed live via the browser's
+            # network tab: POST .../search-eproc-tenders?page=N&size=20
+            # with a small JSON body, returning a plain array of tender
+            # records. Calling that endpoint directly (via the same
+            # browser context's cookies, right after solving the CAPTCHA
+            # above) replaces the old approach of clicking through form
+            # fields and an ngx-pagination widget — removing entirely the
+            # two most fragile parts of this scraper: the procuring-entity
+            # dropdown and Tender Name field "silently didn't stick" retry
+            # loops, and a "Next" click landing on a stale/detached
+            # element. Procuring Entity isn't a field the API accepts
+            # (confirmed: selecting it live did not change the request
+            # body at all — KPPP's own frontend filters by entity
+            # client-side against the same unfiltered results), so it's
+            # applied the same way here, after fetching.
+            filter_verified = True
 
-            if tender_number:
-                tn_input = await page.query_selector("#tendernumberInputField")
-                if tn_input:
-                    await tn_input.fill(tender_number)
-                    await page.wait_for_timeout(300)
+            api_url = (
+                "https://kppp.karnataka.gov.in/supplier-registration-service"
+                "/v1/api/portal-service/search-eproc-tenders"
+            )
 
-            if category:
-                cat_select = await page.query_selector("#categorySelect")
-                if cat_select:
-                    try:
-                        await cat_select.select_option(label=category)
-                    except Exception as e:
-                        print(f"[KPPP] Category '{category}' not found: {e}")
-                    await page.wait_for_timeout(300)
+            # "Regular Tenders" is the form's default and confirmed to map
+            # to "OPEN"; the other two aren't currently used by any saved
+            # filter in this app, so they're a best-effort guess following
+            # the same naming convention as the confirmed enum values
+            # (GOODS/PUBLISHED/OPEN) — flag for re-verification if either
+            # is ever actually selected and returns unexpected results.
+            tender_type_map = {
+                "Regular Tenders": "OPEN",
+                "Prequalification Tenders": "PREQUALIFICATION",
+                "Reserved Tenders": "RESERVED",
+            }
+            api_tender_type = tender_type_map.get(tender_type, "OPEN")
 
-            # Status — always Published, since we only care about live/open tenders
-            selects = await page.query_selector_all("select")
-            if len(selects) >= 2:
-                await selects[1].select_option(index=1)
-                await page.wait_for_timeout(300)
+            def _build_kppp_body() -> str:
+                return json.dumps({
+                    "tenderNumber": tender_number or "",
+                    "category": category.upper() if category else "",
+                    "status": "PUBLISHED",
+                    "publishedFromDate": from_date or None,
+                    "publishedToDate": to_date or None,
+                    "tenderType": api_tender_type,
+                    "title": tender_name_filter or "",
+                    "location": None,
+                    "tenderClosureFromDate": None,
+                    "tenderClosureToDate": None,
+                })
 
-            entity_verified = True
+            # "CODE - Full Entity Name" is how the dropdown presents each
+            # option (see portals/data/kppp_options.py) — match against the
+            # name half, since that's what the API's own deptName field
+            # returns for each tender.
+            entity_name_filter = None
             if procuring_entity:
-                entity_verified = False
-                entity_select = await page.query_selector("#departmentstatusSelect")
-                if not entity_select:
-                    print(f"[KPPP] Procuring entity dropdown not found on page")
-                else:
-                    # KPPP's Angular app can silently reset/reload the entity
-                    # dropdown shortly after the category changes, so a
-                    # selection made too soon doesn't stick even though no
-                    # exception is raised. Verify what's actually selected
-                    # and retry rather than trusting the call blindly —
-                    # otherwise a failed selection quietly falls through to
-                    # an unfiltered search that gets mislabeled as filtered.
-                    for verify_attempt in range(4):
-                        try:
-                            await entity_select.select_option(label=procuring_entity)
-                        except Exception as e:
-                            print(f"[KPPP] Procuring entity '{procuring_entity}' not in dropdown: {e}")
-                            break
-                        await page.wait_for_timeout(400 + verify_attempt * 400)
-                        selected_text = await entity_select.evaluate(
-                            "el => el.options[el.selectedIndex]?.text.trim()"
-                        )
-                        if selected_text == procuring_entity:
-                            entity_verified = True
-                            break
-                        print(
-                            f"[KPPP] Entity selection didn't stick "
-                            f"(attempt {verify_attempt + 1}, got '{selected_text}'), retrying..."
-                        )
-                    if not entity_verified:
-                        print(f"[KPPP] Giving up on selecting entity '{procuring_entity}' for this attempt")
-                        await browser.close()
-                        return [], False
+                entity_name_filter = (
+                    procuring_entity.split(" - ", 1)[1]
+                    if " - " in procuring_entity else procuring_entity
+                ).strip().lower()
 
-            date_inputs = await page.query_selector_all("input[type='date']")
-            if len(date_inputs) >= 2:
-                if from_date:
-                    await date_inputs[0].fill(from_date)
-                if to_date:
-                    await date_inputs[1].fill(to_date)
-                await page.wait_for_timeout(300)
-
-            if tender_type:
-                type_order = ["Regular Tenders", "Prequalification Tenders", "Reserved Tenders"]
-                if tender_type in type_order:
-                    radios = await page.query_selector_all("input[type='radio']")
-                    if len(radios) >= len(type_order):
-                        await radios[type_order.index(tender_type)].click()
-                        await page.wait_for_timeout(300)
-
-            if tender_name_filter:
-                # The Tender Name field lives under KPPP's collapsed
-                # "Advanced Search" -> "Other Details" section — expand it
-                # first if it isn't already open. A plain .click() on the
-                # wrapping "div.advancedsearch" row (or its child "arrow"
-                # div) reliably does NOT register with this page's Angular
-                # click handler under Playwright — confirmed by extensive
-                # testing (element/mouse clicks, force clicks, raw JS
-                # dispatchEvent, up to 8s of waiting, all failed). What
-                # actually works is a real mousedown+mouseup sequence
-                # targeted at the inner "lib-icon#showAdvancedSearch" custom
-                # element specifically, not its parent — likely a
-                # shadow-DOM/custom-element hit-testing quirk. Do not
-                # simplify this back to `.click()` on the outer div without
-                # re-verifying live against the portal first.
-                tn_field = await page.query_selector("#innertendernameInputField")
-                for expand_attempt in range(3):
-                    if tn_field:
-                        break
-                    advanced_icon = await page.query_selector("lib-icon#showAdvancedSearch")
-                    if not advanced_icon:
-                        break
-                    box = await advanced_icon.bounding_box()
-                    if box:
-                        cx = box["x"] + box["width"] / 2
-                        cy = box["y"] + box["height"] / 2
-                        await page.mouse.move(cx, cy)
-                        await page.mouse.down()
-                        await page.wait_for_timeout(100)
-                        await page.mouse.up()
-                    try:
-                        await page.wait_for_selector("#innertendernameInputField", timeout=2500)
-                    except Exception:
-                        print(f"[KPPP] Advanced Search expand attempt {expand_attempt + 1}/3 didn't reveal Tender Name field, retrying...")
-                    tn_field = await page.query_selector("#innertendernameInputField")
-                if tn_field:
-                    await tn_field.fill(tender_name_filter)
-                    await page.wait_for_timeout(300)
-                else:
-                    # Same defense-in-depth principle as the entity check
-                    # above — never let a failed filter silently fall
-                    # through to an unfiltered "every tender" search that
-                    # gets mislabeled as scoped to tender_name_filter.
-                    print("[KPPP] Tender Name field not found even after expanding Advanced Search — aborting this attempt")
-                    await browser.close()
-                    return [], False
-
-            search_btn = await page.query_selector("button:has-text('Search')")
-            if search_btn:
-                await search_btn.click()
-                await page.wait_for_timeout(4000)
-                print(f"[KPPP] Search submitted with filter: {criteria}")
+            print(f"[KPPP] Searching via API with filter: {criteria}")
 
             # ── EXTRACT RESULTS ───────────────────────────
-            # Pages through KPPP's own ngx-pagination widget the same way
-            # search_gem pages through GeM's "Next" link — previously this
-            # only ever read the first page's first 10 rows (KPPP's real
-            # page size is 20, confirmed live, so even a single page was
-            # having half its own rows silently dropped), with no way to
-            # reach anything beyond page 1 at all.
-            await page.wait_for_timeout(2000)
-            HARD_PAGE_CEILING = 200
+            HARD_PAGE_CEILING = 500
             page_num = 0
+            page_size = 20
 
             while max_pages is None or page_num < max_pages:
                 if page_num >= HARD_PAGE_CEILING:
                     print(f"[KPPP] Hit hard safety ceiling of {HARD_PAGE_CEILING} pages, stopping")
                     break
 
-                table = await _get_visible_results_table(page)
-                rows = await table.query_selector_all("tbody tr") if table else []
-                print(f"[KPPP] Page {page_num + 1}: found {len(rows)} rows")
+                docs = None
+                for attempt in range(1, 4):
+                    try:
+                        resp = await context.request.post(
+                            f"{api_url}?page={page_num}&size={page_size}&order-by-tender-publish=true",
+                            headers={"Content-Type": "application/json"},
+                            data=_build_kppp_body(),
+                        )
+                        if resp.status != 200:
+                            print(f"[KPPP] Page {page_num + 1} API returned status {resp.status} (attempt {attempt}/3)")
+                            await page.wait_for_timeout(3000)
+                            continue
+                        docs = await resp.json()
+                        break
+                    except Exception as e:
+                        print(f"[KPPP] Page {page_num + 1} API call failed (attempt {attempt}/3): {e}")
+                        docs = None
+                        await page.wait_for_timeout(3000)
+
+                if docs is None:
+                    print(f"[KPPP] Giving up on page {page_num + 1} after 3 failed attempts")
+                    break
+
+                print(f"[KPPP] Page {page_num + 1}: found {len(docs)} results")
+
+                if not docs:
+                    break
 
                 page_has_newer = stop_before_date is None
-                for row_index in range(len(rows)):
+                for doc in docs:
                     try:
-                        # Re-query rows each time to avoid stale elements
-                        # after a previous iteration's own DOM reads.
-                        table = await _get_visible_results_table(page)
-                        rows = await table.query_selector_all("tbody tr") if table else []
-                        if row_index >= len(rows):
-                            break
-                        row = rows[row_index]
-
-                        cols = await row.query_selector_all("td")
-                        if len(cols) < 8:
+                        tender_number_val = doc.get("tenderNumber") or ""
+                        if not tender_number_val:
                             continue
 
-                        procuring_entity = " ".join((await cols[1].inner_text()).strip().split())
-                        location         = " ".join((await cols[2].inner_text()).strip().split())
-                        tender_number    = " ".join((await cols[3].inner_text()).strip().split())
-                        tender_name      = " ".join((await cols[4].inner_text()).strip().split())
-                        tender_type      = " ".join((await cols[5].inner_text()).strip().split())
-                        estimated_value  = " ".join((await cols[6].inner_text()).strip().split())
-                        published_date   = " ".join((await cols[7].inner_text()).strip().split())
-                        deadline         = " ".join((await cols[8].inner_text()).strip().split()) if len(cols) > 8 else "Not available"
-
-                        if not estimated_value or estimated_value == "---":
-                            estimated_value = "Not available"
-                        if not deadline or deadline == "---":
-                            deadline = "Not available"
+                        dept_name = doc.get("deptName") or ""
+                        published_date = doc.get("publishedDate") or "Not available"
+                        deadline = doc.get("tenderClosureDate") or "Not available"
 
                         if stop_before_date is not None:
                             parsed = _parse_kppp_datetime(published_date)
                             if parsed is None or parsed > stop_before_date:
                                 page_has_newer = True
 
-                        tender_url = "https://kppp.karnataka.gov.in/#/portal/searchTender/live"
+                        if entity_name_filter and entity_name_filter not in dept_name.strip().lower():
+                            continue
 
                         # Skip if already in database
                         from database.db import get_conn
                         conn = get_conn()
                         existing = conn.execute(
-                            "SELECT id FROM tenders WHERE tender_number=?", (tender_number,)
+                            "SELECT id FROM tenders WHERE tender_number=?", (tender_number_val,)
                         ).fetchone()
                         conn.close()
                         if existing:
-                            print(f"[KPPP] Skipping {tender_number} — already in database")
+                            print(f"[KPPP] Skipping {tender_number_val} — already in database")
                             continue
 
-                        # ── DOWNLOAD ──────────────────────────
-                        # Skip download during search — just collect data
-                        downloaded_files = []
+                        ecv = doc.get("ecv")
+                        estimated_value = str(ecv) if ecv is not None else "Not available"
 
                         tenders.append({
-                            "title": tender_name,
+                            "title": doc.get("title") or "Not available",
                             "portal": "KPPP",
-                            "url": tender_url,
+                            "url": "https://kppp.karnataka.gov.in/#/portal/searchTender/live",
                             "category": category,
                             "found_via": found_via_label,
-                            "tender_number": tender_number,
-                            "department": procuring_entity,
-                            "location": location,
-                            "tender_type": tender_type,
+                            "tender_number": tender_number_val,
+                            "department": dept_name or "Not available",
+                            "location": doc.get("locationName") or "Not available",
+                            "tender_type": doc.get("invitingStrategyText") or "Not available",
                             "value": estimated_value,
                             "deadline": deadline,
                             "published_date": published_date,
                             "emd": "See tender document",
-                            "description": f"KPPP tender by {procuring_entity}",
-                            "downloaded_files": downloaded_files,
+                            "description": f"KPPP tender by {dept_name}",
+                            "downloaded_files": [],
                             "relevance_score": 0.75
                         })
 
-                        print(f"[KPPP] ✅ {tender_name[:60]}...")
+                        try:
+                            print(f"[KPPP] Extracted: {tender_number_val} - {(doc.get('title') or '')[:50]}...")
+                        except Exception:
+                            pass
 
                     except Exception as e:
-                        print(f"[KPPP] Row error: {e}")
+                        try:
+                            print(f"[KPPP] Doc extraction error: {e}")
+                        except Exception:
+                            pass
                         continue
 
                 if not page_has_newer:
@@ -406,32 +368,16 @@ async def _search_kppp_once(criteria: dict, max_pages=None, stop_before_date=Non
                     )
                     break
 
-                # Find this table's own visible "Next" control — KPPP keeps
-                # a separate ngx-pagination widget per tab's table, only
-                # one of which is ever visible at a time (see
-                # _get_visible_results_table). A disabled/last-page Next
-                # renders as a plain <span>, not an <a>, so its absence is
-                # the "no more pages" signal.
-                next_lis = await page.query_selector_all("li.pagination-next")
-                next_link = None
-                for li in next_lis:
-                    if await li.is_visible():
-                        next_link = await li.query_selector("a")
-                        break
-                more_pages_allowed = max_pages is None or page_num < max_pages - 1
-                if next_link and more_pages_allowed:
-                    try:
-                        await next_link.click()
-                        await page.wait_for_timeout(2500)
-                    except Exception:
-                        break
-                else:
+                if len(docs) < page_size:
+                    # A short page (fewer results than requested) is KPPP's
+                    # own signal there's nothing more to page through.
                     break
+
                 page_num += 1
 
             await browser.close()
             print(f"[KPPP] Done. Total: {len(tenders)} tenders across {page_num + 1} page(s)")
-            return tenders, entity_verified
+            return tenders, filter_verified
 
     except Exception as e:
         print(f"[KPPP] Fatal error: {e}")
@@ -452,8 +398,8 @@ async def search_kppp(criteria: dict, max_attempts: int = 7, max_pages=None, sto
     stop_before_date instead.
     """
     for attempt in range(1, max_attempts + 1):
-        tenders, entity_verified = await _search_kppp_once(criteria, max_pages=max_pages, stop_before_date=stop_before_date)
-        if entity_verified:
+        tenders, filter_verified = await _search_kppp_once(criteria, max_pages=max_pages, stop_before_date=stop_before_date)
+        if filter_verified:
             return tenders
         print(f"[KPPP] Attempt {attempt}/{max_attempts} did not confirm the requested filter, retrying search...")
         if attempt < max_attempts:

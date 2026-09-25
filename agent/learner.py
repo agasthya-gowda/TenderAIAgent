@@ -190,15 +190,18 @@ def get_search_queries() -> list:
     for pattern in patterns:
         try:
             keywords = json.loads(pattern["keywords"])
+            # Each pattern is tagged with the portal it was actually
+            # searched on (see save_learned_patterns) — a keyword typed
+            # into KPPP's Tender Name box must never get cross-applied to
+            # GeM (or vice versa) just because they share the same
+            # learned_patterns table. Previously this emitted both
+            # unconditionally, so e.g. a KPPP-only "camera" search quietly
+            # re-ran on GeM too on every future Start Agent click.
+            pattern_portal = pattern.get("portal") or "GeM"
             for kw in keywords[:8]:
                 queries.append({
                     "keyword": kw,
-                    "portal": "GeM",
-                    "category": pattern["category"]
-                })
-                queries.append({
-                    "keyword": kw,
-                    "portal": "KPPP",
+                    "portal": pattern_portal,
                     "category": pattern["category"]
                 })
         except Exception:

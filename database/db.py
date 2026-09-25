@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from datetime import datetime
 
 import psycopg2
@@ -172,6 +173,143 @@ def init_db():
             status TEXT DEFAULT 'new',
             found_at TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS'),
             quantity TEXT
+        )
+    """)
+
+    # Typed, queryable columns alongside the original free-text ones above
+    # (value/emd/deadline/published_date/quantity kept as-is for display and
+    # backward compatibility) — per the manager's request, critical tender
+    # parameters shouldn't only live as loose scraped text that has to be
+    # re-parsed by application code on every read. start_date_parsed /
+    # end_date_parsed / quantity_count / item_tags are filled in at L1 (the
+    # moment a tender is found and saved — see save_tender()); bid/EMD/
+    # turnover-requirement amounts genuinely aren't published on either
+    # portal's search results page (both show "See bid document"/"Not
+    # available" at L1 in practice) — those three are only knowable once
+    # the tender's real document is read, so they're filled in at L2
+    # (Get Full Analysis — see update_tender_l2_financials(), called from
+    # analysis/analyzer.py).
+    c.execute("ALTER TABLE tenders ADD COLUMN IF NOT EXISTS start_date_parsed TIMESTAMP")
+    c.execute("ALTER TABLE tenders ADD COLUMN IF NOT EXISTS end_date_parsed TIMESTAMP")
+    c.execute("ALTER TABLE tenders ADD COLUMN IF NOT EXISTS quantity_count INTEGER")
+    c.execute("ALTER TABLE tenders ADD COLUMN IF NOT EXISTS item_tags TEXT[]")
+    c.execute("ALTER TABLE tenders ADD COLUMN IF NOT EXISTS bid_value_numeric NUMERIC")
+    c.execute("ALTER TABLE tenders ADD COLUMN IF NOT EXISTS emd_numeric NUMERIC")
+    c.execute("ALTER TABLE tenders ADD COLUMN IF NOT EXISTS turnover_requirement_numeric NUMERIC")
+
+    # Relevant Tenders — a tender is flagged relevant when its title/tags
+    # fuzzy-match one of the CEO's own saved "Relevant Tenders" keywords
+    # (see relevant_keywords table below and agent/orchestrator.py's
+    # run_relevant_keyword_matching()). Kept as its own flag rather than a
+    # status value, since a tender can be relevant AND new/saved/expired at
+    # the same time — those two things are independent.
+    c.execute("ALTER TABLE tenders ADD COLUMN IF NOT EXISTS is_relevant BOOLEAN DEFAULT FALSE")
+    c.execute("ALTER TABLE tenders ADD COLUMN IF NOT EXISTS relevant_keywords TEXT[]")
+    c.execute("ALTER TABLE tenders ADD COLUMN IF NOT EXISTS relevant_matched_at TIMESTAMP")
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS relevant_keywords (
+            id SERIAL PRIMARY KEY,
+            keyword TEXT UNIQUE NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Tables 4-8 — Chipscape's own company profile (turnover, credentials,
+    # past-project references/quantities) plus subcontractor/system-integrator
+    # partner credentials. Previously this all lived in static Excel files
+    # under company_data/ that had to be hand-edited outside the app — moved
+    # here per the manager's request so a new certificate or next year's
+    # turnover can be added/updated/queried straight from the Admin section
+    # of the dashboard instead. See analysis/company_profile.py, which reads
+    # these tables to build the eligibility-matching prompt.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS company_turnover (
+            id SERIAL PRIMARY KEY,
+            financial_year TEXT NOT NULL,
+            turnover REAL NOT NULL,
+            total_with_gst REAL,
+            status TEXT DEFAULT 'Audited',
+            created_at TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS'),
+            updated_at TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS')
+        )
+    """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS company_credentials (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            type TEXT,
+            issuing_authority TEXT,
+            certificate_no TEXT,
+            issue_date TEXT,
+            expiry_date TEXT,
+            status TEXT DEFAULT 'Valid',
+            created_at TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS'),
+            updated_at TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS')
+        )
+    """)
+
+    # Subcontractor / system-integrator partners Chipscape may bid with —
+    # each partner can carry its own set of credentials (e.g. the partner's
+    # own OEM authorization or ISO certificate), separate from Chipscape's.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS partners (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            role TEXT,
+            notes TEXT,
+            created_at TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS'),
+            updated_at TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS')
+        )
+    """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS partner_credentials (
+            id SERIAL PRIMARY KEY,
+            partner_id INTEGER NOT NULL REFERENCES partners(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            type TEXT,
+            issuing_authority TEXT,
+            certificate_no TEXT,
+            issue_date TEXT,
+            expiry_date TEXT,
+            status TEXT DEFAULT 'Valid',
+            created_at TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS'),
+            updated_at TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS')
+        )
+    """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS project_references (
+            id SERIAL PRIMARY KEY,
+            project_name TEXT NOT NULL,
+            customer TEXT,
+            department_type TEXT,
+            location TEXT,
+            solution_category TEXT,
+            eligibility_tags TEXT,
+            project_scope TEXT,
+            project_value REAL,
+            government_project TEXT,
+            financial_year TEXT,
+            project_status TEXT,
+            created_at TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS'),
+            updated_at TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS')
+        )
+    """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS project_quantities (
+            id SERIAL PRIMARY KEY,
+            project_name TEXT NOT NULL,
+            solution_category TEXT,
+            quantity_category TEXT,
+            quantity_executed TEXT,
+            unit TEXT,
+            customer TEXT,
+            created_at TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS'),
+            updated_at TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS')
         )
     """)
 
@@ -393,15 +531,107 @@ def get_learned_patterns():
     conn.close()
     return [dict(r) for r in rows]
 
+# ── Typed-column parsing helpers (L1: dates/quantity/tags, L2: money) ──
+def _parse_tender_datetime(text):
+    """Parses either portal's own date/time formats — GeM's 12-hour
+    'DD-MM-YYYY H:MM AM/PM' or KPPP's 24-hour 'DD-MM-YYYY HH:MM:SS' (also
+    accepts a bare date) — into a real datetime for the typed columns.
+    None (never raises) if the text doesn't match, since a scrape can
+    legitimately produce an unparseable or missing value."""
+    if not text:
+        return None
+    text = str(text).strip()
+    for fmt in ("%d-%m-%Y %H:%M:%S", "%d-%m-%Y %I:%M %p", "%d-%m-%Y %H:%M", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+def _parse_tender_int(text):
+    """First integer found in a quantity string, or None for placeholders
+    like KPPP's 'N/A' (KPPP's own listing page never shows a quantity at
+    all — it has Location where GeM has Quantity)."""
+    if text is None:
+        return None
+    text = str(text).strip()
+    if not text or text.upper() in ("N/A", "NA", ""):
+        return None
+    match = re.search(r"\d+", text.replace(",", ""))
+    return int(match.group()) if match else None
+
+def _parse_item_tags(title):
+    """Splits the scraper's comma-joined item list in the title (e.g.
+    'CP Plus bullet camera,12 Channel HD DVR,...') into a real tag list."""
+    if not title:
+        return None
+    tags = [t.strip() for t in str(title).split(",") if t.strip()]
+    return tags or None
+
+def _parse_money_amount(text):
+    """Best-effort Rs amount out of free text like 'Rs 5,00,000', '₹1.2 Cr'
+    or '2 Lakh' — None for placeholders ('See bid document', 'Not
+    available', 'Not mentioned in document', etc.), which is the actual
+    value on nearly every tender at L1 (neither portal publishes the real
+    bid value/EMD on its search results page — only inside the document
+    itself, read at L2)."""
+    if not text:
+        return None
+    text = str(text).strip().lower()
+    if not text or "not " in text or text in ("n/a", "na", "-"):
+        return None
+    match = re.search(r"[\d,]+\.?\d*", text)
+    if not match:
+        return None
+    try:
+        amount = float(match.group().replace(",", ""))
+    except ValueError:
+        return None
+    if re.search(r"\bcr(ore)?\b", text):
+        amount *= 1e7
+    elif re.search(r"\bla(kh|c)s?\b", text):
+        amount *= 1e5
+    return amount
+
+def update_tender_l2_financials(tender_id, estimated_value=None, emd_amount=None, turnover_required=None):
+    """Called after L2 (Get Full Analysis) reads the real tender document —
+    fills in the typed bid_value/EMD/turnover-requirement columns that L1
+    can't, since those amounts aren't on either portal's search page."""
+    conn = get_conn()
+    conn.execute(
+        """UPDATE tenders
+           SET bid_value_numeric=?, emd_numeric=?, turnover_requirement_numeric=?
+           WHERE id=?""",
+        (
+            _parse_money_amount(estimated_value),
+            _parse_money_amount(emd_amount),
+            _parse_money_amount(turnover_required),
+            tender_id,
+        )
+    )
+    conn.commit()
+    conn.close()
+
 def save_tender(tender: dict):
     conn = get_conn()
     c = conn.cursor()
 
-    # Check if tender already exists
-    existing = c.execute(
-        "SELECT id FROM tenders WHERE title=? AND portal=?",
-        (tender.get("title"), tender.get("portal"))
-    ).fetchone()
+    # Dedup by the real bid number when we have one — GeM reuses generic
+    # titles (e.g. "Body Worn Camera (V2)") across genuinely different bid
+    # postings, so title+portal alone falsely treats a new tender as an
+    # already-saved one and silently drops it, permanently. Only falls back
+    # to title+portal when tender_number wasn't captured for this tender.
+    tender_number = tender.get("tender_number") or ""
+    if tender_number:
+        existing = c.execute(
+            "SELECT id FROM tenders WHERE tender_number=? AND portal=?",
+            (tender_number, tender.get("portal"))
+        ).fetchone()
+    else:
+        existing = c.execute(
+            "SELECT id FROM tenders WHERE title=? AND portal=?",
+            (tender.get("title"), tender.get("portal"))
+        ).fetchone()
 
     if not existing:
         # Convert downloaded_files list to JSON string
@@ -409,15 +639,18 @@ def save_tender(tender: dict):
         if isinstance(downloaded_files, list):
             downloaded_files = json.dumps(downloaded_files)
 
+        quantity_raw = tender.get("quantity", "N/A")
+
         c.execute("""
             INSERT INTO tenders (
                 title, portal, tender_number, department,
                 location, tender_type, value, emd,
                 deadline, published_date, category,
                 relevance_score, url, description,
-                found_via, downloaded_files, quantity
+                found_via, downloaded_files, quantity,
+                start_date_parsed, end_date_parsed, quantity_count, item_tags
             )
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             RETURNING id
         """, (
             tender.get("title"),
@@ -436,7 +669,11 @@ def save_tender(tender: dict):
             tender.get("description", ""),
             tender.get("found_via", ""),
             downloaded_files,
-            tender.get("quantity", "N/A")
+            quantity_raw,
+            _parse_tender_datetime(tender.get("published_date")),
+            _parse_tender_datetime(tender.get("deadline")),
+            _parse_tender_int(quantity_raw),
+            _parse_item_tags(tender.get("title")),
         ))
         row_id = c.fetchone()["id"]
         conn.commit()
@@ -477,6 +714,18 @@ def get_all_tenders(status_filter=None, today_only=False):
             t["downloaded_files"] = []
         tenders.append(t)
     return tenders
+
+def update_tender_title(tender_id: int, title: str):
+    """Refreshes just the title — used to backfill older rows saved before
+    the GeM scraper started pulling the real full item list (see the
+    data-content fix in portals/gem.py) with the fuller version, without
+    re-inserting/duplicating the row."""
+    conn = get_conn()
+    conn.execute(
+        "UPDATE tenders SET title=? WHERE id=?", (title, tender_id)
+    )
+    conn.commit()
+    conn.close()
 
 def update_tender_status(tender_id: int, status: str):
     conn = get_conn()
@@ -535,6 +784,7 @@ def get_stats():
     ).fetchone()["c"]
     saved = conn.execute("SELECT COUNT(*) as c FROM tenders WHERE status='saved'").fetchone()["c"]
     expired = conn.execute("SELECT COUNT(*) as c FROM tenders WHERE status='expired'").fetchone()["c"]
+    relevant = conn.execute("SELECT COUNT(*) as c FROM tenders WHERE is_relevant=TRUE").fetchone()["c"]
     searches = conn.execute("SELECT COUNT(*) as c FROM ceo_searches").fetchone()["c"]
     patterns = conn.execute("SELECT COUNT(*) as c FROM learned_patterns").fetchone()["c"]
     conn.close()
@@ -543,9 +793,103 @@ def get_stats():
         "new": new,
         "saved": saved,
         "expired": expired,
+        "relevant": relevant,
         "ceo_searches": searches,
         "patterns_learned": patterns
     }
+
+
+# ---------------------------------------------------------------------------
+# Relevant Tenders — standing keyword list + the tenders they've matched
+# ---------------------------------------------------------------------------
+
+def get_relevant_keywords_list():
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM relevant_keywords ORDER BY created_at DESC"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def add_relevant_keyword(keyword: str):
+    """Returns the new keyword's id, or None if it (case-insensitively)
+    already exists."""
+    keyword = (keyword or "").strip()
+    if not keyword:
+        return None
+    conn = get_conn()
+    c = conn.cursor()
+    existing = c.execute(
+        "SELECT id FROM relevant_keywords WHERE LOWER(keyword)=LOWER(?)", (keyword,)
+    ).fetchone()
+    if existing:
+        conn.close()
+        return None
+    c.execute(
+        "INSERT INTO relevant_keywords (keyword) VALUES (?) RETURNING id", (keyword,)
+    )
+    kw_id = c.fetchone()["id"]
+    conn.commit()
+    conn.close()
+    return kw_id
+
+
+def update_relevant_keyword(kw_id: int, keyword: str):
+    conn = get_conn()
+    conn.execute(
+        "UPDATE relevant_keywords SET keyword=? WHERE id=?", (keyword.strip(), kw_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def delete_relevant_keyword(kw_id: int):
+    conn = get_conn()
+    conn.execute("DELETE FROM relevant_keywords WHERE id=?", (kw_id,))
+    conn.commit()
+    conn.close()
+
+
+def get_relevant_tenders_list():
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM tenders WHERE is_relevant=TRUE ORDER BY relevant_matched_at DESC"
+    ).fetchall()
+    conn.close()
+    tenders = []
+    for r in rows:
+        t = dict(r)
+        try:
+            t["downloaded_files"] = json.loads(t.get("downloaded_files") or "[]")
+        except Exception:
+            t["downloaded_files"] = []
+        tenders.append(t)
+    return tenders
+
+
+def mark_tender_relevant(tender_id: int, keyword: str):
+    """Flags a tender as relevant and records which keyword(s) matched it.
+    Safe to call repeatedly for the same tender with different keywords —
+    keeps relevant_matched_at as the FIRST time it became relevant."""
+    conn = get_conn()
+    c = conn.cursor()
+    row = c.execute(
+        "SELECT relevant_keywords FROM tenders WHERE id=?", (tender_id,)
+    ).fetchone()
+    existing_kws = list(row["relevant_keywords"]) if row and row["relevant_keywords"] else []
+    if keyword not in existing_kws:
+        existing_kws.append(keyword)
+    c.execute(
+        """UPDATE tenders
+           SET is_relevant=TRUE,
+               relevant_keywords=?,
+               relevant_matched_at=COALESCE(relevant_matched_at, CURRENT_TIMESTAMP)
+           WHERE id=?""",
+        (existing_kws, tender_id)
+    )
+    conn.commit()
+    conn.close()
 
 def get_department_counts(portal: str, top_n: int = 5):
     """Real per-department tender counts for one portal, top N plus an
@@ -696,4 +1040,262 @@ def delete_pattern(pattern_id: int):
 
     conn.commit()
     conn.close()
+
+
+# ── COMPANY PROFILE: TURNOVER ──────────────────────────────
+def get_company_turnover_list():
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM company_turnover ORDER BY financial_year"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def add_company_turnover(financial_year, turnover, total_with_gst=None, status="Audited"):
+    conn = get_conn()
+    conn.execute(
+        """INSERT INTO company_turnover (financial_year, turnover, total_with_gst, status)
+           VALUES (?, ?, ?, ?)""",
+        (financial_year, turnover, total_with_gst, status)
+    )
+    conn.commit()
+    conn.close()
+
+def update_company_turnover(turnover_id, financial_year, turnover, total_with_gst=None, status="Audited"):
+    conn = get_conn()
+    conn.execute(
+        """UPDATE company_turnover
+           SET financial_year=?, turnover=?, total_with_gst=?, status=?,
+               updated_at=to_char(now(), 'YYYY-MM-DD HH24:MI:SS')
+           WHERE id=?""",
+        (financial_year, turnover, total_with_gst, status, turnover_id)
+    )
+    conn.commit()
+    conn.close()
+
+def delete_company_turnover(turnover_id):
+    conn = get_conn()
+    conn.execute("DELETE FROM company_turnover WHERE id=?", (turnover_id,))
+    conn.commit()
+    conn.close()
+
+
+# ── COMPANY PROFILE: CHIPSCAPE'S OWN CREDENTIALS ───────────
+def get_company_credentials_list():
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM company_credentials ORDER BY name"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def add_company_credential(name, ctype, issuing_authority, certificate_no, issue_date, expiry_date, status="Valid"):
+    conn = get_conn()
+    conn.execute(
+        """INSERT INTO company_credentials
+           (name, type, issuing_authority, certificate_no, issue_date, expiry_date, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (name, ctype, issuing_authority, certificate_no, issue_date, expiry_date, status)
+    )
+    conn.commit()
+    conn.close()
+
+def update_company_credential(cred_id, name, ctype, issuing_authority, certificate_no, issue_date, expiry_date, status="Valid"):
+    conn = get_conn()
+    conn.execute(
+        """UPDATE company_credentials
+           SET name=?, type=?, issuing_authority=?, certificate_no=?, issue_date=?, expiry_date=?, status=?,
+               updated_at=to_char(now(), 'YYYY-MM-DD HH24:MI:SS')
+           WHERE id=?""",
+        (name, ctype, issuing_authority, certificate_no, issue_date, expiry_date, status, cred_id)
+    )
+    conn.commit()
+    conn.close()
+
+def delete_company_credential(cred_id):
+    conn = get_conn()
+    conn.execute("DELETE FROM company_credentials WHERE id=?", (cred_id,))
+    conn.commit()
+    conn.close()
+
+
+# ── SUBCONTRACTOR / SYSTEM-INTEGRATOR PARTNERS ─────────────
+def get_partners_list():
+    conn = get_conn()
+    rows = conn.execute("SELECT * FROM partners ORDER BY name").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def add_partner(name, role="", notes=""):
+    conn = get_conn()
+    row = conn.execute(
+        "INSERT INTO partners (name, role, notes) VALUES (?, ?, ?) RETURNING id",
+        (name, role, notes)
+    ).fetchone()
+    conn.commit()
+    conn.close()
+    return row["id"] if row else None
+
+def update_partner(partner_id, name, role="", notes=""):
+    conn = get_conn()
+    conn.execute(
+        """UPDATE partners SET name=?, role=?, notes=?,
+               updated_at=to_char(now(), 'YYYY-MM-DD HH24:MI:SS')
+           WHERE id=?""",
+        (name, role, notes, partner_id)
+    )
+    conn.commit()
+    conn.close()
+
+def delete_partner(partner_id):
+    """Also drops the partner's own credentials (ON DELETE CASCADE on
+    partner_credentials.partner_id)."""
+    conn = get_conn()
+    conn.execute("DELETE FROM partners WHERE id=?", (partner_id,))
+    conn.commit()
+    conn.close()
+
+def get_partner_credentials_list(partner_id=None):
+    """All partner credentials, or just one partner's if partner_id is given."""
+    conn = get_conn()
+    if partner_id is not None:
+        rows = conn.execute(
+            "SELECT * FROM partner_credentials WHERE partner_id=? ORDER BY name",
+            (partner_id,)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM partner_credentials ORDER BY partner_id, name"
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def add_partner_credential(partner_id, name, ctype, issuing_authority, certificate_no, issue_date, expiry_date, status="Valid"):
+    conn = get_conn()
+    conn.execute(
+        """INSERT INTO partner_credentials
+           (partner_id, name, type, issuing_authority, certificate_no, issue_date, expiry_date, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (partner_id, name, ctype, issuing_authority, certificate_no, issue_date, expiry_date, status)
+    )
+    conn.commit()
+    conn.close()
+
+def update_partner_credential(cred_id, name, ctype, issuing_authority, certificate_no, issue_date, expiry_date, status="Valid"):
+    conn = get_conn()
+    conn.execute(
+        """UPDATE partner_credentials
+           SET name=?, type=?, issuing_authority=?, certificate_no=?, issue_date=?, expiry_date=?, status=?,
+               updated_at=to_char(now(), 'YYYY-MM-DD HH24:MI:SS')
+           WHERE id=?""",
+        (name, ctype, issuing_authority, certificate_no, issue_date, expiry_date, status, cred_id)
+    )
+    conn.commit()
+    conn.close()
+
+def delete_partner_credential(cred_id):
+    conn = get_conn()
+    conn.execute("DELETE FROM partner_credentials WHERE id=?", (cred_id,))
+    conn.commit()
+    conn.close()
+
+
+# ── COMPANY PROFILE: PAST PROJECT REFERENCES ───────────────
+def get_project_references_list():
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM project_references ORDER BY financial_year DESC, project_name"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def add_project_reference(data: dict):
+    conn = get_conn()
+    conn.execute(
+        """INSERT INTO project_references
+           (project_name, customer, department_type, location, solution_category,
+            eligibility_tags, project_scope, project_value, government_project,
+            financial_year, project_status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            data.get("project_name"), data.get("customer"), data.get("department_type"),
+            data.get("location"), data.get("solution_category"), data.get("eligibility_tags"),
+            data.get("project_scope"), data.get("project_value"), data.get("government_project"),
+            data.get("financial_year"), data.get("project_status"),
+        )
+    )
+    conn.commit()
+    conn.close()
+
+def update_project_reference(ref_id, data: dict):
+    conn = get_conn()
+    conn.execute(
+        """UPDATE project_references
+           SET project_name=?, customer=?, department_type=?, location=?, solution_category=?,
+               eligibility_tags=?, project_scope=?, project_value=?, government_project=?,
+               financial_year=?, project_status=?,
+               updated_at=to_char(now(), 'YYYY-MM-DD HH24:MI:SS')
+           WHERE id=?""",
+        (
+            data.get("project_name"), data.get("customer"), data.get("department_type"),
+            data.get("location"), data.get("solution_category"), data.get("eligibility_tags"),
+            data.get("project_scope"), data.get("project_value"), data.get("government_project"),
+            data.get("financial_year"), data.get("project_status"), ref_id,
+        )
+    )
+    conn.commit()
+    conn.close()
+
+def delete_project_reference(ref_id):
+    conn = get_conn()
+    conn.execute("DELETE FROM project_references WHERE id=?", (ref_id,))
+    conn.commit()
+    conn.close()
+
+
+# ── COMPANY PROFILE: PROJECT QUANTITIES SUPPLIED ───────────
+def get_project_quantities_list():
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM project_quantities ORDER BY project_name"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def add_project_quantity(data: dict):
+    conn = get_conn()
+    conn.execute(
+        """INSERT INTO project_quantities
+           (project_name, solution_category, quantity_category, quantity_executed, unit, customer)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (
+            data.get("project_name"), data.get("solution_category"), data.get("quantity_category"),
+            data.get("quantity_executed"), data.get("unit"), data.get("customer"),
+        )
+    )
+    conn.commit()
+    conn.close()
+
+def update_project_quantity(qty_id, data: dict):
+    conn = get_conn()
+    conn.execute(
+        """UPDATE project_quantities
+           SET project_name=?, solution_category=?, quantity_category=?, quantity_executed=?, unit=?, customer=?,
+               updated_at=to_char(now(), 'YYYY-MM-DD HH24:MI:SS')
+           WHERE id=?""",
+        (
+            data.get("project_name"), data.get("solution_category"), data.get("quantity_category"),
+            data.get("quantity_executed"), data.get("unit"), data.get("customer"), qty_id,
+        )
+    )
+    conn.commit()
+    conn.close()
+
+def delete_project_quantity(qty_id):
+    conn = get_conn()
+    conn.execute("DELETE FROM project_quantities WHERE id=?", (qty_id,))
+    conn.commit()
+    conn.close()
+
+
 init_db()

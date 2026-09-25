@@ -129,6 +129,8 @@ async def search_gem(keyword: str, category: str = "", max_pages: int = 5, shoul
     """
     try:
         from playwright.async_api import async_playwright
+        from datetime import datetime, timedelta
+        import json as _json
 
         tenders = []
 
@@ -154,197 +156,215 @@ async def search_gem(keyword: str, category: str = "", max_pages: int = 5, shoul
 
             print(f"[GeM] Searching for: {keyword}")
 
-            # Step 1 — Go to bid listing page
+            # Step 1 — Load the bid listing page once, purely to establish a
+            # real browser session (cookies past GeM's WAF challenge) and to
+            # read the CSRF token GeM embeds inline in this page's own
+            # <script>. Every page of results below is then fetched
+            # directly from GeM's own JSON search API instead of clicking
+            # through the UI — confirmed live via the browser's network
+            # tab: the "Next" button itself just POSTs {"page": N, ...} to
+            # /all-bids-data and renders whatever JSON comes back. Driving
+            # that endpoint directly removes an entire class of flakiness
+            # this scraper used to hit (a slow-loading page rendering 0
+            # cards, a "Next" link briefly missing from the DOM, a click
+            # landing on a detached element) — a keyword with 79 real pages
+            # now reliably returns all 79, not however many pages happened
+            # to finish rendering in time.
             await page.goto(
                 "https://bidplus.gem.gov.in/all-bids",
                 timeout=60000,
                 wait_until="networkidle"
             )
-            await page.wait_for_timeout(5000)
+            await page.wait_for_timeout(3000)
 
-            # Step 2 — Find search box and type keyword
-            # From screenshot: search box is top right
-            # with "Contains" dropdown and search input
-            await page.wait_for_selector(
-                "input[name='searchBid']",
-                timeout=15000
-            )
-            search_box = await page.query_selector("input[name='searchBid']")
-
-            if search_box:
-                await search_box.scroll_into_view_if_needed()
-                await search_box.click()
-                await search_box.fill("")
-                await search_box.fill(keyword)
-                await search_box.press("Enter")
-                await page.wait_for_timeout(6000)
-                print(f"[GeM] Search submitted for: {keyword}")
-            else:
-                print("[GeM] Search box not found")
+            html = await page.content()
+            csrf_match = re.search(r"csrf_bd_gem_nk['\"]?\s*:\s*['\"]([a-f0-9]+)['\"]", html)
+            if not csrf_match:
+                print("[GeM] Could not find the CSRF token on the bid listing page — aborting search")
                 await browser.close()
                 return []
+            csrf_token = csrf_match.group(1)
 
-            # Step 3 — Extract bid cards across multiple pages.
-            # max_pages=None means "paginate until GeM itself runs out of
-            # pages" (i.e. match GeM's own result count exactly) — used for
-            # the CEO's literal search term so our app never shows fewer
-            # tenders than a manual search on GeM's own site would. A hard
+            api_url = "https://bidplus.gem.gov.in/all-bids-data"
+            api_headers = {
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": "https://bidplus.gem.gov.in/all-bids",
+            }
+
+            def _build_payload(page_num: int) -> str:
+                payload = {
+                    "page": page_num,
+                    "param": {"searchBid": keyword, "searchType": "fullText"},
+                    "filter": {
+                        "bidStatusType": "ongoing_bids",
+                        "byType": "all",
+                        "highBidValue": "",
+                        "byEndDate": {"from": "", "to": ""},
+                        "sort": "Bid-End-Date-Oldest",
+                    },
+                }
+                return "payload=" + _json.dumps(payload) + "&csrf_bd_gem_nk=" + csrf_token
+
+            def _parse_gem_utc(value):
+                # GeM's JSON API gives dates as ISO-8601 UTC
+                # ("2026-09-17T18:09:00Z"); the rest of the app stores
+                # dates as GeM's own display string (IST, "DD-MM-YYYY
+                # hh:mm AM/PM") — convert so a tender found this way reads
+                # identically to one found the old way.
+                if not value:
+                    return None
+                try:
+                    return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ") + timedelta(hours=5, minutes=30)
+                except ValueError:
+                    return None
+
+            # Step 2 — Page through GeM's real search API directly. A hard
             # ceiling still applies underneath so a page-detection bug can
-            # never spin forever.
-            all_bid_cards = []
-            HARD_PAGE_CEILING = 200
+            # never spin forever, but it's high enough to never be the
+            # thing that actually cuts a real keyword short.
+            all_docs = []
+            HARD_PAGE_CEILING = 500
+            page_num = 1
+            num_found = None
+            search_confirmed = False
 
-            page_num = 0
-            while max_pages is None or page_num < max_pages:
-                if page_num >= HARD_PAGE_CEILING:
+            while max_pages is None or (page_num - 1) < max_pages:
+                if page_num > HARD_PAGE_CEILING:
                     print(f"[GeM] Hit hard safety ceiling of {HARD_PAGE_CEILING} pages, stopping")
                     break
 
-                bid_cards = await page.query_selector_all("div.card")
+                body = _build_payload(page_num)
 
-                if not bid_cards:
-                    page_text = await page.inner_text("body")
-                    bid_cards = await page.query_selector_all("tr")
+                data = None
+                for attempt in range(1, 4):
+                    try:
+                        resp = await context.request.post(api_url, headers=api_headers, data=body)
+                        if resp.status != 200:
+                            print(f"[GeM] Page {page_num} API returned status {resp.status} (attempt {attempt}/3)")
+                            await page.wait_for_timeout(3000)
+                            continue
+                        data = await resp.json()
+                        if data.get("status") != 1:
+                            print(f"[GeM] Page {page_num} API returned an error payload (attempt {attempt}/3): {data.get('message')}")
+                            data = None
+                            await page.wait_for_timeout(3000)
+                            continue
+                        break
+                    except Exception as e:
+                        print(f"[GeM] Page {page_num} API call failed (attempt {attempt}/3): {e}")
+                        data = None
+                        await page.wait_for_timeout(3000)
 
-                all_bid_cards.extend(bid_cards)
-                print(f"[GeM] Page {page_num + 1}: found {len(bid_cards)} cards (total so far: {len(all_bid_cards)})")
+                if data is None:
+                    print(f"[GeM] Giving up on page {page_num} after 3 failed attempts")
+                    break
+
+                response_block = (data.get("response") or {}).get("response") or {}
+                num_found = response_block.get("numFound", num_found)
+                docs = response_block.get("docs") or []
+
+                if page_num == 1:
+                    # GeM's own numFound for this exact search IS the
+                    # confirmation the keyword matched something real — no
+                    # more guessing relevance from a handful of visible
+                    # cards on screen.
+                    search_confirmed = True
+                    print(f"[GeM] '{keyword}' matches {num_found} tender(s) on GeM")
+
+                if not docs:
+                    print(f"[GeM] Page {page_num}: 0 results — reached the end")
+                    break
+
+                all_docs.extend(docs)
+                print(f"[GeM] Page {page_num}: found {len(docs)} results (total so far: {len(all_docs)}/{num_found})")
 
                 if should_stop and should_stop():
                     print("[GeM] Stop requested — ending pagination early")
                     break
 
-                # Date-limited repeat search: GeM lists newest Start Date
-                # first, so once a whole page has nothing newer than the
-                # last time this keyword was searched, everything from here
-                # on has already been seen — stop instead of paging further.
+                # Date-limited repeat search: once a whole page has nothing
+                # with a Start Date newer than the last time this keyword
+                # was searched, stop instead of paging further — checked
+                # directly against each doc's own structured start date now,
+                # not a regex over scraped card text.
                 if stop_before_date is not None:
-                    page_has_newer = False
-                    for card in bid_cards:
-                        card_text = await card.inner_text()
-                        card_dt = _extract_start_datetime(card_text)
-                        if card_dt and card_dt > stop_before_date:
-                            page_has_newer = True
-                            break
+                    page_has_newer = any(
+                        (_parse_gem_utc((d.get("final_start_date_sort") or [None])[0]) or datetime.min) > stop_before_date
+                        for d in docs
+                    )
                     if not page_has_newer:
                         print(
-                            f"[GeM] Page {page_num + 1} had no tenders newer than "
+                            f"[GeM] Page {page_num} had no tenders newer than "
                             f"{stop_before_date} — stopping (date-limited repeat search)"
                         )
                         break
 
-                # Try to go to next page
-                next_btn = await page.query_selector("a:has-text('Next')")
-                more_pages_allowed = max_pages is None or page_num < max_pages - 1
-                if next_btn and more_pages_allowed:
-                    try:
-                        await next_btn.click()
-                        await page.wait_for_timeout(3000)
-                    except Exception:
-                        break
-                else:
+                if num_found is not None and len(all_docs) >= num_found:
                     break
+
                 page_num += 1
 
-            print(f"[GeM] Found {len(all_bid_cards)} total bid cards across pages")
-            bid_cards = all_bid_cards
+            if not search_confirmed:
+                print(f"[GeM] Giving up — could not get a confirmed response for '{keyword}'")
+                await browser.close()
+                return []
 
-            for card in bid_cards:
+            print(f"[GeM] Found {len(all_docs)} total results across pages")
+
+            # Step 3 — Turn each JSON doc into a tender dict. Structured
+            # fields straight from GeM's own API now — no more regex-parsing
+            # scraped card text for title/department/dates/quantity, and
+            # bd_category_name (when present) already carries the FULL item
+            # list GeM only used to reveal on hover, same fix as before but
+            # for free this time since the API gives it directly.
+            for doc in all_docs:
                 if should_stop and should_stop():
-                    print(f"[GeM] Stop requested — ending card extraction early ({len(tenders)} tenders so far)")
+                    print(f"[GeM] Stop requested — ending extraction early ({len(tenders)} tenders so far)")
                     break
                 try:
-                    card_text = await card.inner_text()
-
-                    # Skip if too short
-                    if len(card_text) < 20:
+                    bid_numbers = doc.get("b_bid_number") or []
+                    bid_no = bid_numbers[0] if bid_numbers else None
+                    if not bid_no or "/B/" not in bid_no:
+                        # A Reverse Auction (or malformed) entry with no
+                        # real Bid number of its own — fall back to the
+                        # parent Bid it's actually linked to.
+                        parent_numbers = doc.get("b_bid_number_parent") or []
+                        if parent_numbers:
+                            bid_no = parent_numbers[0]
+                    if not bid_no:
                         continue
 
-                    # Extract BID NO using regex
-                    bid_no_match = re.search(
-                        r"GEM/\d{4}/[A-Z]/\d+",
-                        card_text
-                    )
-                    if not bid_no_match:
-                        continue
+                    title_field = doc.get("bd_category_name") or doc.get("b_category_name") or [""]
+                    title = clean(title_field[0])[:300]
 
-                    bid_no = bid_no_match.group()
+                    qty_list = doc.get("b_total_quantity") or []
+                    quantity = str(qty_list[0]) if qty_list else "Not available"
 
-                    # Extract Items
-                    items = "Not available"
-                    items_match = re.search(
-                        r"Items?[:\s]+(.+?)(?:\n|Quantity|Department)",
-                        card_text,
-                        re.IGNORECASE | re.DOTALL
+                    min_name = (doc.get("ba_official_details_minName") or [""])[0]
+                    dept_name = (doc.get("ba_official_details_deptName") or [""])[0]
+                    department = clean(
+                        f"{min_name}{dept_name}" if dept_name and dept_name != "NA" else min_name
                     )
-                    if items_match:
-                        items = clean(items_match.group(1))[:200]
-                    
-                    # Try to get full title from the link element instead (often not truncated)
+
+                    start_dt = _parse_gem_utc((doc.get("final_start_date_sort") or [None])[0])
+                    end_dt = _parse_gem_utc((doc.get("final_end_date_sort") or [None])[0])
+                    start_date = start_dt.strftime("%d-%m-%Y %I:%M %p") if start_dt else "Not available"
+                    end_date = end_dt.strftime("%d-%m-%Y %I:%M %p") if end_dt else "Not available"
+
+                    # showbidDocument links use the parent Bid's own
+                    # internal id when this doc is RA-linked, otherwise the
+                    # doc's own id — matches the real link GeM renders for
+                    # both cases.
+                    parent_id_list = doc.get("b_id_parent") or []
+                    doc_id = parent_id_list[0] if parent_id_list else (doc.get("id") or (doc.get("b_id") or [None])[0])
+                    bid_url = f"https://bidplus.gem.gov.in/showbidDocument/{doc_id}" if doc_id else \
+                        f"https://bidplus.gem.gov.in/all-bids?search_keyword={keyword}"
+
                     try:
-                        item_link = await card.query_selector("a[href*='searchresult'], .item-title a, a.bid-item")
-                        if item_link:
-                            full_title = await item_link.get_attribute("title") or await item_link.inner_text()
-                            if full_title and len(full_title.strip()) > len(items.replace("...", "").strip()):
-                                items = clean(full_title)[:300]
+                        print(f"[GeM] Found bid: {bid_no}")
                     except Exception:
                         pass
-
-                    # Extract Quantity
-                    quantity = "Not available"
-                    qty_match = re.search(
-                        r"Quantity[:\s]+(\d+)",
-                        card_text,
-                        re.IGNORECASE
-                    )
-                    if qty_match:
-                        quantity = qty_match.group(1)
-
-                    # Extract Department
-                    department = "Not available"
-                    dept_match = re.search(
-                        r"Department\s+Name\s+And\s+Address[:\s]+(.+?)(?:\n|Start Date|End Date)",
-                        card_text,
-                        re.IGNORECASE | re.DOTALL
-                    )
-                    if dept_match:
-                        department = clean(dept_match.group(1))[:200]
-
-                    # Extract Start Date
-                    start_date = "Not available"
-                    start_match = re.search(
-                        r"Start\s+Date[:\s]+(\d{2}-\d{2}-\d{4}\s+\d{1,2}:\d{2}\s*[AP]M)",
-                        card_text,
-                        re.IGNORECASE
-                    )
-                    if start_match:
-                        start_date = start_match.group(1)
-
-                    # Extract End Date (deadline)
-                    end_date = "Not available"
-                    end_match = re.search(
-                        r"End\s+Date[:\s]+(\d{2}-\d{2}-\d{4}\s+\d{1,2}:\d{2}\s*[AP]M)",
-                        card_text,
-                        re.IGNORECASE
-                    )
-                    if end_match:
-                        end_date = end_match.group(1)
-
-                    # Get bid URL — the "Bid No." link (a.bid_no_hover) carries the
-                    # real document link, e.g. href="showbidDocument/9638906".
-                    # It does NOT contain the bid number text itself, so matching
-                    # on bid_no in the href (as done previously) never succeeds.
-                    bid_url = ""
-                    bid_no_links = await card.query_selector_all("a.bid_no_hover")
-                    if bid_no_links:
-                        href = await bid_no_links[0].get_attribute("href") or ""
-                        if href:
-                            bid_url = href if href.startswith("http") else \
-                                f"https://bidplus.gem.gov.in/{href.lstrip('/')}"
-
-                    if not bid_url:
-                        bid_url = f"https://bidplus.gem.gov.in/all-bids?search_keyword={keyword}"
-
-                    print(f"[GeM] Found bid: {bid_no}")
 
                     # Skip if already in database
                     from database.db import get_conn
@@ -356,10 +376,8 @@ async def search_gem(keyword: str, category: str = "", max_pages: int = 5, shoul
                     if existing:
                         continue
 
-                    downloaded_files = []
-
                     tenders.append({
-                        "title": items,
+                        "title": title,
                         "portal": "GeM",
                         "url": bid_url,
                         "category": category,
@@ -373,15 +391,27 @@ async def search_gem(keyword: str, category: str = "", max_pages: int = 5, shoul
                         "published_date": start_date,
                         "emd": "See bid document",
                         "quantity": quantity,
-                        "description": f"GeM bid for {items[:100]}",
-                        "downloaded_files": downloaded_files,
+                        "description": f"GeM bid for {title[:100]}",
+                        "downloaded_files": [],
                         "relevance_score": 0.75
                     })
 
-                    print(f"[GeM] ✅ Extracted: {bid_no} — {items[:50]}...")
+                    # A print() encoding crash here (e.g. a stray non-ASCII
+                    # character pulled from the tender's own title) must
+                    # never cost the doc we just successfully extracted
+                    # above — isolated in its own try so a logging failure
+                    # can't fall through to the doc-loop's except and
+                    # skip/lose an already-appended tender.
+                    try:
+                        print(f"[GeM] Extracted: {bid_no} - {title[:50]}...")
+                    except Exception:
+                        pass
 
                 except Exception as e:
-                    print(f"[GeM] Card extraction error: {e}")
+                    try:
+                        print(f"[GeM] Doc extraction error: {e}")
+                    except Exception:
+                        pass
                     continue
 
             await browser.close()

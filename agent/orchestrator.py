@@ -9,7 +9,7 @@ Searches every day at 2 AM automatically.
 import threading
 import time
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from database.db import (
     save_tender, get_all_ceo_searches, update_downloaded_files,
     save_kppp_criteria, get_kppp_criteria_list, mark_expired_tenders,
@@ -18,7 +18,7 @@ from database.db import (
     get_gem_last_searched_at, update_gem_last_searched,
     update_kppp_last_searched
 )
-from agent.learner import expand_keyword_instantly, analyze_patterns, get_search_queries
+from agent.learner import analyze_patterns, get_search_queries
 from agent.watcher import start_watching, register_callback
 
 
@@ -43,13 +43,22 @@ def _parse_db_timestamp(value):
     """Parses a 'YYYY-MM-DD HH24:MI:SS' timestamp string (the format every
     *_at/*_searched_at column in the DB stores) into a datetime — None in,
     None out, so callers can pass a possibly-missing last-searched value
-    straight through without a separate None check."""
+    straight through without a separate None check.
+
+    Shifted one day earlier than the stored value before being used as a
+    search cutoff (per the CEO's manager: treat the last-searched moment as
+    one day earlier than it actually was) — a deliberate overlap so a
+    repeat search can never miss a tender due to clock/timezone drift or a
+    portal listing a tender a little later than its real Start Date.
+    Tenders already saved from the overlapped window are skipped anyway via
+    the normal "already in database" dedup, so the overlap costs nothing."""
     if not value:
         return None
     try:
-        return datetime.strptime(value.strip(), "%Y-%m-%d %H:%M:%S")
+        parsed = datetime.strptime(value.strip(), "%Y-%m-%d %H:%M:%S")
     except ValueError:
         return None
+    return parsed - timedelta(days=1)
 
 
 def check_relevance_ai(original_keyword: str, titles: list) -> list:
@@ -217,30 +226,40 @@ def _instant_expand_and_search(keyword: str, portal: str):
         log(f"⏳ Search already in progress, skipping duplicate trigger for '{keyword}'")
         return
     with _lock:
-        _state["status"] = "expanding"
-    log(f"🧠 Expanding '{keyword}' with AI...")
+        _state["status"] = "searching"
+    log(f"🔎 Searching GeM for '{keyword}' — exactly what was typed, no AI keyword expansion...")
     try:
-        result = expand_keyword_instantly(keyword)
-        expanded = result.get("expanded_keywords", [keyword])
-        category = result.get("category", keyword.title())
-        log(f"✅ Expanded to {len(expanded)} keywords: {', '.join(expanded[:5])}...")
+        # No AI keyword expansion — the CEO wants a search for "X" to return
+        # exactly what GeM's own "Contains" search returns for "X", nothing
+        # more (previously an AI-guessed synonym list like "wear"/"weather"
+        # for "worn" pulled in unrelated tenders GeM itself never showed).
+        # Still recorded as a (single-keyword) learned pattern so the
+        # existing daily/Start Agent incremental-refresh machinery
+        # (get_search_queries() -> _search_portal's stop_before_date logic)
+        # keeps re-checking this exact keyword for new tenders going
+        # forward, same as before.
+        from database.db import save_learned_patterns
+        save_learned_patterns(
+            category=keyword.title(),
+            keywords=json.dumps([keyword]),
+            weight=1.0
+        )
         with _lock:
-            _state["status"] = "searching"
             _state["last_learn"] = datetime.now().isoformat()
-
-        # The literal keyword the CEO typed always goes first and is not
-        # part of the [:8] cap below getting displaced by AI synonyms — a
-        # search for "camera" in our app must return every "camera" tender
-        # GeM itself shows, not a subset diluted by 7 other AI-guessed
-        # terms crowding it out of the keyword budget.
-        search_list = [keyword] + [kw for kw in expanded if kw.strip().lower() != keyword.strip().lower()]
 
         # KPPP is not searched here — it has no keyword search of its own,
         # so this GeM keyword box never actually drove a useful KPPP search
         # (the previous KPPP thread just re-ran the same fixed listing).
         # KPPP is searched via its own filter form (see on_kppp_search)
         # instead, using KPPP's real search fields.
-        _search_portal("GeM", search_list, category, 15, primary_keyword=keyword)
+        _search_portal("GeM", [keyword], keyword.title(), 15, primary_keyword=keyword)
+
+        # A manual search in the search bar is its own batch of "new
+        # tenders" just like a Start Agent run's — check them against the
+        # saved Relevant Tenders keywords right now too, instead of making
+        # the CEO wait for the next Start Agent click to find out this
+        # search's results include a relevant match.
+        run_relevant_keyword_matching(scope="incremental")
 
         with _lock:
             _state["status"] = "watching"
@@ -248,7 +267,7 @@ def _instant_expand_and_search(keyword: str, portal: str):
         log(f"✅ Search complete for '{keyword}'")
 
     except Exception as e:
-        log(f"❌ Error expanding '{keyword}': {e}")
+        log(f"❌ Error searching '{keyword}': {e}")
         with _lock:
             _state["status"] = "watching"
 
@@ -400,10 +419,19 @@ def on_kppp_search(criteria: dict):
     )
 
     threading.Thread(
-        target=_run_kppp_criteria_search,
-        args=([criteria],),
+        target=_run_kppp_search_then_check_relevant,
+        args=(criteria,),
         daemon=True
     ).start()
+
+def _run_kppp_search_then_check_relevant(criteria: dict):
+    """Wraps _run_kppp_criteria_search for a manual KPPP search (on_kppp_search
+    only — Start Agent/2AM already call run_relevant_keyword_matching
+    themselves after their own KPPP pass, untouched here) so the CEO doesn't
+    have to click Start Agent afterward just to see this search's own
+    results checked against the saved Relevant Tenders keywords."""
+    _run_kppp_criteria_search([criteria])
+    run_relevant_keyword_matching(scope="incremental")
 
 def _run_kppp_criteria_search(criteria_list: list, respect_stop_flag: bool = False):
     if not criteria_list:
@@ -546,6 +574,9 @@ def _scheduled_search():
             log(f"🚀 Running {len(kppp_criteria_list)} scheduled KPPP searches...")
             _run_kppp_criteria_search(kppp_criteria_list, respect_stop_flag=True)
 
+        log("🎯 Checking Relevant Tenders keywords against today's new tenders...")
+        run_relevant_keyword_matching(scope="incremental")
+
         with _lock:
             _state["status"] = "watching"
             _state["last_search"] = datetime.now().isoformat()
@@ -582,9 +613,110 @@ def _run_full_catalog_search():
     if kppp_criteria_list:
         _run_kppp_criteria_search(kppp_criteria_list, respect_stop_flag=True)
 
+    log("🎯 Checking Relevant Tenders keywords against today's new tenders...")
+    run_relevant_keyword_matching(scope="incremental")
+
     with _lock:
         _state["last_full_search_date"] = datetime.now().date().isoformat()
     log("✅ Full catalog search complete — check New Tenders!")
+
+def run_relevant_keyword_matching(scope: str = "incremental", keyword: str = None):
+    """
+    Step 3 of every agent run (after expired-check + new-tender-fetch):
+    fuzzy-matches saved "Relevant Tenders" keywords against tenders already
+    sitting in the database (L1 data), flags matches, and auto-runs full
+    L2 analysis (download + AI extraction + analysis PDF) for any match
+    that doesn't already have one.
+
+    scope="full" (keyword required): one-time full scan of EVERY tender in
+    the Total Tenders table against a single keyword — used right when
+    that keyword is added or edited, so it also catches older tenders that
+    were already in the database before the keyword existed.
+
+    scope="incremental" (default): scans only today's New Tenders (the
+    batch this run just fetched) against ALL saved relevant keywords —
+    used on every Start Agent click / 2 AM run after that. Fast, since
+    older tenders were already checked once when each keyword was added.
+    """
+    from database.db import (
+        get_relevant_keywords_list, get_all_tenders, mark_tender_relevant,
+        update_tender_pdfs,
+    )
+    from rapidfuzz import fuzz
+    from analysis.analyzer import analyze_tender
+
+    if scope == "full":
+        if not keyword:
+            return 0
+        keywords = [keyword]
+        tenders = get_all_tenders()
+    else:
+        keywords = [k["keyword"] for k in get_relevant_keywords_list()]
+        if not keywords:
+            return 0
+        tenders = get_all_tenders(status_filter="new", today_only=True)
+
+    if not tenders:
+        return 0
+
+    matched_count = 0
+    for t in tenders:
+        title = (t.get("title") or "").lower()
+        tags = " ".join(t.get("item_tags") or []) if t.get("item_tags") else ""
+        text = f"{title} {tags}".strip()
+        if not text:
+            continue
+        for kw in keywords:
+            # token_set_ratio compares whole words (ignoring order/repeats),
+            # not raw characters — avoids partial_ratio's false positives
+            # (e.g. "PTZ Camera with Monitor" character-matching unrelated
+            # "Camera Monitoring System" just because the letters overlap).
+            score = fuzz.token_set_ratio(kw.lower().strip(), text)
+            if score < 70:
+                continue
+            mark_tender_relevant(t["id"], kw)
+            matched_count += 1
+            if not t.get("analysis_pdf_path"):
+                try:
+                    log(f"🎯 [Relevant] Running full analysis for: {t.get('title', '')[:60]}...")
+                    path = analyze_tender(t)
+                    if path:
+                        update_tender_pdfs(t["id"], analysis_path=path)
+                except Exception as e:
+                    log(f"⚠️ [Relevant] Analysis failed for tender {t['id']}: {e}")
+            break  # already flagged relevant, no need to check remaining keywords
+
+    if matched_count:
+        log(f"🎯 [Relevant] {matched_count} tender(s) matched relevant-keyword filters")
+    return matched_count
+
+
+def add_relevant_keyword_and_scan(keyword: str):
+    """Adds a new Relevant Tenders keyword and kicks off its one-time full
+    scan of the Total Tenders table in the background (so the Admin form
+    doesn't hang waiting for L2 analysis on every match)."""
+    from database.db import add_relevant_keyword
+    kw_id = add_relevant_keyword(keyword)
+    if kw_id:
+        threading.Thread(
+            target=run_relevant_keyword_matching,
+            kwargs={"scope": "full", "keyword": keyword},
+            daemon=True
+        ).start()
+    return kw_id
+
+
+def update_relevant_keyword_and_rescan(kw_id: int, keyword: str):
+    """Updates a Relevant Tenders keyword's text and re-runs its full scan
+    in the background, same as adding a new one."""
+    from database.db import update_relevant_keyword
+    update_relevant_keyword(kw_id, keyword)
+    threading.Thread(
+        target=run_relevant_keyword_matching,
+        kwargs={"scope": "full", "keyword": keyword},
+        daemon=True
+    ).start()
+
 
 _scheduler_thread = None
 
