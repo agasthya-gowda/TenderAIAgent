@@ -461,11 +461,319 @@ def fuzzy_filter_tenders(tenders, query, threshold=80):
     return out
 
 st.set_page_config(
-    page_title="Tender Agent",
+    page_title="Tender AI Agent",
     page_icon="🔍",
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# ── LOGIN GATE ────────────────────────────────────────────
+# Added ahead of moving this app onto a server other people/devices can
+# reach — without this, anyone with the URL would have full access, no
+# password. Credentials live in .env (LOGIN_USERNAME/LOGIN_PASSWORD),
+# same pattern as the other secrets this app already uses — never
+# committed to git. A blank/unset LOGIN_USERNAME disables login entirely
+# (matching_user below is then never truthy), so a fresh checkout with no
+# .env set up fails closed instead of silently allowing blank/blank in.
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+if not st.session_state.authenticated:
+
+    import base64 as _b64
+    _logo_path = os.path.join(os.path.dirname(__file__), "assets", "chipscape_logo_transparent.png")
+    try:
+        with open(_logo_path, "rb") as _f:
+            _logo_b64 = _b64.b64encode(_f.read()).decode()
+    except Exception:
+        _logo_b64 = ""
+
+    st.markdown(
+        f"""
+        <style>
+
+        #MainMenu {{ visibility: hidden; }}
+        footer {{ visibility: hidden; }}
+        header {{ visibility: hidden; }}
+        [data-testid="stSidebar"] {{ display: none; }}
+
+        .stApp {{
+            background:
+                radial-gradient(circle at 12% 18%, rgba(59,130,246,0.22), transparent 38%),
+                radial-gradient(circle at 88% 82%, rgba(37,99,235,0.18), transparent 38%),
+                linear-gradient(180deg, #060810 0%, #0A0E1A 100%);
+            min-height: 100vh;
+        }}
+        .block-container {{ max-width: 100% !important; padding: 0 !important; }}
+
+        .st-key-login_card_dark {{
+            width: min(92%, 420px);
+            margin: 60px auto 0;
+            background: rgba(17, 21, 36, 0.85);
+            border: 1px solid rgba(148, 163, 184, 0.14);
+            border-radius: 20px;
+            padding: 34px 30px 22px;
+            box-shadow: 0 25px 70px rgba(0,0,0,0.55);
+            backdrop-filter: blur(14px);
+        }}
+
+        .login-logo {{ display: block; margin: 0 auto 14px; height: 56px; width: auto; }}
+
+        .login-title-dark {{ text-align: center; font-size: 21px; font-weight: 700; color: #E7ECF5; margin-bottom: 2px; }}
+        .login-title-dark .accent {{
+            background: linear-gradient(90deg, #48bdf4, #4d8cf5, #7652ef);
+            -webkit-background-clip: text; background-clip: text; color: transparent;
+        }}
+        .login-subtitle-dark {{ text-align: center; font-size: 12px; color: #7C8AA5; margin-bottom: 26px; }}
+        .login-footer-dark {{ text-align: center; font-size: 12px; color: #8B96B5; margin: 18px auto 4px; }}
+        .login-contact-dark {{ text-align: center; font-size: 12px; color: #60A5FA; margin: 0 auto 40px; }}
+
+        .st-key-login_card_dark [data-testid="stForm"] {{
+            border: none !important; background: transparent !important; padding: 0 !important; box-shadow: none !important;
+        }}
+        .st-key-login_card_dark [data-testid="stForm"] label {{
+            color: #9AA6C3 !important; font-size: 13px !important; font-weight: 500 !important;
+        }}
+        .st-key-login_card_dark [data-testid="stTextInputRootElement"] {{
+            background: rgba(255,255,255,0.04) !important;
+            border-radius: 10px !important;
+            border: 1px solid rgba(148,163,184,0.20) !important;
+        }}
+        .st-key-login_card_dark input {{
+            height: 44px !important; border-radius: 10px !important;
+            border: none !important;
+            background: transparent !important;
+            color: #E7ECF5 !important; font-size: 14px !important;
+            padding-left: 38px !important; box-shadow: none !important;
+        }}
+        .st-key-login_card_dark [data-testid="stTextInputRootElement"]:focus-within {{
+            border-color: #3B82F6 !important; box-shadow: 0 0 0 2px rgba(59,130,246,0.20) !important;
+        }}
+        .st-key-login_card_dark input::placeholder {{ color: #5B6580 !important; }}
+        .st-key-login_card_dark [data-testid="stTextInput"] {{ margin-bottom: 10px; position: relative; }}
+        .st-key-login_card_dark [data-testid="stTextInput"]::before {{
+            content: ""; position: absolute; left: 12px; top: 33px; width: 16px; height: 16px;
+            z-index: 2; opacity: 0.55;
+            background-repeat: no-repeat; background-position: center; background-size: contain;
+        }}
+        .st-key-login_user_field [data-testid="stTextInput"]::before {{
+            background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2394A3B8' stroke-width='2'><circle cx='12' cy='8' r='4'/><path d='M4 21c0-4 4-6 8-6s8 2 8 6'/></svg>");
+        }}
+        .st-key-login_pass_field [data-testid="stTextInput"]::before {{
+            background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2394A3B8' stroke-width='2'><rect x='4' y='11' width='16' height='9' rx='2'/><path d='M8 11V7a4 4 0 0 1 8 0v4'/></svg>");
+        }}
+
+        .st-key-login_pass_field .forgot-link {{
+            text-align: right; font-size: 12px; color: #60A5FA; margin-top: -20px;
+        }}
+
+        .st-key-login_card_dark [data-testid="stFormSubmitButton"] button {{
+            width: 100% !important; height: 46px !important; border: none !important;
+            border-radius: 10px !important;
+            background: linear-gradient(90deg, #38BDF8, #2563EB) !important;
+            color: white !important; font-size: 14px !important; font-weight: 600 !important;
+            margin-top: 6px !important;
+            transition: transform 0.15s ease, box-shadow 0.15s ease;
+        }}
+        .st-key-login_card_dark [data-testid="stFormSubmitButton"] button:hover {{
+            transform: translateY(-1px); box-shadow: 0 8px 22px rgba(37,99,235,0.40);
+        }}
+
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.container(key="login_card_dark"):
+        st.markdown(
+            f"""
+            <img class="login-logo" src="data:image/png;base64,{_logo_b64}"/>
+            <div class="login-title-dark">Tender <span class="accent">Intelligence</span></div>
+            <div class="login-subtitle-dark">AI-Powered Tender Intelligence Platform</div>
+            """,
+            unsafe_allow_html=True,
+        )
+        with st.form("login_form"):
+            with st.container(key="login_user_field"):
+                login_username = st.text_input("Username", placeholder="Enter your username")
+            with st.container(key="login_pass_field"):
+                login_password = st.text_input("Password", type="password", placeholder="Enter your password")
+                st.markdown('<div class="forgot-link">Forgot password?</div>', unsafe_allow_html=True)
+            login_submitted = st.form_submit_button("Sign In →", use_container_width=True)
+            if login_submitted:
+                expected_user = os.getenv("LOGIN_USERNAME", "")
+                expected_pass = os.getenv("LOGIN_PASSWORD", "")
+                matching_user = expected_user and login_username == expected_user
+                matching_pass = expected_pass and login_password == expected_pass
+                if matching_user and matching_pass:
+                    st.session_state.authenticated = True
+                    st.rerun()
+                else:
+                    st.error("Incorrect username or password.")
+        st.markdown(
+            '<div class="login-footer-dark">ChipScape Security Management System</div>'
+            '<div class="login-contact-dark">Contact us: admin@chipscape.com</div>',
+            unsafe_allow_html=True,
+        )
+
+    st.stop()
+
+
+# ── CHANGE PASSWORD ──────────────────────────────────────────
+_ENV_PATH = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".env"))
+
+
+def _update_env_password(new_password):
+    with open(_ENV_PATH, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+    updated = False
+    for i, line in enumerate(lines):
+        if line.strip().startswith("LOGIN_PASSWORD="):
+            lines[i] = f"LOGIN_PASSWORD={new_password}\n"
+            updated = True
+            break
+    if not updated:
+        lines.append(f"LOGIN_PASSWORD={new_password}\n")
+    with open(_ENV_PATH, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+    os.environ["LOGIN_PASSWORD"] = new_password
+
+
+def render_change_password_page():
+    import base64 as _b64
+    _logo_path = os.path.join(os.path.dirname(__file__), "assets", "chipscape_logo_transparent.png")
+    try:
+        with open(_logo_path, "rb") as _f:
+            _logo_b64 = _b64.b64encode(_f.read()).decode()
+    except Exception:
+        _logo_b64 = ""
+
+    st.markdown(
+        f"""
+        <style>
+
+        #MainMenu {{ visibility: hidden; }}
+        footer {{ visibility: hidden; }}
+        header {{ visibility: hidden; }}
+        [data-testid="stSidebar"] {{ display: none; }}
+
+        .stApp {{
+            background:
+                radial-gradient(circle at 12% 18%, rgba(59,130,246,0.22), transparent 38%),
+                radial-gradient(circle at 88% 82%, rgba(37,99,235,0.18), transparent 38%),
+                linear-gradient(180deg, #060810 0%, #0A0E1A 100%);
+            min-height: 100vh;
+        }}
+        .block-container {{ max-width: 100% !important; padding: 0 !important; }}
+
+        .st-key-pwd_back_wrap {{ width: min(92%, 420px); margin: 24px auto 0; }}
+        .st-key-pwd_back_wrap button {{
+            background: transparent !important; border: none !important;
+            color: #60A5FA !important; font-size: 13px !important;
+            box-shadow: none !important; padding: 0 !important;
+        }}
+
+        .st-key-pwd_card_dark {{
+            width: min(92%, 420px);
+            margin: 16px auto 0;
+            background: rgba(17, 21, 36, 0.85);
+            border: 1px solid rgba(148, 163, 184, 0.14);
+            border-radius: 20px;
+            padding: 34px 30px 22px;
+            box-shadow: 0 25px 70px rgba(0,0,0,0.55);
+            backdrop-filter: blur(14px);
+        }}
+
+        .login-logo {{ display: block; margin: 0 auto 14px; height: 56px; width: auto; }}
+
+        .login-title-dark {{ text-align: center; font-size: 21px; font-weight: 700; color: #E7ECF5; margin-bottom: 2px; }}
+        .login-title-dark .accent {{
+            background: linear-gradient(90deg, #48bdf4, #4d8cf5, #7652ef);
+            -webkit-background-clip: text; background-clip: text; color: transparent;
+        }}
+        .login-subtitle-dark {{ text-align: center; font-size: 12px; color: #7C8AA5; margin-bottom: 26px; }}
+
+        .st-key-pwd_card_dark [data-testid="stForm"] {{
+            border: none !important; background: transparent !important; padding: 0 !important; box-shadow: none !important;
+        }}
+        .st-key-pwd_card_dark [data-testid="stForm"] label {{
+            color: #9AA6C3 !important; font-size: 13px !important; font-weight: 500 !important;
+        }}
+        .st-key-pwd_card_dark [data-testid="stTextInputRootElement"] {{
+            background: rgba(255,255,255,0.04) !important;
+            border-radius: 10px !important;
+            border: 1px solid rgba(148,163,184,0.20) !important;
+        }}
+        .st-key-pwd_card_dark input {{
+            height: 44px !important; border-radius: 10px !important;
+            border: none !important;
+            background: transparent !important;
+            color: #E7ECF5 !important; font-size: 14px !important;
+            padding-left: 38px !important; box-shadow: none !important;
+        }}
+        .st-key-pwd_card_dark [data-testid="stTextInputRootElement"]:focus-within {{
+            border-color: #3B82F6 !important; box-shadow: 0 0 0 2px rgba(59,130,246,0.20) !important;
+        }}
+        .st-key-pwd_card_dark input::placeholder {{ color: #5B6580 !important; }}
+        .st-key-pwd_card_dark [data-testid="stTextInput"] {{ margin-bottom: 10px; position: relative; }}
+        .st-key-pwd_card_dark [data-testid="stTextInput"]::before {{
+            content: ""; position: absolute; left: 12px; top: 33px; width: 16px; height: 16px;
+            z-index: 2; opacity: 0.55;
+            background-repeat: no-repeat; background-position: center; background-size: contain;
+            background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2394A3B8' stroke-width='2'><rect x='4' y='11' width='16' height='9' rx='2'/><path d='M8 11V7a4 4 0 0 1 8 0v4'/></svg>");
+        }}
+
+        .st-key-pwd_card_dark [data-testid="stFormSubmitButton"] button {{
+            width: 100% !important; height: 46px !important; border: none !important;
+            border-radius: 10px !important;
+            background: linear-gradient(90deg, #38BDF8, #2563EB) !important;
+            color: white !important; font-size: 14px !important; font-weight: 600 !important;
+            margin-top: 6px !important;
+            transition: transform 0.15s ease, box-shadow 0.15s ease;
+        }}
+        .st-key-pwd_card_dark [data-testid="stFormSubmitButton"] button:hover {{
+            transform: translateY(-1px); box-shadow: 0 8px 22px rgba(37,99,235,0.40);
+        }}
+
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.container(key="pwd_back_wrap"):
+        if st.button("← Back to Dashboard", key="pwd_back_btn"):
+            st.session_state.show_change_password = False
+            st.rerun()
+
+    with st.container(key="pwd_card_dark"):
+        st.markdown(
+            f"""
+            <img class="login-logo" src="data:image/png;base64,{_logo_b64}"/>
+            <div class="login-title-dark">Change <span class="accent">Password</span></div>
+            <div class="login-subtitle-dark">Update your account password</div>
+            """,
+            unsafe_allow_html=True,
+        )
+        with st.form("change_password_form"):
+            current_password = st.text_input("Current Password", type="password", placeholder="Enter current password")
+            new_password = st.text_input("New Password", type="password", placeholder="Enter new password")
+            confirm_password = st.text_input("Confirm Password", type="password", placeholder="Re-enter new password")
+            changed = st.form_submit_button("Change Password →", use_container_width=True)
+            if changed:
+                expected_pass = os.getenv("LOGIN_PASSWORD", "")
+                if not (expected_pass and current_password == expected_pass):
+                    st.error("Current password is incorrect.")
+                elif not new_password:
+                    st.error("New password cannot be empty.")
+                elif new_password != confirm_password:
+                    st.error("New password and confirm password do not match.")
+                elif new_password == current_password:
+                    st.error("New password must be different from the current password.")
+                else:
+                    _update_env_password(new_password)
+                    st.session_state.show_change_password = False
+                    st.session_state.authenticated = False
+                    st.rerun()
 
 st.markdown("""
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -717,6 +1025,18 @@ st.markdown("""
     section[data-testid="stSidebar"] .status-idle {
         background: rgba(148, 163, 184, 0.1) !important;
         color: #94A3B8 !important;
+    }
+    /* Pins Change Password / Log out to the bottom of the sidebar instead of
+       wherever they fall in the normal top-down button flow — the sidebar's
+       own content block becomes a flex column and this wrapper's
+       margin-top:auto pushes it (and only it) down to the end. */
+    [data-testid="stSidebarUserContent"] > div > [data-testid="stVerticalBlock"] {
+        min-height: calc(100vh - 120px);
+        display: flex !important;
+        flex-direction: column !important;
+    }
+    div[data-testid="stLayoutWrapper"]:has(.st-key-sidebar_bottom_actions) {
+        margin-top: auto !important;
     }
     .block-container {
         padding-top: 1rem !important;
@@ -1521,10 +1841,12 @@ if "show_patterns_learned" not in st.session_state:
     st.session_state.show_patterns_learned = False
 if "show_search_history" not in st.session_state:
     st.session_state.show_search_history = False
+if "show_change_password" not in st.session_state:
+    st.session_state.show_change_password = False
 
 _SIDEBAR_PANEL_KEYS = [
     "show_admin", "show_relevant_keywords",
-    "show_patterns_learned", "show_search_history",
+    "show_patterns_learned", "show_search_history", "show_change_password",
 ]
 
 
@@ -1642,7 +1964,16 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
 
-    st.markdown("---")
+    with st.container(key="sidebar_bottom_actions"):
+        st.markdown("---")
+
+        if st.button("🔑 Change Password", use_container_width=True, key="btn_change_password"):
+            _open_sidebar_panel("show_change_password")
+            st.rerun()
+
+        if st.button("🚪 Log out", use_container_width=True, key="btn_logout"):
+            st.session_state.authenticated = False
+            st.rerun()
 
 
 
@@ -1651,6 +1982,10 @@ with st.sidebar:
 # when open, same idea as the single-tender detail view further below.
 if st.session_state.show_admin:
     render_admin_page()
+    st.stop()
+
+if st.session_state.show_change_password:
+    render_change_password_page()
     st.stop()
 
 if st.session_state.show_relevant_keywords:

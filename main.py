@@ -16,7 +16,7 @@ import threading
 
 def main():
     print("=" * 50)
-    print("  🔍 TENDER AGENT")
+    print("  🔍 TENDER AI AGENT")
     print("  Starting up...")
     print("=" * 50)
 
