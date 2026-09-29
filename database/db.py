@@ -1,6 +1,8 @@
 import os
 import json
 import re
+import hashlib
+import secrets
 from datetime import datetime
 
 import psycopg2
@@ -313,8 +315,162 @@ def init_db():
         )
     """)
 
+    # Dashboard login accounts. Only 'admin' role sees the Admin section
+    # (company credentials, turnover, etc.) and can create new accounts —
+    # 'regular' role gets everything else. Replaces the single shared
+    # LOGIN_USERNAME/LOGIN_PASSWORD .env credential this table's first row
+    # is seeded from below, the same one-time migration-from-static-config
+    # pattern as the company profile tables above.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS app_users (
+            id SERIAL PRIMARY KEY,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'regular',
+            created_at TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS'),
+            last_active TEXT
+        )
+    """)
+    c.execute("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS last_active TEXT")
+    c.execute("SELECT COUNT(*) AS cnt FROM app_users")
+    if c.fetchone()["cnt"] == 0:
+        seed_user = os.getenv("LOGIN_USERNAME", "").strip()
+        seed_pass = os.getenv("LOGIN_PASSWORD", "")
+        if seed_user and seed_pass:
+            c.execute(
+                "INSERT INTO app_users (username, password_hash, role) VALUES (?, ?, 'admin')",
+                (seed_user, _hash_password(seed_pass))
+            )
+
     conn.commit()
     conn.close()
+
+
+def _hash_password(password: str) -> str:
+    salt = secrets.token_hex(16)
+    digest = hashlib.sha256((salt + password).encode()).hexdigest()
+    return f"{salt}${digest}"
+
+
+def _verify_password(password: str, stored_hash: str) -> bool:
+    try:
+        salt, digest = stored_hash.split("$", 1)
+    except (ValueError, AttributeError):
+        return False
+    return hashlib.sha256((salt + password).encode()).hexdigest() == digest
+
+
+def get_user_by_username(username: str):
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT * FROM app_users WHERE LOWER(username)=LOWER(?)", ((username or "").strip(),)
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def verify_user_login(username: str, password: str):
+    """Returns the matching user's dict (id/username/role) on success, else None."""
+    user = get_user_by_username(username)
+    if not user or not password:
+        return None
+    if not _verify_password(password, user["password_hash"]):
+        return None
+    return user
+
+
+def create_user(username: str, password: str, role: str = "regular"):
+    """Returns the new user's id, or None if that username (case-insensitively)
+    already exists."""
+    username = (username or "").strip()
+    if not username or not password:
+        return None
+    conn = get_conn()
+    c = conn.cursor()
+    existing = c.execute(
+        "SELECT id FROM app_users WHERE LOWER(username)=LOWER(?)", (username,)
+    ).fetchone()
+    if existing:
+        conn.close()
+        return None
+    c.execute(
+        "INSERT INTO app_users (username, password_hash, role) VALUES (?, ?, ?) RETURNING id",
+        (username, _hash_password(password), role)
+    )
+    user_id = c.fetchone()["id"]
+    conn.commit()
+    conn.close()
+    return user_id
+
+
+def update_user_password(username: str, new_password: str):
+    conn = get_conn()
+    conn.execute(
+        "UPDATE app_users SET password_hash=? WHERE LOWER(username)=LOWER(?)",
+        (_hash_password(new_password), (username or "").strip())
+    )
+    conn.commit()
+    conn.close()
+
+
+def update_last_active(username: str):
+    conn = get_conn()
+    conn.execute(
+        "UPDATE app_users SET last_active=to_char(now(), 'YYYY-MM-DD HH24:MI:SS') WHERE LOWER(username)=LOWER(?)",
+        ((username or "").strip(),)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_all_users():
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT id, username, role, created_at, last_active FROM app_users ORDER BY username"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def count_admins():
+    conn = get_conn()
+    row = conn.execute("SELECT COUNT(*) AS cnt FROM app_users WHERE role='admin'").fetchone()
+    conn.close()
+    return row["cnt"]
+
+
+def update_user(user_id: int, username: str, role: str, new_password: str = None):
+    """Renames/re-roles a user; only touches the password if new_password is
+    given (blank means "leave the current password as-is"). Returns True, or
+    False if that username (case-insensitively) is already taken by a
+    different account."""
+    username = (username or "").strip()
+    conn = get_conn()
+    c = conn.cursor()
+    existing = c.execute(
+        "SELECT id FROM app_users WHERE LOWER(username)=LOWER(?) AND id<>?", (username, user_id)
+    ).fetchone()
+    if existing:
+        conn.close()
+        return False
+    if new_password:
+        c.execute(
+            "UPDATE app_users SET username=?, role=?, password_hash=? WHERE id=?",
+            (username, role, _hash_password(new_password), user_id)
+        )
+    else:
+        c.execute("UPDATE app_users SET username=?, role=? WHERE id=?", (username, role, user_id))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def delete_user(user_id: int):
+    conn = get_conn()
+    conn.execute("DELETE FROM app_users WHERE id=?", (user_id,))
+    conn.commit()
+    conn.close()
+
 
 def has_had_full_gem_search(keyword: str) -> bool:
     """True once this exact keyword has already had its one-time

@@ -201,7 +201,16 @@ async def search_gem(keyword: str, category: str = "", max_pages: int = 5, shoul
                         "byType": "all",
                         "highBidValue": "",
                         "byEndDate": {"from": "", "to": ""},
-                        "sort": "Bid-End-Date-Oldest",
+                        # Newest Start Date first — matches the assumption
+                        # stop_before_date makes below (that a page with
+                        # nothing newer means every later page won't have
+                        # anything new either). It was previously
+                        # "Bid-End-Date-Oldest" (soonest-expiring first),
+                        # which buried tenders with far-off deadlines deep
+                        # in the pages regardless of how recently they were
+                        # actually published — some weren't caught until
+                        # the day they expired.
+                        "sort": "Bid-Start-Date-Latest",
                     },
                 }
                 return "payload=" + _json.dumps(payload) + "&csrf_bd_gem_nk=" + csrf_token

@@ -3,6 +3,7 @@ Tender Agent Dashboard
 """
 
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 import os
 import json
 import html
@@ -24,6 +25,8 @@ from database.db import (
     get_project_quantities_list, add_project_quantity, update_project_quantity, delete_project_quantity,
     get_relevant_keywords_list, delete_relevant_keyword,
     get_relevant_tenders_list,
+    verify_user_login, create_user, update_user_password,
+    update_last_active, get_all_users, update_user, delete_user, count_admins,
 )
 
 
@@ -137,7 +140,18 @@ def render_admin_page():
     # block-container top padding (set globally for the main dashboard)
     # otherwise crops the top of this heading's tall letters.
     st.markdown("<div style='margin-top:18px;'></div>", unsafe_allow_html=True)
-    st.markdown("## 🛠️ Admin — Company Profile & Credentials")
+    if st.session_state.get("user_create_success"):
+        st.success(st.session_state.user_create_success)
+        st.session_state.user_create_success = ""
+    header_col, create_user_col = st.columns([5, 1])
+    with header_col:
+        st.markdown("## 🛠️ Admin — Company Profile & Credentials")
+    with create_user_col:
+        st.markdown("<div style='margin-top:22px;'></div>", unsafe_allow_html=True)
+        if st.button("➕ Create User", key="admin_create_user_btn", use_container_width=True):
+            st.session_state.show_admin = False
+            st.session_state.show_create_user = True
+            st.rerun()
     st.caption(
         "Chipscape's turnover, credentials, past-project references and any "
         "subcontractor/system-integrator partner credentials — all stored as "
@@ -150,9 +164,25 @@ def render_admin_page():
 
     st.markdown("---")
 
-    tab_turnover, tab_creds, tab_partners, tab_projects, tab_quantities = st.tabs([
+    # Pushes the "Users" tab to the far right of the tab row, separate from
+    # the other (company-profile) tabs which stay grouped on the left — this
+    # is the only st.tabs() in the app, so the selector is safe to be global.
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stTabs"] { width: 100% !important; }
+        div[data-testid="stTabs"] div[role="tablist"] { width: 100% !important; }
+        div[data-testid="stTabs"] div[role="tablist"] > div[data-testid="stTab"]:last-child {
+            margin-left: auto !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    tab_turnover, tab_creds, tab_partners, tab_projects, tab_quantities, tab_users = st.tabs([
         "💰 Turnover", "📜 Chipscape Credentials", "🤝 Partner Credentials",
-        "📁 Project References", "📦 Project Quantities"
+        "📁 Project References", "📦 Project Quantities", "👤 Users"
     ])
 
     with tab_turnover:
@@ -287,6 +317,65 @@ def render_admin_page():
             row_title_fn=lambda r: f"{r['project_name']} — {r.get('quantity_executed') or ''} {r.get('unit') or ''}",
             entity_label="Quantity Record",
         )
+
+    with tab_users:
+        users = get_all_users()
+
+        @st.dialog("✏️ Edit User")
+        def _edit_user_dialog(u):
+            st.caption(f"{u['username']} ({u['role'].capitalize()})")
+            edit_username = st.text_input("Username", value=u["username"], key=f"user_dlg_edit_{u['id']}_username")
+            edit_role = st.selectbox(
+                "Role", ["Regular", "Admin"],
+                index=1 if u["role"] == "admin" else 0,
+                key=f"user_dlg_edit_{u['id']}_role",
+            )
+            edit_new_password = st.text_input(
+                "New Password", value="", type="password",
+                placeholder="Leave blank to keep the current password",
+                key=f"user_dlg_edit_{u['id']}_password",
+            )
+            col_save, col_del = st.columns(2)
+            if col_save.button("💾 Update", type="primary", use_container_width=True, key=f"user_dlg_update_{u['id']}"):
+                if not edit_username.strip():
+                    st.warning("Username cannot be empty.")
+                elif u["role"] == "admin" and edit_role == "Regular" and count_admins() <= 1:
+                    st.warning("Can't demote the last remaining admin — create another admin first.")
+                else:
+                    ok = update_user(u["id"], edit_username.strip(), edit_role.lower(), edit_new_password or None)
+                    if not ok:
+                        st.warning(f"Username \"{edit_username.strip()}\" is already taken.")
+                    else:
+                        if u["username"] == st.session_state.username:
+                            st.session_state.username = edit_username.strip()
+                            st.session_state.user_role = edit_role.lower()
+                        st.rerun()
+            if col_del.button("🗑️ Delete", use_container_width=True, key=f"user_dlg_delete_{u['id']}"):
+                if u["username"] == st.session_state.username:
+                    st.warning("You can't delete the account you're currently logged in as.")
+                elif u["role"] == "admin" and count_admins() <= 1:
+                    st.warning("Can't delete the last remaining admin.")
+                else:
+                    delete_user(u["id"])
+                    st.rerun()
+
+        if not users:
+            st.info("No users found.")
+        else:
+            col_widths = [2, 2, 2, 2, 1]
+            header_cols = st.columns(col_widths)
+            for col, label in zip(header_cols, ["Username", "Role", "Last Active", "Created At", "Action"]):
+                col.markdown(f"**{label}**")
+            st.markdown("<hr style='margin:2px 0 8px 0;'>", unsafe_allow_html=True)
+
+            for u in users:
+                row_cols = st.columns(col_widths)
+                row_cols[0].write(u["username"])
+                row_cols[1].write(u["role"].capitalize())
+                row_cols[2].write(u["last_active"] or "Never logged in")
+                row_cols[3].write(u["created_at"])
+                if row_cols[4].button("✏️", key=f"user_modify_{u['id']}", help=f"Edit {u['username']}"):
+                    _edit_user_dialog(u)
 
 
 from agent.orchestrator import (
@@ -470,13 +559,17 @@ st.set_page_config(
 # ── LOGIN GATE ────────────────────────────────────────────
 # Added ahead of moving this app onto a server other people/devices can
 # reach — without this, anyone with the URL would have full access, no
-# password. Credentials live in .env (LOGIN_USERNAME/LOGIN_PASSWORD),
-# same pattern as the other secrets this app already uses — never
-# committed to git. A blank/unset LOGIN_USERNAME disables login entirely
-# (matching_user below is then never truthy), so a fresh checkout with no
-# .env set up fails closed instead of silently allowing blank/blank in.
+# password. Accounts live in the app_users DB table (username/password
+# hash/role) — the very first account is seeded once from .env's
+# LOGIN_USERNAME/LOGIN_PASSWORD (see database/db.py's init_db()), but every
+# login after that checks the DB, not .env. 'admin' role sees the Admin
+# section and can create new accounts; 'regular' sees everything else.
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
+if "username" not in st.session_state:
+    st.session_state.username = ""
+if "user_role" not in st.session_state:
+    st.session_state.user_role = ""
 
 if not st.session_state.authenticated:
 
@@ -601,12 +694,12 @@ if not st.session_state.authenticated:
                 st.markdown('<div class="forgot-link">Forgot password?</div>', unsafe_allow_html=True)
             login_submitted = st.form_submit_button("Sign In →", use_container_width=True)
             if login_submitted:
-                expected_user = os.getenv("LOGIN_USERNAME", "")
-                expected_pass = os.getenv("LOGIN_PASSWORD", "")
-                matching_user = expected_user and login_username == expected_user
-                matching_pass = expected_pass and login_password == expected_pass
-                if matching_user and matching_pass:
+                user = verify_user_login(login_username, login_password)
+                if user:
                     st.session_state.authenticated = True
+                    st.session_state.username = user["username"]
+                    st.session_state.user_role = user["role"]
+                    update_last_active(user["username"])
                     st.rerun()
                 else:
                     st.error("Incorrect username or password.")
@@ -620,25 +713,6 @@ if not st.session_state.authenticated:
 
 
 # ── CHANGE PASSWORD ──────────────────────────────────────────
-_ENV_PATH = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".env"))
-
-
-def _update_env_password(new_password):
-    with open(_ENV_PATH, "r", encoding="utf-8") as f:
-        lines = f.readlines()
-    updated = False
-    for i, line in enumerate(lines):
-        if line.strip().startswith("LOGIN_PASSWORD="):
-            lines[i] = f"LOGIN_PASSWORD={new_password}\n"
-            updated = True
-            break
-    if not updated:
-        lines.append(f"LOGIN_PASSWORD={new_password}\n")
-    with open(_ENV_PATH, "w", encoding="utf-8") as f:
-        f.writelines(lines)
-    os.environ["LOGIN_PASSWORD"] = new_password
-
-
 def render_change_password_page():
     import base64 as _b64
     _logo_path = os.path.join(os.path.dirname(__file__), "assets", "chipscape_logo_transparent.png")
@@ -760,8 +834,7 @@ def render_change_password_page():
             confirm_password = st.text_input("Confirm Password", type="password", placeholder="Re-enter new password")
             changed = st.form_submit_button("Change Password →", use_container_width=True)
             if changed:
-                expected_pass = os.getenv("LOGIN_PASSWORD", "")
-                if not (expected_pass and current_password == expected_pass):
+                if not verify_user_login(st.session_state.username, current_password):
                     st.error("Current password is incorrect.")
                 elif not new_password:
                     st.error("New password cannot be empty.")
@@ -770,10 +843,165 @@ def render_change_password_page():
                 elif new_password == current_password:
                     st.error("New password must be different from the current password.")
                 else:
-                    _update_env_password(new_password)
+                    update_user_password(st.session_state.username, new_password)
                     st.session_state.show_change_password = False
                     st.session_state.authenticated = False
+                    st.session_state.username = ""
+                    st.session_state.user_role = ""
                     st.rerun()
+
+
+# ── CREATE USER (admin-only) ──────────────────────────────────
+def render_create_user_page():
+    import base64 as _b64
+    _logo_path = os.path.join(os.path.dirname(__file__), "assets", "chipscape_logo_transparent.png")
+    try:
+        with open(_logo_path, "rb") as _f:
+            _logo_b64 = _b64.b64encode(_f.read()).decode()
+    except Exception:
+        _logo_b64 = ""
+
+    st.markdown(
+        f"""
+        <style>
+
+        #MainMenu {{ visibility: hidden; }}
+        footer {{ visibility: hidden; }}
+        header {{ visibility: hidden; }}
+        [data-testid="stSidebar"] {{ display: none; }}
+
+        .stApp {{
+            background:
+                radial-gradient(circle at 12% 18%, rgba(59,130,246,0.22), transparent 38%),
+                radial-gradient(circle at 88% 82%, rgba(37,99,235,0.18), transparent 38%),
+                linear-gradient(180deg, #060810 0%, #0A0E1A 100%);
+            min-height: 100vh;
+        }}
+        .block-container {{ max-width: 100% !important; padding: 0 !important; }}
+
+        .st-key-newuser_back_wrap {{ width: min(92%, 420px); margin: 24px auto 0; }}
+        .st-key-newuser_back_wrap button {{
+            background: transparent !important; border: none !important;
+            color: #60A5FA !important; font-size: 13px !important;
+            box-shadow: none !important; padding: 0 !important;
+        }}
+
+        .st-key-newuser_card_dark {{
+            width: min(92%, 420px);
+            margin: 16px auto 0;
+            background: rgba(17, 21, 36, 0.85);
+            border: 1px solid rgba(148, 163, 184, 0.14);
+            border-radius: 20px;
+            padding: 34px 30px 22px;
+            box-shadow: 0 25px 70px rgba(0,0,0,0.55);
+            backdrop-filter: blur(14px);
+        }}
+
+        .login-logo {{ display: block; margin: 0 auto 14px; height: 56px; width: auto; }}
+
+        .login-title-dark {{ text-align: center; font-size: 21px; font-weight: 700; color: #E7ECF5; margin-bottom: 2px; }}
+        .login-title-dark .accent {{
+            background: linear-gradient(90deg, #48bdf4, #4d8cf5, #7652ef);
+            -webkit-background-clip: text; background-clip: text; color: transparent;
+        }}
+        .login-subtitle-dark {{ text-align: center; font-size: 12px; color: #7C8AA5; margin-bottom: 26px; }}
+
+        .st-key-newuser_card_dark [data-testid="stForm"] {{
+            border: none !important; background: transparent !important; padding: 0 !important; box-shadow: none !important;
+        }}
+        .st-key-newuser_card_dark [data-testid="stForm"] label {{
+            color: #9AA6C3 !important; font-size: 13px !important; font-weight: 500 !important;
+        }}
+        .st-key-newuser_card_dark [data-testid="stTextInputRootElement"] {{
+            background: rgba(255,255,255,0.04) !important;
+            border-radius: 10px !important;
+            border: 1px solid rgba(148,163,184,0.20) !important;
+        }}
+        .st-key-newuser_card_dark input {{
+            height: 44px !important; border-radius: 10px !important;
+            border: none !important;
+            background: transparent !important;
+            color: #E7ECF5 !important; font-size: 14px !important;
+            padding-left: 14px !important; box-shadow: none !important;
+        }}
+        .st-key-newuser_card_dark [data-testid="stTextInputRootElement"]:focus-within {{
+            border-color: #3B82F6 !important; box-shadow: 0 0 0 2px rgba(59,130,246,0.20) !important;
+        }}
+        .st-key-newuser_card_dark input::placeholder {{ color: #5B6580 !important; }}
+        .st-key-newuser_card_dark [data-testid="stTextInput"] {{ margin-bottom: 10px; }}
+
+        .st-key-newuser_card_dark [data-testid="stSelectbox"] {{ margin-bottom: 10px; }}
+        .st-key-newuser_card_dark .react-aria-ComboBox {{
+            background: rgba(255,255,255,0.04) !important;
+            border-radius: 10px !important;
+            border: 1px solid rgba(148,163,184,0.20) !important;
+            min-height: 44px !important;
+            overflow: hidden;
+        }}
+        .st-key-newuser_card_dark .react-aria-ComboBox * {{
+            background-color: transparent !important;
+            border-color: transparent !important;
+            color: #E7ECF5 !important;
+        }}
+        .st-key-newuser_card_dark .react-aria-ComboBox:focus-within {{
+            border-color: #3B82F6 !important; box-shadow: 0 0 0 2px rgba(59,130,246,0.20) !important;
+        }}
+
+        .st-key-newuser_card_dark [data-testid="stFormSubmitButton"] button {{
+            width: 100% !important; height: 46px !important; border: none !important;
+            border-radius: 10px !important;
+            background: linear-gradient(90deg, #38BDF8, #2563EB) !important;
+            color: white !important; font-size: 14px !important; font-weight: 600 !important;
+            margin-top: 6px !important;
+            transition: transform 0.15s ease, box-shadow 0.15s ease;
+        }}
+        .st-key-newuser_card_dark [data-testid="stFormSubmitButton"] button:hover {{
+            transform: translateY(-1px); box-shadow: 0 8px 22px rgba(37,99,235,0.40);
+        }}
+
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.container(key="newuser_back_wrap"):
+        if st.button("← Back to Admin", key="newuser_back_btn"):
+            st.session_state.show_create_user = False
+            st.session_state.show_admin = True
+            st.rerun()
+
+    with st.container(key="newuser_card_dark"):
+        st.markdown(
+            f"""
+            <img class="login-logo" src="data:image/png;base64,{_logo_b64}"/>
+            <div class="login-title-dark">Create <span class="accent">User</span></div>
+            <div class="login-subtitle-dark">Add a new dashboard account</div>
+            """,
+            unsafe_allow_html=True,
+        )
+        with st.form("create_user_form"):
+            new_username = st.text_input("Username", placeholder="Enter a username")
+            create_password = st.text_input("Create Password", type="password", placeholder="Enter a password")
+            new_password_confirm = st.text_input("New Password", type="password", placeholder="Re-enter the password")
+            role = st.selectbox("Role", ["Regular", "Admin"])
+            created = st.form_submit_button("Create User →", use_container_width=True)
+            if created:
+                if not new_username.strip():
+                    st.error("Username cannot be empty.")
+                elif not create_password:
+                    st.error("Password cannot be empty.")
+                elif create_password != new_password_confirm:
+                    st.error("Passwords do not match.")
+                else:
+                    new_id = create_user(new_username.strip(), create_password, role.lower())
+                    if new_id is None:
+                        st.error(f"Username \"{new_username.strip()}\" already exists.")
+                    else:
+                        st.session_state.user_create_success = f"User \"{new_username.strip()}\" ({role}) created successfully."
+                        st.session_state.show_create_user = False
+                        st.session_state.show_admin = True
+                        st.rerun()
+
 
 st.markdown("""
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -790,8 +1018,23 @@ st.markdown("""
         background: #0F172A !important;
         border-right: 1px solid #1E293B;
     }
+    /* The collapse-arrow header reserves a fixed 60px band above the
+       sidebar's own content by default — shrinks it so the logo row sits
+       right under the collapse button instead of leaving empty space. */
+    section[data-testid="stSidebar"] [data-testid="stSidebarHeader"] {
+        min-height: 32px !important;
+        height: 32px !important;
+    }
     section[data-testid="stSidebar"] * {
         color: #E2E8F0 !important;
+    }
+    /* The wildcard rule above forces solid text on every sidebar element,
+       including this gradient-clip span — without this override it would
+       paint over the gradient and "Intelligence" would render as plain
+       flat text instead of the blue-to-purple accent. */
+    section[data-testid="stSidebar"] .sidebar-logo-accent {
+        color: transparent !important;
+        -webkit-text-fill-color: transparent !important;
     }
     section[data-testid="stSidebar"] svg {
         fill: #94A3B8 !important;
@@ -913,14 +1156,16 @@ st.markdown("""
     section[data-testid="stSidebar"] .st-key-btn_open_admin div[data-testid="stButton"] button[kind="secondary"],
     section[data-testid="stSidebar"] .st-key-btn_open_relevant_keywords div[data-testid="stButton"] button[kind="secondary"],
     section[data-testid="stSidebar"] .st-key-btn_open_patterns div[data-testid="stButton"] button[kind="secondary"],
-    section[data-testid="stSidebar"] .st-key-btn_open_search_history div[data-testid="stButton"] button[kind="secondary"] {
+    section[data-testid="stSidebar"] .st-key-btn_open_search_history div[data-testid="stButton"] button[kind="secondary"],
+    section[data-testid="stSidebar"] .st-key-btn_change_password div[data-testid="stButton"] button[kind="secondary"] {
         background: rgba(15, 23, 42, 0.9) !important;
         border: 1px solid #1E293B !important;
     }
     section[data-testid="stSidebar"] .st-key-btn_open_admin div[data-testid="stButton"] button[kind="secondary"]:hover,
     section[data-testid="stSidebar"] .st-key-btn_open_relevant_keywords div[data-testid="stButton"] button[kind="secondary"]:hover,
     section[data-testid="stSidebar"] .st-key-btn_open_patterns div[data-testid="stButton"] button[kind="secondary"]:hover,
-    section[data-testid="stSidebar"] .st-key-btn_open_search_history div[data-testid="stButton"] button[kind="secondary"]:hover {
+    section[data-testid="stSidebar"] .st-key-btn_open_search_history div[data-testid="stButton"] button[kind="secondary"]:hover,
+    section[data-testid="stSidebar"] .st-key-btn_change_password div[data-testid="stButton"] button[kind="secondary"]:hover {
         background: rgba(15, 23, 42, 0.9) !important;
         border-color: #334155 !important;
     }
@@ -1843,10 +2088,13 @@ if "show_search_history" not in st.session_state:
     st.session_state.show_search_history = False
 if "show_change_password" not in st.session_state:
     st.session_state.show_change_password = False
+if "show_create_user" not in st.session_state:
+    st.session_state.show_create_user = False
 
 _SIDEBAR_PANEL_KEYS = [
     "show_admin", "show_relevant_keywords",
     "show_patterns_learned", "show_search_history", "show_change_password",
+    "show_create_user",
 ]
 
 
@@ -1860,6 +2108,26 @@ def _open_sidebar_panel(panel_key):
 
 # ── SIDEBAR ───────────────────────────────────────────────
 with st.sidebar:
+    import base64 as _b64
+    _sidebar_logo_path = os.path.join(os.path.dirname(__file__), "assets", "chipscape_logo_transparent.png")
+    try:
+        with open(_sidebar_logo_path, "rb") as _f:
+            _sidebar_logo_b64 = _b64.b64encode(_f.read()).decode()
+    except Exception:
+        _sidebar_logo_b64 = ""
+
+    st.markdown(
+        f"""
+        <div style='display:flex; align-items:center; gap:16px; margin:2px 0 20px;'>
+            <img src="data:image/png;base64,{_sidebar_logo_b64}" style="height:36px; width:auto; object-fit:contain;"/>
+            <div style='font-size:15px; font-weight:700; color:#E2E8F0; line-height:1.2;'>
+                Tender <span class="sidebar-logo-accent" style="background:linear-gradient(90deg,#48bdf4,#4d8cf5,#7652ef); -webkit-background-clip:text; background-clip:text;">Intelligence</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     st.markdown("### ⚙️ Agent Control")
 
     # Start Agent always triggers an immediate full catalog fetch on click
@@ -1932,9 +2200,10 @@ with st.sidebar:
                 on_kppp_search(criteria)
                 st.success("Searching KPPP — this filter will keep running automatically from now on.")
 
-    if st.button("🛠️ Admin", use_container_width=True, key="btn_open_admin"):
-        _open_sidebar_panel("show_admin")
-        st.rerun()
+    if st.session_state.user_role == "admin":
+        if st.button("🛠️ Admin", use_container_width=True, key="btn_open_admin"):
+            _open_sidebar_panel("show_admin")
+            st.rerun()
 
     if st.button("🎯 Relevant Tenders Keyword", use_container_width=True, key="btn_open_relevant_keywords"):
         _open_sidebar_panel("show_relevant_keywords")
@@ -1950,6 +2219,21 @@ with st.sidebar:
 
     state = get_state()
     status = state.get("status", "idle")
+
+    # Lets a search that finished while nobody was watching still get
+    # noticed: compares the orchestrator's own completion timestamp against
+    # the last one this browser session has already shown a toast for, so
+    # each completion is announced exactly once per session, not on every
+    # rerun. Auto-refreshing below is what makes that timestamp change
+    # visible without the user having to click anything themselves.
+    last_completed = state.get("last_search_completed_at")
+    if "last_seen_search_completion" not in st.session_state:
+        st.session_state.last_seen_search_completion = None
+    if last_completed and last_completed != st.session_state.last_seen_search_completion:
+        if st.session_state.last_seen_search_completion is not None:
+            st.toast("✅ Search complete — check New Tenders!", icon="✅")
+        st.session_state.last_seen_search_completion = last_completed
+
     status_colors = {
         "watching": "status-watching",
         "searching": "status-searching",
@@ -1963,6 +2247,24 @@ with st.sidebar:
         <span class='status-badge {css_class}'>● {status}</span>
     </div>
     """, unsafe_allow_html=True)
+
+    # While a search is actively running, quietly re-run this page every
+    # few seconds so the status badge and the toast above actually update
+    # without the user having to click anything — otherwise Streamlit only
+    # refreshes on the next manual interaction, and a search that finishes
+    # while the user is just sitting there watching would go unnoticed
+    # until they happened to click something. Keyed off search_in_progress
+    # rather than "status" — status flickers between "searching"/"watching"
+    # from one keyword to the next, so gating on it directly could land on
+    # a "watching" render mid-search and then never refresh again.
+    # Stops on its own once the search truly ends, so it isn't polling
+    # forever — search_in_progress is guaranteed to flip back to False even
+    # if the search hits an error. Uses streamlit_autorefresh (a soft
+    # rerun over Streamlit's own websocket) rather than a <meta refresh>
+    # tag — a meta refresh is a real browser navigation, which drops the
+    # session (and logs the user straight back out) on every tick.
+    if state.get("search_in_progress"):
+        st_autorefresh(interval=5000, key="search_progress_autorefresh")
 
     with st.container(key="sidebar_bottom_actions"):
         st.markdown("---")
@@ -1980,8 +2282,14 @@ with st.sidebar:
 # ── ADMIN FULL-SCREEN OVERRIDE ──────────────────────────────
 # Takes over the whole main area instead of the normal dashboard content
 # when open, same idea as the single-tender detail view further below.
-if st.session_state.show_admin:
+# Role is re-checked here too (not just at the sidebar button) so a
+# regular user can't reach it by fiddling with session state.
+if st.session_state.show_admin and st.session_state.user_role == "admin":
     render_admin_page()
+    st.stop()
+
+if st.session_state.show_create_user and st.session_state.user_role == "admin":
+    render_create_user_page()
     st.stop()
 
 if st.session_state.show_change_password:

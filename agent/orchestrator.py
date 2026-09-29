@@ -174,6 +174,14 @@ _state = {
     "last_search": None,
     "last_learn": None,
     "last_full_search_date": None,
+    "last_search_completed_at": None,
+    # True for the entire span of a full catalog search (every keyword/KPPP
+    # filter), unlike "status" above which flickers between "searching" and
+    # "watching" from one keyword to the next — the dashboard uses this one
+    # (not "status") to decide whether to keep auto-refreshing, since
+    # gating on the flickering value would let the page land on a
+    # "watching" render mid-search and then never refresh again.
+    "search_in_progress": False,
     "tenders_found_today": 0,
     "log": [],
     "running": False,
@@ -551,37 +559,45 @@ def _scheduled_search():
             log(f"🕒 Moved {moved} tender(s) to Expired (past their deadline)")
 
         log("⏰ Daily 2 AM scheduled search starting...")
-
-        if searches:
-            with _lock:
-                _state["status"] = "learning"
-
-            result = analyze_patterns()
-            summary = result.get("summary", "")
-            if summary:
-                log(f"📋 Pattern summary: {summary}")
-
-            queries = get_search_queries()
-            gem_keywords = [q["keyword"] for q in queries if q["portal"] == "GeM"][:10]
-            category = queries[0].get("category", "") if queries else ""
-
-            log(f"🚀 Running {len(gem_keywords)} scheduled GeM searches...")
-            with _lock:
-                _state["status"] = "searching"
-            _search_portal("GeM", gem_keywords, category, 15, respect_stop_flag=True)
-
-        if kppp_criteria_list:
-            log(f"🚀 Running {len(kppp_criteria_list)} scheduled KPPP searches...")
-            _run_kppp_criteria_search(kppp_criteria_list, respect_stop_flag=True)
-
-        log("🎯 Checking Relevant Tenders keywords against today's new tenders...")
-        run_relevant_keyword_matching(scope="incremental")
-
         with _lock:
-            _state["status"] = "watching"
-            _state["last_search"] = datetime.now().isoformat()
-            _state["last_full_search_date"] = datetime.now().date().isoformat()
-            _state["tenders_found_today"] = 0
+            _state["search_in_progress"] = True
+
+        try:
+            if searches:
+                with _lock:
+                    _state["status"] = "learning"
+
+                result = analyze_patterns()
+                summary = result.get("summary", "")
+                if summary:
+                    log(f"📋 Pattern summary: {summary}")
+
+                queries = get_search_queries()
+                gem_keywords = [q["keyword"] for q in queries if q["portal"] == "GeM"][:10]
+                category = queries[0].get("category", "") if queries else ""
+
+                log(f"🚀 Running {len(gem_keywords)} scheduled GeM searches...")
+                with _lock:
+                    _state["status"] = "searching"
+                _search_portal("GeM", gem_keywords, category, 15, respect_stop_flag=True)
+
+            if kppp_criteria_list:
+                log(f"🚀 Running {len(kppp_criteria_list)} scheduled KPPP searches...")
+                _run_kppp_criteria_search(kppp_criteria_list, respect_stop_flag=True)
+
+            log("🎯 Checking Relevant Tenders keywords against today's new tenders...")
+            run_relevant_keyword_matching(scope="incremental")
+        finally:
+            # In a `finally` for the same reason as _run_full_catalog_search
+            # — this flag must never get stuck True, or the dashboard would
+            # auto-refresh forever.
+            with _lock:
+                _state["status"] = "watching"
+                _state["last_search"] = datetime.now().isoformat()
+                _state["last_full_search_date"] = datetime.now().date().isoformat()
+                _state["last_search_completed_at"] = datetime.now().isoformat()
+                _state["tenders_found_today"] = 0
+                _state["search_in_progress"] = False
 
         log("✅ Daily scheduled search complete")
 
@@ -600,24 +616,34 @@ def _run_full_catalog_search():
     kppp_criteria_list = get_kppp_criteria_list()
     if not searches and not kppp_criteria_list:
         log("💡 No previous searches. Use search box to find tenders.")
+        with _lock:
+            _state["search_in_progress"] = False
         return
 
     log("🚀 Running full catalog search...")
-
-    if searches:
-        queries = get_search_queries()
-        gem_keywords = [q["keyword"] for q in queries if q["portal"] == "GeM"][:8]
-        category = queries[0].get("category", "") if queries else ""
-        _search_portal("GeM", gem_keywords, category, 15, respect_stop_flag=True)
-
-    if kppp_criteria_list:
-        _run_kppp_criteria_search(kppp_criteria_list, respect_stop_flag=True)
-
-    log("🎯 Checking Relevant Tenders keywords against today's new tenders...")
-    run_relevant_keyword_matching(scope="incremental")
-
     with _lock:
-        _state["last_full_search_date"] = datetime.now().date().isoformat()
+        _state["search_in_progress"] = True
+
+    try:
+        if searches:
+            queries = get_search_queries()
+            gem_keywords = [q["keyword"] for q in queries if q["portal"] == "GeM"][:8]
+            category = queries[0].get("category", "") if queries else ""
+            _search_portal("GeM", gem_keywords, category, 15, respect_stop_flag=True)
+
+        if kppp_criteria_list:
+            _run_kppp_criteria_search(kppp_criteria_list, respect_stop_flag=True)
+
+        log("🎯 Checking Relevant Tenders keywords against today's new tenders...")
+        run_relevant_keyword_matching(scope="incremental")
+    finally:
+        # In a `finally` so a crash anywhere above can't leave this stuck
+        # True forever — the dashboard auto-refreshes the page for as long
+        # as this stays True, so a stuck flag would mean it never stops.
+        with _lock:
+            _state["last_full_search_date"] = datetime.now().date().isoformat()
+            _state["last_search_completed_at"] = datetime.now().isoformat()
+            _state["search_in_progress"] = False
     log("✅ Full catalog search complete — check New Tenders!")
 
 def run_relevant_keyword_matching(scope: str = "incremental", keyword: str = None):
@@ -726,6 +752,13 @@ def start_agent():
     with _lock:
         _state["running"] = True
         _state["status"] = "watching"
+        # Set synchronously here (not just inside _run_full_catalog_search,
+        # which only flips it after its own 3s startup delay) so the very
+        # first rerun right after the Start Agent click already carries
+        # search_in_progress=True — otherwise the dashboard's auto-refresh
+        # meta tag wouldn't be in that first render, and with nothing else
+        # to trigger a later rerun, the page would never refresh itself.
+        _state["search_in_progress"] = True
 
     log("🤖 Tender Agent started")
 
