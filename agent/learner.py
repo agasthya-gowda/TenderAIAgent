@@ -198,11 +198,16 @@ def get_search_queries() -> list:
             # unconditionally, so e.g. a KPPP-only "camera" search quietly
             # re-ran on GeM too on every future Start Agent click.
             pattern_portal = pattern.get("portal") or "GeM"
-            for kw in keywords[:8]:
+            for idx, kw in enumerate(keywords[:8]):
                 queries.append({
                     "keyword": kw,
                     "portal": pattern_portal,
-                    "category": pattern["category"]
+                    "category": pattern["category"],
+                    # index 0 is always the literal keyword the CEO typed
+                    # (see expand_keyword_instantly: all_keywords = [keyword]
+                    # + expanded_keywords) — everything after it is an
+                    # AI-suggested synonym, not something the CEO searched.
+                    "is_primary": idx == 0,
                 })
         except Exception:
             pass

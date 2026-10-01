@@ -518,6 +518,18 @@ def _sync_portal_from_dropdown():
     st.session_state.portal_filter_display = label
 
 
+def _format_tender_price(numeric_value):
+    """Formats a raw rupee amount (from L2 document analysis) in
+    Lakh/Crore, the way these figures are normally written in Indian
+    tender documents — e.g. 373660000 -> "₹37.37 Cr"."""
+    amount = float(numeric_value)
+    if amount >= 1_00_00_000:
+        return f"₹{amount / 1_00_00_000:.2f} Cr"
+    if amount >= 1_00_000:
+        return f"₹{amount / 1_00_000:.2f} Lakhs"
+    return f"₹{amount:,.0f}"
+
+
 def fuzzy_filter_tenders(tenders, query, threshold=80):
     """Filter tenders by a substring/fuzzy match over the visible table columns.
 
@@ -2090,6 +2102,12 @@ if "show_change_password" not in st.session_state:
     st.session_state.show_change_password = False
 if "show_create_user" not in st.session_state:
     st.session_state.show_create_user = False
+if "portal_filter_display" not in st.session_state:
+    st.session_state.portal_filter_display = PORTAL_FILTER_DEFAULT
+if "portal_filter_dropdown" not in st.session_state:
+    st.session_state.portal_filter_dropdown = PORTAL_FILTER_DEFAULT
+if "portal_filter_value" not in st.session_state:
+    st.session_state.portal_filter_value = PORTAL_FILTER_MAP.get(PORTAL_FILTER_DEFAULT, "GeM")
 
 _SIDEBAR_PANEL_KEYS = [
     "show_admin", "show_relevant_keywords",
@@ -3211,7 +3229,6 @@ else:
                 st.segmented_control(
                     "Portal",
                     PORTAL_FILTER_OPTIONS,
-                    default=PORTAL_FILTER_DEFAULT,
                     key="portal_filter_display",
                     label_visibility="collapsed",
                     on_change=_sync_portal_from_pills,
@@ -3284,9 +3301,31 @@ else:
                 # scope overflow-x to just this box instead of the whole page;
                 # previously these were plain top-level elements, so scrolling
                 # the wide table on mobile dragged the entire page sideways too.
+                # Price only shows in the Relevant Tenders view — KPPP
+                # tenders often carry a real estimated value (GeM's don't,
+                # at L1 it's just "See bid document"), so this column is
+                # only meaningfully useful on this one filtered view rather
+                # than cluttering every tender list with mostly-blank cells.
+                # The list is always filtered to one portal at a time (the
+                # GeM/KPPP pill above), so this only needs the KPPP case —
+                # a GeM-filtered view has nothing to put in a Price column
+                # (GeM never exposes an amount at this stage), so the
+                # column is left out entirely rather than showing empty.
+                show_price = active == "relevant" and current_portal_filter == "KPPP"
+                col_widths = [0.5, 1.5, 2.1, 1.3, 1.6, 1.2, 1.2]
+                if show_price:
+                    col_widths.append(1.1)
+                col_widths += [0.8, 0.8, 0.8]
+
                 with st.container():
                     st.markdown('<div class="table-card-marker"></div>', unsafe_allow_html=True)
-                    h1, h2, h3, h4, h5, h6, h7, h8, h9, h10 = st.columns([0.5, 1.5, 2.1, 1.3, 1.6, 1.2, 1.2, 0.8, 0.8, 0.8])
+                    header_cols = st.columns(col_widths)
+                    h1, h2, h3, h4, h5, h6, h7 = header_cols[:7]
+                    h_rest = header_cols[7:]
+                    if show_price:
+                        h_price, h8, h9, h10 = h_rest
+                    else:
+                        h8, h9, h10 = h_rest
                     h1.markdown('<div class="tbl-header-row"></div><span class="th-cell">Sl No</span>', unsafe_allow_html=True)
                     h2.markdown('<span class="th-cell">Bid Number</span>', unsafe_allow_html=True)
                     h3.markdown('<span class="th-cell">Item Name</span>', unsafe_allow_html=True)
@@ -3295,6 +3334,8 @@ else:
                     h5.markdown(f'<span class="th-cell">{qty_col_label}</span>', unsafe_allow_html=True)
                     h6.markdown('<span class="th-cell">Start Date</span>', unsafe_allow_html=True)
                     h7.markdown('<span class="th-cell">End Date</span>', unsafe_allow_html=True)
+                    if show_price:
+                        h_price.markdown('<span class="th-cell">Price</span>', unsafe_allow_html=True)
                     h8.markdown("")
                     h9.markdown("")
                     h10.markdown("")
@@ -3317,8 +3358,42 @@ else:
                         end_date = tender.get("deadline", "N/A")
                         portal = tender.get("portal", "")
                         portal_chip_class = "portal-chip-kppp" if portal.upper() == "KPPP" else "portal-chip-gem"
+                        # Price only ever shown for KPPP rows — GeM doesn't
+                        # expose an amount at this stage (its "value" is
+                        # always just "See bid document"), so that's not
+                        # worth a column cell, only KPPP's real figure is.
+                        # Prefers bid_value_numeric (the real estimated
+                        # value, read out of the tender's own document by
+                        # Get Full Analysis) over the raw "value" field —
+                        # that one's only ever KPPP's own L1 search-result
+                        # figure, which is frequently blank/"Not available"
+                        # even when the document itself states a number.
+                        if portal.upper() == "KPPP":
+                            bid_value_numeric = tender.get("bid_value_numeric")
+                            emd_numeric = tender.get("emd_numeric")
+                            if bid_value_numeric:
+                                price = _format_tender_price(bid_value_numeric)
+                            elif emd_numeric:
+                                # Some documents (rate-contract/AMC style
+                                # tenders especially) never state an overall
+                                # estimated value at all, only an EMD amount
+                                # — still real, useful data, so it's shown
+                                # rather than "Not available", just labelled
+                                # so it isn't mistaken for the tender's
+                                # actual value.
+                                price = f"EMD {_format_tender_price(emd_numeric)}"
+                            else:
+                                price = tender.get("value") or "Not available"
+                        else:
+                            price = ""
 
-                        r1, r2, r3, r4, r5, r6, r7, r8, r9, r10 = st.columns([0.5, 1.5, 2.1, 1.3, 1.6, 1.2, 1.2, 0.8, 0.8, 0.8])
+                        row_cols = st.columns(col_widths)
+                        r1, r2, r3, r4, r5, r6, r7 = row_cols[:7]
+                        r_rest = row_cols[7:]
+                        if show_price:
+                            r_price, r8, r9, r10 = r_rest
+                        else:
+                            r8, r9, r10 = r_rest
                         r1.markdown(f'<div class="tbl-data-row"></div><span class="td-slno">{sl_no}</span>', unsafe_allow_html=True)
                         r2.markdown(
                             f'<div class="mono td-bid">{bid_number}</div>'
@@ -3340,6 +3415,8 @@ else:
                         r5.markdown(f'<span class="mono td-qty">{quantity}</span>', unsafe_allow_html=True)
                         r6.markdown(f'<span class="mono td-date">{start_date}</span>', unsafe_allow_html=True)
                         r7.markdown(f'<span class="mono enddate-chip">{end_date}</span>', unsafe_allow_html=True)
+                        if show_price:
+                            r_price.markdown(f'<span class="mono td-qty">{price or "—"}</span>', unsafe_allow_html=True)
                         with r8:
                             if st.button("View", key=f"view_{tid}_{section}"):
                                 st.session_state.viewing_tender_id = tid

@@ -279,7 +279,7 @@ def _instant_expand_and_search(keyword: str, portal: str):
         with _lock:
             _state["status"] = "watching"
 
-def _search_portal(portal: str, keywords: list, category: str, max_pages: int = 5, respect_stop_flag: bool = False, primary_keyword: str = None):
+def _search_portal(portal: str, keywords: list, category: str, max_pages: int = 5, respect_stop_flag: bool = False, primary_keyword: str = None, primary_keywords: set = None):
     # GeM-only: KPPP has no keyword search, so it's handled separately by
     # on_kppp_search / _run_kppp_criteria_search using KPPP's real filter
     # fields instead of a keyword list.
@@ -304,17 +304,35 @@ def _search_portal(portal: str, keywords: list, category: str, max_pages: int = 
                 log(f"🛑 [{portal}] Stop requested — ending search early")
                 break
             try:
-                is_primary = primary_keyword is not None and keyword.strip().lower() == primary_keyword.strip().lower()
-                # Start Agent / 2 AM batch runs (primary_keyword is None
-                # here) give each of their keywords one full/unlimited pass
-                # too — but only the very first time that keyword is ever
-                # run through a batch cycle. Every batch run after that for
-                # the same keyword instead searches only for tenders whose
-                # Start Date is newer than the last time it was searched
-                # (see search_gem's stop_before_date) — not a re-walk of
-                # every page, and not an arbitrary fixed page count either.
+                if primary_keywords is not None:
+                    # Start Agent / 2 AM batch runs: primary_keywords is the
+                    # set of literal keywords the CEO actually typed (index 0
+                    # of each learned pattern — see get_search_queries). Those
+                    # skip the AI relevance filter below just like a manual
+                    # search does, so a real GeM hit for the CEO's own
+                    # keyword can never be silently dropped by our own AI's
+                    # disagreement with GeM's match. AI-suggested synonyms
+                    # further down the same pattern still get filtered.
+                    is_primary = keyword.strip().lower() in primary_keywords
+                else:
+                    is_primary = primary_keyword is not None and keyword.strip().lower() == primary_keyword.strip().lower()
+                # Start Agent / 2 AM batch runs give each of their keywords
+                # one full/unlimited pass too — but only the very first time
+                # that keyword is ever run through a batch cycle. Every batch
+                # run after that for the same keyword instead searches only
+                # for tenders whose Start Date is newer than the last time it
+                # was searched (see search_gem's stop_before_date) — not a
+                # re-walk of every page, and not an arbitrary fixed page
+                # count either.
                 is_first_batch_pass = primary_keyword is None and not has_had_full_gem_search(keyword)
-                do_full_pagination = is_primary or is_first_batch_pass
+                # Full pagination: a manual single-keyword search always
+                # walks every page; a batch run (Start Agent / 2 AM) only
+                # does that on a keyword's very first pass, then relies on
+                # stop_before_date for incremental catch-up afterwards —
+                # this is unchanged by whether the keyword is the CEO's
+                # literal term or an AI synonym (that's a separate decision,
+                # just below, about the AI relevance filter).
+                do_full_pagination = (is_primary and primary_keywords is None) or is_first_batch_pass
                 # The literal keyword the CEO typed gets every page GeM has
                 # (None = unlimited, see search_gem) so the count matches
                 # GeM's own site exactly; AI-expanded synonyms stay capped —
@@ -574,12 +592,16 @@ def _scheduled_search():
 
                 queries = get_search_queries()
                 gem_keywords = [q["keyword"] for q in queries if q["portal"] == "GeM"][:10]
+                gem_primary_keywords = {
+                    q["keyword"].strip().lower() for q in queries
+                    if q["portal"] == "GeM" and q.get("is_primary")
+                }
                 category = queries[0].get("category", "") if queries else ""
 
                 log(f"🚀 Running {len(gem_keywords)} scheduled GeM searches...")
                 with _lock:
                     _state["status"] = "searching"
-                _search_portal("GeM", gem_keywords, category, 15, respect_stop_flag=True)
+                _search_portal("GeM", gem_keywords, category, 15, respect_stop_flag=True, primary_keywords=gem_primary_keywords)
 
             if kppp_criteria_list:
                 log(f"🚀 Running {len(kppp_criteria_list)} scheduled KPPP searches...")
@@ -628,8 +650,12 @@ def _run_full_catalog_search():
         if searches:
             queries = get_search_queries()
             gem_keywords = [q["keyword"] for q in queries if q["portal"] == "GeM"][:8]
+            gem_primary_keywords = {
+                q["keyword"].strip().lower() for q in queries
+                if q["portal"] == "GeM" and q.get("is_primary")
+            }
             category = queries[0].get("category", "") if queries else ""
-            _search_portal("GeM", gem_keywords, category, 15, respect_stop_flag=True)
+            _search_portal("GeM", gem_keywords, category, 15, respect_stop_flag=True, primary_keywords=gem_primary_keywords)
 
         if kppp_criteria_list:
             _run_kppp_criteria_search(kppp_criteria_list, respect_stop_flag=True)
