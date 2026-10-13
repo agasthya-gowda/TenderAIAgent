@@ -40,17 +40,16 @@ def main():
 
     # Streamlit opens browser automatically, no need to do it here
 
-    # Start Streamlit
+    # Start Streamlit. Theme now lives in .streamlit/config.toml instead of
+    # being passed here as flags — that way it applies no matter how
+    # Streamlit gets launched (this local launcher, or the server's own
+    # `streamlit run dashboard/app.py` directly), instead of only here.
     subprocess.run([
         sys.executable, "-m", "streamlit", "run",
         dashboard_path,
         "--server.port", "8501",
         "--server.headless", "true",
         "--browser.gatherUsageStats", "false",
-        "--theme.primaryColor", "#8E44AD",
-        "--theme.backgroundColor", "#F8F9FA",
-        "--theme.secondaryBackgroundColor", "#FFFFFF",
-        "--theme.textColor", "#2C3E50"
     ])
 
 if __name__ == "__main__":

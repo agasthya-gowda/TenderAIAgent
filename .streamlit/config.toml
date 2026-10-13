@@ -1,2 +1,15 @@
 [server]
 enableStaticServing = true
+
+# Previously only set via command-line flags in main.py, which only applies
+# when launched that way (a local double-click/desktop run) — the server's
+# systemd service runs `streamlit run dashboard/app.py` directly instead
+# (main.py is a local-only launcher, not meant for a server), so those
+# flags never reached it there, and the server fell back to Streamlit's own
+# default theme instead of matching the local one. Putting it here applies
+# it automatically regardless of how Streamlit gets started.
+[theme]
+primaryColor = "#8E44AD"
+backgroundColor = "#F8F9FA"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#2C3E50"
