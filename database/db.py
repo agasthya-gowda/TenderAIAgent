@@ -342,6 +342,110 @@ def init_db():
                 (seed_user, _hash_password(seed_pass))
             )
 
+    # Chatbot history — one row per conversation, per user, plus its messages.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS chat_sessions (
+            id SERIAL PRIMARY KEY,
+            username TEXT NOT NULL,
+            title TEXT NOT NULL DEFAULT 'New chat',
+            created_at TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS'),
+            updated_at TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS')
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id SERIAL PRIMARY KEY,
+            session_id INTEGER NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS')
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_chat_sessions_user ON chat_sessions(username, updated_at)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, id)")
+
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Chatbot history (see the floating chat panel in dashboard/app.py). Every
+# lookup is scoped to the username so one user can never read or change
+# another user's conversations.
+# ---------------------------------------------------------------------------
+
+def create_chat_session(username: str, title: str = "New chat") -> int:
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO chat_sessions (username, title) VALUES (?, ?) RETURNING id",
+        (username, title)
+    )
+    sid = c.fetchone()["id"]
+    conn.commit()
+    conn.close()
+    return sid
+
+
+def list_chat_sessions(username: str):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT id, title, created_at, updated_at FROM chat_sessions "
+        "WHERE username = ? ORDER BY updated_at DESC, id DESC",
+        (username,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_chat_messages(session_id: int, username: str):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT m.role, m.content FROM chat_messages m "
+        "JOIN chat_sessions s ON s.id = m.session_id "
+        "WHERE m.session_id = ? AND s.username = ? ORDER BY m.id",
+        (session_id, username)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def add_chat_message(session_id: int, username: str, role: str, content: str):
+    conn = get_conn()
+    owner = conn.execute(
+        "SELECT 1 FROM chat_sessions WHERE id = ? AND username = ?",
+        (session_id, username)
+    ).fetchone()
+    if owner:
+        conn.execute(
+            "INSERT INTO chat_messages (session_id, role, content) VALUES (?, ?, ?)",
+            (session_id, role, content)
+        )
+        conn.execute(
+            "UPDATE chat_sessions SET updated_at = to_char(now(), 'YYYY-MM-DD HH24:MI:SS') "
+            "WHERE id = ?",
+            (session_id,)
+        )
+        conn.commit()
+    conn.close()
+
+
+def rename_chat_session(session_id: int, username: str, title: str):
+    conn = get_conn()
+    conn.execute(
+        "UPDATE chat_sessions SET title = ? WHERE id = ? AND username = ?",
+        (title, session_id, username)
+    )
+    conn.commit()
+    conn.close()
+
+
+def delete_chat_session(session_id: int, username: str):
+    conn = get_conn()
+    conn.execute(
+        "DELETE FROM chat_sessions WHERE id = ? AND username = ?",
+        (session_id, username)
+    )
     conn.commit()
     conn.close()
 
@@ -953,6 +1057,96 @@ def get_stats():
         "ceo_searches": searches,
         "patterns_learned": patterns
     }
+
+
+# ---------------------------------------------------------------------------
+# Read-only lookups for the AI chatbot's tool-calling (see agent/chatbot.py)
+# — deliberately narrow, scoped queries rather than raw SQL access, so the
+# LLM can answer any question about the data without ever being able to
+# write/modify/delete anything.
+# ---------------------------------------------------------------------------
+
+def get_tenders_by_date(date_str: str, portal: str = None):
+    """Tenders the agent found/added on a given day (found_at date), not
+    the tender's own start/deadline date — matches how a CEO naturally
+    asks "what did I get on this date"."""
+    conn = get_conn()
+    if portal:
+        rows = conn.execute(
+            "SELECT * FROM tenders WHERE LEFT(found_at, 10) = ? AND portal = ? "
+            "ORDER BY found_at DESC",
+            (date_str, portal)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM tenders WHERE LEFT(found_at, 10) = ? ORDER BY found_at DESC",
+            (date_str,)
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def search_tenders_by_text(keywords=None, portal: str = None, limit: int = 30,
+                           date_from: str = None, date_to: str = None,
+                           status: str = None):
+    """Chatbot search. `keywords` is one string or a list of alternatives:
+    a tender matches if ANY alternative matches, and an alternative matches
+    when ALL of its words appear somewhere in the title/department/bid
+    number — so "body cam" finds "Body Worn Camera", and the model can pass
+    several synonyms in one call. Optional filters: portal, found-on date
+    range (found_at, YYYY-MM-DD) and status ('active' = not expired).
+    Returns (rows, total_matches) — total is the full count, rows are capped
+    at `limit`."""
+    if isinstance(keywords, str):
+        keywords = [keywords]
+    alternatives = []
+    for k in (keywords or []):
+        words = [w for w in str(k).split() if w]
+        if words:
+            alternatives.append(words)
+
+    where, params = [], []
+    if alternatives:
+        or_parts = []
+        for words in alternatives:
+            and_parts = []
+            for w in words:
+                and_parts.append("(title ILIKE ? OR department ILIKE ? OR tender_number ILIKE ?)")
+                params.extend([f"%{w}%"] * 3)
+            or_parts.append("(" + " AND ".join(and_parts) + ")")
+        where.append("(" + " OR ".join(or_parts) + ")")
+    if portal:
+        where.append("portal = ?")
+        params.append(portal)
+    if date_from:
+        where.append("LEFT(found_at, 10) >= ?")
+        params.append(date_from)
+    if date_to:
+        where.append("LEFT(found_at, 10) <= ?")
+        params.append(date_to)
+    if status == "active":
+        where.append("status != 'expired'")
+    elif status in ("new", "saved", "expired"):
+        where.append("status = ?")
+        params.append(status)
+    clause = (" WHERE " + " AND ".join(where)) if where else ""
+
+    conn = get_conn()
+    total = conn.execute("SELECT COUNT(*) AS c FROM tenders" + clause, tuple(params)).fetchone()["c"]
+    rows = conn.execute(
+        "SELECT * FROM tenders" + clause + " ORDER BY found_at DESC LIMIT ?",
+        tuple(params) + (limit,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows], total
+
+def get_tender_by_number(tender_number: str):
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT * FROM tenders WHERE tender_number = ? LIMIT 1",
+        (tender_number,)
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
 
 
 # ---------------------------------------------------------------------------

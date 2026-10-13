@@ -2293,6 +2293,12 @@ with st.sidebar:
 
         if st.button("🚪 Log out", use_container_width=True, key="btn_logout"):
             st.session_state.authenticated = False
+            # Chat history is per-user and loaded from the DB — clear the
+            # in-memory copy so the next login never sees this user's chat.
+            for _k in ("chatbot_open", "chatbot_messages", "chatbot_pending",
+                       "chatbot_fullscreen", "chatbot_session_id",
+                       "chatbot_sidebar_open", "chatbot_menu_for"):
+                st.session_state.pop(_k, None)
             st.rerun()
 
 
@@ -3451,3 +3457,1110 @@ else:
                     if st.button("Next ▶", disabled=st.session_state.page_num >= total_pages, key="next_btn2"):
                         st.session_state.page_num += 1
                         st.rerun()
+
+
+# ── FLOATING AI CHATBOT ──────────────────────────────────────────────────
+# A bottom-left floating "Chat here" tab that opens a compact chat panel
+# (DeepSeek tool-calling against the read-only DB lookups in database/db.py
+# — see agent/chatbot.py). Reachable from every dashboard view since it's
+# rendered at the very end of the script, outside any section branch.
+# Wrapped in st.fragment: clicks inside the chat (send, ☰, fullscreen, picking
+# a chat…) rerun only this function instead of the whole 4000-line dashboard
+# script, which is what made every chat click take ~1s. Every st.rerun() in
+# here uses scope="fragment" for the same reason.
+@st.fragment
+def _chatbot_widget():
+    if "chatbot_open" not in st.session_state:
+        st.session_state.chatbot_open = False
+    if "chatbot_messages" not in st.session_state:
+        st.session_state.chatbot_messages = []
+    if "chatbot_pending" not in st.session_state:
+        st.session_state.chatbot_pending = False
+    if "chatbot_fullscreen" not in st.session_state:
+        st.session_state.chatbot_fullscreen = False
+    if "chatbot_session_id" not in st.session_state:
+        st.session_state.chatbot_session_id = None
+    if "chatbot_sidebar_open" not in st.session_state:
+        st.session_state.chatbot_sidebar_open = False
+    if "chatbot_menu_for" not in st.session_state:
+        st.session_state.chatbot_menu_for = None
+
+    # History sidebar: slides in/out via transform (the element is always
+    # rendered, so its CSS transition actually animates). In the small panel it
+    # overlays the chat like a drawer; in fullscreen there's room, so it pushes
+    # the chat over instead.
+    SIDEBAR_WIDTH = 270
+    if st.session_state.chatbot_sidebar_open:
+        sb_transform = "translateX(0)"
+        sb_visibility = "visible"
+        sb_vis_transition = "visibility 0s linear 0s"
+    else:
+        sb_transform = "translateX(-100%)"
+        sb_visibility = "hidden"
+        sb_vis_transition = "visibility 0s linear 0.25s"
+    if st.session_state.chatbot_sidebar_open and st.session_state.chatbot_fullscreen:
+        panel_pad_left = f"{SIDEBAR_WIDTH + 14}px"
+        # Chat is already pushed to the right of the sidebar, so the title
+        # clears the top-left ☰ button without extra indent.
+        title_pad_left = "0px"
+    else:
+        panel_pad_left = "14px"
+        # Leaves room for the ☰ button that sits in the panel's top-left corner.
+        title_pad_left = "44px"
+
+    if st.session_state.chatbot_open:
+        if st.session_state.chatbot_fullscreen:
+            panel_width = "100vw"
+            panel_height = "100vh"
+            panel_inset = "0px"
+            panel_radius = "0px"
+            # Fullscreen is wide enough that edge-to-edge text reads badly
+            # (ChatGPT-style apps cap this too) — center a fixed-width column
+            # instead, same as the reference screenshot. The normal small
+            # panel is already narrow, so it stays unconstrained there.
+            content_max_width = "760px"
+            msg_font_size = "16px"
+            msg_code_font_size = "14px"
+        else:
+            panel_width = "50vw"
+            panel_height = "82vh"
+            panel_inset = "24px"
+            panel_radius = "16px"
+            content_max_width = "100%"
+            msg_font_size = "13px"
+            msg_code_font_size = "12px"
+    else:
+        panel_width = panel_height = "0"
+        panel_inset = "24px"
+        panel_radius = "16px"
+        content_max_width = "100%"
+        msg_font_size = "13px"
+        msg_code_font_size = "12px"
+
+    st.markdown(
+        f"""
+        <style>
+        .st-key-chatbot_toggle_btn {{
+            position: fixed !important;
+            right: 24px !important;
+            bottom: 24px !important;
+            /* Streamlit's own sidebar sits at z-index: 999991, so anything
+               meant to float above the whole app (not just the main content
+               area) has to clear that, not just the page's ordinary content. */
+            z-index: 2000000 !important;
+            width: auto !important;
+        }}
+        .st-key-chatbot_toggle_btn button {{
+            border-radius: 999px !important;
+            padding: 10px 22px !important;
+            background: #000000 !important;
+            color: #FFFFFF !important;
+            border: none !important;
+            box-shadow: 0 6px 18px rgba(0,0,0,0.45) !important;
+            font-weight: 600 !important;
+        }}
+        /* Full-viewport click-catcher behind the panel — clicking anywhere on
+           it (i.e. outside the panel) closes the chat, the same way a modal's
+           backdrop click normally would. */
+        .st-key-chatbot_overlay {{
+            position: fixed !important;
+            inset: 0 !important;
+            z-index: 1999998 !important;
+        }}
+        .st-key-chatbot_overlay button {{
+            width: 100vw !important;
+            height: 100vh !important;
+            background: transparent !important;
+            border: none !important;
+            cursor: default !important;
+        }}
+        .st-key-chatbot_panel {{
+            position: fixed !important;
+            right: {panel_inset} !important;
+            bottom: {panel_inset} !important;
+            z-index: 1999999 !important;
+            width: {panel_width} !important;
+            height: {panel_height} !important;
+            background: #000000 !important;
+            border-radius: {panel_radius} !important;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3) !important;
+            overflow: hidden !important;
+            display: flex !important;
+            flex-direction: column !important;
+            padding: 14px 14px 14px {panel_pad_left} !important;
+            transition: width 0.15s ease, height 0.15s ease, padding-left 0.25s ease;
+        }}
+        /* History sidebar (absolute inside the fixed panel, so it sits over the
+           panel's left edge regardless of the panel's padding). */
+        .st-key-chatbot_panel > [data-testid="stLayoutWrapper"]:has(.st-key-chatbot_history) {{
+            height: 0 !important;
+            margin-bottom: -1rem !important;
+            overflow: visible !important;
+        }}
+        .st-key-chatbot_panel .st-key-chatbot_history {{
+            position: absolute !important;
+            top: 0 !important;
+            left: 0 !important;
+            bottom: 0 !important;
+            width: {SIDEBAR_WIDTH}px !important;
+            z-index: 5 !important;
+            background: #0B0B0B !important;
+            border-right: 1px solid #262626 !important;
+            padding: 58px 10px 14px 10px !important;
+            overflow-y: auto !important;
+            overflow-x: hidden !important;
+            transform: {sb_transform} !important;
+            visibility: {sb_visibility} !important;
+            transition: transform 0.25s ease, {sb_vis_transition} !important;
+            gap: 4px !important;
+        }}
+        .st-key-chatbot_history button {{
+            background: transparent !important;
+            color: #E5E5E5 !important;
+            border: none !important;
+            border-radius: 8px !important;
+            justify-content: flex-start !important;
+            text-align: left !important;
+            padding: 6px 10px !important;
+            min-height: 34px !important;
+            font-size: 13px !important;
+            box-shadow: none !important;
+        }}
+        .st-key-chatbot_history button:hover {{
+            background: #1F1F1F !important;
+        }}
+        .st-key-chatbot_history button p {{
+            margin: 0 !important;
+            white-space: nowrap !important;
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
+        }}
+        .st-key-chatbot_history .st-key-chatbot_new_chat button {{
+            border: 1px solid #333333 !important;
+            font-weight: 600 !important;
+            margin-bottom: 6px !important;
+        }}
+        .st-key-chatbot_history [class*="st-key-chatbot_active_"] button {{
+            background: #262626 !important;
+        }}
+        .st-key-chatbot_history [data-testid="stMarkdown"] > div {{
+            display: block !important;
+        }}
+        /* Streamlit's per-element wrapper reported a height (~14px) shorter than
+           the label's own padded box (~30px), so the next row painted over the
+           label's lower half. A min-height gives the wrapper the room it needs. */
+        .st-key-chatbot_history [data-testid="stElementContainer"]:has(.chatbot-history-group) {{
+            min-height: 30px !important;
+        }}
+        .chatbot-history-group {{
+            color: #8A8A8A;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            padding: 10px 10px 2px 10px;
+        }}
+        /* The "..." menu button only shows while hovering its chat row (or
+           while that row's menu is open). */
+        .st-key-chatbot_history [class*="st-key-chatbot_dots_"] {{
+            opacity: 0;
+            transition: opacity 0.15s ease;
+        }}
+        .st-key-chatbot_history [class*="st-key-chatbot_row_"]:hover [class*="st-key-chatbot_dots_"],
+        .st-key-chatbot_history [class*="st-key-chatbot_dots_open_"] {{
+            opacity: 1;
+        }}
+        .st-key-chatbot_history [class*="st-key-chatbot_row_"] [data-testid="stHorizontalBlock"] {{
+            gap: 2px !important;
+            align-items: center !important;
+            flex-wrap: nowrap !important;
+        }}
+        .st-key-chatbot_history input {{
+            background: #1A1A1A !important;
+            color: #FFFFFF !important;
+            border: 1px solid #333333 !important;
+            font-size: 13px !important;
+        }}
+        .st-key-chatbot_history [class*="st-key-chatbot_menu_delete_"] button {{
+            color: #F87171 !important;
+        }}
+        .chatbot-header {{
+            padding-left: {title_pad_left};
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-weight: 700;
+            color: #FFFFFF !important;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #333333;
+            margin-bottom: 8px;
+            flex-shrink: 0;
+        }}
+        .st-key-chatbot_panel > [data-testid="stLayoutWrapper"]:has(.st-key-chatbot_sb_dismiss) {{
+            height: 0 !important;
+            margin-bottom: -1rem !important;
+            overflow: visible !important;
+        }}
+        /* Small-panel only: the history sidebar is a drawer over the chat, so a
+           transparent layer over the rest of the panel turns "click outside the
+           sidebar" into "close it". It sits under the header buttons (z-index 10)
+           and over the messages/input. */
+        .st-key-chatbot_panel .st-key-chatbot_sb_dismiss {{
+            position: absolute !important;
+            top: 0 !important;
+            bottom: 0 !important;
+            left: {SIDEBAR_WIDTH}px !important;
+            right: 0 !important;
+            width: auto !important;
+            z-index: 4 !important;
+        }}
+        /* Streamlit's element wrapper is position:relative with ~0 size, which
+           the button would otherwise size itself against. */
+        .st-key-chatbot_panel .st-key-chatbot_sb_dismiss [data-testid="stElementContainer"],
+        .st-key-chatbot_panel .st-key-chatbot_sb_dismiss [data-testid="stButton"] {{
+            position: static !important;
+        }}
+        .st-key-chatbot_panel .st-key-chatbot_sb_dismiss button {{
+            position: absolute !important;
+            inset: 0 !important;
+            width: 100% !important;
+            height: 100% !important;
+            background: transparent !important;
+            border: none !important;
+            box-shadow: none !important;
+            cursor: default !important;
+        }}
+        .st-key-chatbot_panel > [data-testid="stLayoutWrapper"]:has(.st-key-chatbot_header_left) {{
+            height: 0 !important;
+            margin-bottom: -1rem !important;
+            overflow: visible !important;
+        }}
+        .st-key-chatbot_panel .st-key-chatbot_header_left {{
+            width: auto !important;
+            position: absolute !important;
+            top: 10px !important;
+            left: 10px !important;
+            z-index: 10 !important;
+        }}
+        .st-key-chatbot_panel .st-key-chatbot_header_left button {{
+            padding: 0 !important;
+            width: 32px !important;
+            height: 32px !important;
+            min-height: 32px !important;
+            line-height: 32px !important;
+            font-size: 14px !important;
+            border-radius: 0 !important;
+            border: none !important;
+        }}
+        .st-key-chatbot_panel .st-key-chatbot_header_btns {{
+            width: auto !important;
+            position: absolute !important;
+            top: 10px !important;
+            right: 10px !important;
+            z-index: 10 !important;
+        }}
+        .st-key-chatbot_panel .st-key-chatbot_header_btns [data-testid="stHorizontalBlock"] {{
+            gap: 6px !important;
+        }}
+        .st-key-chatbot_panel .st-key-chatbot_header_btns button {{
+            padding: 0 !important;
+            width: 32px !important;
+            height: 32px !important;
+            min-height: 32px !important;
+            line-height: 32px !important;
+            font-size: 14px !important;
+            border-radius: 0 !important;
+            border: none !important;
+        }}
+        .st-key-chatbot_panel .st-key-chatbot_history_btn button,
+        .st-key-chatbot_panel .st-key-chatbot_fullscreen_btn button {{
+            background: #000000 !important;
+            color: #FFFFFF !important;
+            border: 1px solid #555555 !important;
+        }}
+        .st-key-chatbot_panel .st-key-chatbot_close_btn button {{
+            background: #DC2626 !important;
+            color: #FFFFFF !important;
+        }}
+        /* Streamlit wraps every element (including st.container(key=...)) in
+           its own stLayoutWrapper div that only auto-sizes to content by
+           default — so flex:1 on the messages container itself did nothing
+           until its own wrapper was told to grow too. Without this, the input
+           bar sat right under the empty message list instead of pinned to the
+           panel's bottom edge, leaving a dead gap below it. */
+        .st-key-chatbot_panel > [data-testid="stLayoutWrapper"]:has(.st-key-chatbot_messages_container) {{
+            flex: 1 1 auto !important;
+            min-height: 0 !important;
+            overflow: hidden !important;
+        }}
+        .st-key-chatbot_messages_container {{
+            flex: 1 1 auto !important;
+            min-height: 0 !important;
+            overflow-y: auto !important;
+            display: flex !important;
+            flex-direction: column !important;
+            gap: 36px !important;
+            padding-right: 4px !important;
+            margin-bottom: 8px !important;
+            max-width: {content_max_width} !important;
+            width: 100% !important;
+            margin-left: auto !important;
+            margin-right: auto !important;
+        }}
+        /* Each message is its own st.container(key=...) inside the flex column
+           above — real st.markdown() renders its text so bold text and bullets
+           work, and a tiny marker div (see Python below) lets this CSS tell a
+           user bubble from a bot bubble via :has(), the same marker-div +
+           :has() technique already used for the sticky stats row higher up
+           this file. (A literal asterisk-slash earlier in this comment once
+           closed it prematurely and silently dropped the next CSS rule —
+           watch for that if editing this comment again.) */
+        /* User's own messages get a blue bubble (per reference screenshot);
+           the assistant's replies stay plain text, right/left aligned. */
+        .st-key-chatbot_messages_container [data-testid="stVerticalBlockBorderWrapper"]:has(.chatbot-msg-user-marker),
+        .st-key-chatbot_messages_container [data-testid="stVerticalBlock"]:has(> div .chatbot-msg-user-marker) {{
+            align-self: flex-end !important;
+            max-width: 92% !important;
+            width: fit-content !important;
+            gap: 0 !important;
+        }}
+        .st-key-chatbot_messages_container [data-testid="stVerticalBlockBorderWrapper"]:has(.chatbot-msg-bot-marker),
+        .st-key-chatbot_messages_container [data-testid="stVerticalBlock"]:has(> div .chatbot-msg-bot-marker) {{
+            align-self: flex-start !important;
+            max-width: 92% !important;
+            width: fit-content !important;
+            gap: 0 !important;
+        }}
+        /* Each message's text sits inside Streamlit's own stMarkdown wrapper,
+           which renders as display:flex + align-items:center — that
+           combination was collapsing the wrapper's own height down to a few
+           px (its one child's real height, ~21px, never got passed up),
+           clipping the bottom half of every message's text. Forcing it back
+           to plain block flow sizes it to its content normally, like any
+           other div. */
+        .st-key-chatbot_messages_container [data-testid="stMarkdown"] > div {{
+            display: block !important;
+        }}
+        /* The bubble's background + rounded corners go on stMarkdownContainer
+           (one level deeper than the div the display:block fix above targets)
+           rather than on that div itself. That div's own display just changed
+           (flex -> block, via the fix above) — painting a border-radius
+           background on an element whose size changes post-mount hit a real
+           Chromium rendering bug where the rounded background stayed painted
+           at the old, collapsed size while the text sat partly outside it.
+           stMarkdownContainer's size was always correct from its first paint
+           (its display never changes), so painting the bubble chrome here
+           instead sidesteps the bug entirely. Confirmed live in devtools:
+           moving just these three properties down one level fixed it, nothing
+           else needed to change. */
+        .st-key-chatbot_messages_container [data-testid="stVerticalBlock"]:has(> div .chatbot-msg-user-marker) [data-testid="stMarkdownContainer"]:not(:has(.chatbot-msg-user-marker)) {{
+            background: #2A4D8F !important;
+            color: #FFFFFF !important;
+            padding: 12px 20px !important;
+            /* A fixed radius rather than 999px (full pill) — a pill radius
+               scales with the bubble's own height, so once a message wraps
+               onto several lines the corners curve in far enough to clip the
+               text itself. */
+            border-radius: 20px !important;
+            line-height: 1.5 !important;
+        }}
+        .st-key-chatbot_messages_container [data-testid="stVerticalBlockBorderWrapper"]:has(.chatbot-msg-user-marker) p,
+        .st-key-chatbot_messages_container [data-testid="stVerticalBlock"]:has(> div .chatbot-msg-user-marker) p {{
+            color: #FFFFFF !important;
+            margin: 0 !important;
+            font-size: {msg_font_size} !important;
+            line-height: 1.5 !important;
+            text-align: left !important;
+        }}
+        .st-key-chatbot_messages_container [data-testid="stVerticalBlockBorderWrapper"]:has(.chatbot-msg-bot-marker) p,
+        .st-key-chatbot_messages_container [data-testid="stVerticalBlock"]:has(> div .chatbot-msg-bot-marker) p,
+        .st-key-chatbot_messages_container [data-testid="stVerticalBlockBorderWrapper"]:has(.chatbot-msg-bot-marker) li,
+        .st-key-chatbot_messages_container [data-testid="stVerticalBlock"]:has(> div .chatbot-msg-bot-marker) li {{
+            color: #FFFFFF !important;
+            font-size: {msg_font_size} !important;
+            margin: 2px 0 !important;
+        }}
+        /* Markdown headings in replies defaulted to the app's dark text colour
+           (invisible on this black panel) and were far too large for a chat
+           bubble — make them white and just slightly bigger than body text. */
+        .st-key-chatbot_messages_container [data-testid="stVerticalBlock"]:has(> div .chatbot-msg-bot-marker) h1,
+        .st-key-chatbot_messages_container [data-testid="stVerticalBlock"]:has(> div .chatbot-msg-bot-marker) h2,
+        .st-key-chatbot_messages_container [data-testid="stVerticalBlock"]:has(> div .chatbot-msg-bot-marker) h3,
+        .st-key-chatbot_messages_container [data-testid="stVerticalBlock"]:has(> div .chatbot-msg-bot-marker) h4,
+        .st-key-chatbot_messages_container [data-testid="stVerticalBlock"]:has(> div .chatbot-msg-bot-marker) h5,
+        .st-key-chatbot_messages_container [data-testid="stVerticalBlock"]:has(> div .chatbot-msg-bot-marker) h6 {{
+            color: #FFFFFF !important;
+            font-size: calc({msg_font_size} + 3px) !important;
+            font-weight: 700 !important;
+            line-height: 1.35 !important;
+            margin: 10px 0 4px 0 !important;
+            padding: 0 !important;
+        }}
+        .st-key-chatbot_messages_container [data-testid="stVerticalBlock"]:has(> div .chatbot-msg-bot-marker) a {{
+            color: #93C5FD !important;
+        }}
+        .st-key-chatbot_messages_container [data-testid="stVerticalBlock"]:has(> div .chatbot-msg-bot-marker) th,
+        .st-key-chatbot_messages_container [data-testid="stVerticalBlock"]:has(> div .chatbot-msg-bot-marker) td {{
+            color: #FFFFFF !important;
+            border-color: #333333 !important;
+            font-size: {msg_font_size} !important;
+        }}
+        /* Bid numbers come back from the model wrapped in markdown backticks
+           (`GEM/2026/B/...`), rendered as <code> — Streamlit's default code
+           styling is a dim green on dark gray, which all but disappears
+           against this panel's black background. */
+        .st-key-chatbot_messages_container [data-testid="stVerticalBlock"]:has(> div .chatbot-msg-bot-marker) code {{
+            background: #2D2D2D !important;
+            color: #93C5FD !important;
+            padding: 2px 6px !important;
+            border-radius: 4px !important;
+            font-size: {msg_code_font_size} !important;
+        }}
+        .chatbot-empty-hint {{
+            color: #94A3B8;
+            font-size: 13px;
+            text-align: center;
+            margin-top: 20px;
+        }}
+        /* "View all N tenders" / "Hide tenders" expand button under a bot
+           reply — a small outlined pill rather than Streamlit's default
+           full-width button, so it reads as a secondary action under the
+           message instead of competing with it. */
+        .st-key-chatbot_messages_container div[data-testid="stButton"] button {{
+            background: transparent !important;
+            color: #93C5FD !important;
+            border: 1px solid #3A3A3A !important;
+            border-radius: 999px !important;
+            padding: 2px 14px !important;
+            font-size: 12px !important;
+            width: auto !important;
+            min-height: 0 !important;
+            margin: 4px 0 2px 0 !important;
+        }}
+        .st-key-chatbot_messages_container div[data-testid="stButton"] button:hover {{
+            background: #2D2D2D !important;
+            border-color: #525252 !important;
+        }}
+        .st-key-chatbot_messages_container [data-testid="stVerticalBlock"]:has(> div .chatbot-msg-bot-marker) {{
+            align-items: flex-start !important;
+        }}
+        /* ChatGPT-style pill input bar — st.form doesn't get a CSS key class
+           of its own (only widgets like st.container do), so this targets the
+           one stForm inside the panel directly via data-testid instead. */
+        .st-key-chatbot_panel [data-testid="stForm"] {{
+            background: #414141 !important;
+            border-radius: 28px !important;
+            padding: 4px 6px 4px 18px !important;
+            border: none !important;
+            flex-shrink: 0 !important;
+            max-width: {content_max_width} !important;
+            width: 100% !important;
+            margin-left: auto !important;
+            margin-right: auto !important;
+        }}
+        .st-key-chatbot_panel [data-testid="stForm"] [data-testid="stHorizontalBlock"] {{
+            align-items: center !important;
+            gap: 4px !important;
+        }}
+        /* The 1px auto-scroll helper iframe paints a thin white line on the
+           black panel; keep it running but invisible. */
+        .st-key-chatbot_panel iframe {{
+            opacity: 0 !important;
+            pointer-events: none !important;
+        }}
+        .st-key-chatbot_panel .chatbot-mic-btn {{
+            background: transparent;
+            border: none;
+            color: #D1D5DB;
+            width: 36px;
+            height: 36px;
+            min-width: 36px;
+            margin-right: 6px;
+            border-radius: 50%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            padding: 0;
+        }}
+        .st-key-chatbot_panel .chatbot-mic-btn:hover {{
+            background: #525252;
+            color: #FFFFFF;
+        }}
+        .st-key-chatbot_panel .chatbot-mic-btn.listening {{
+            background: #B91C1C;
+            color: #FFFFFF;
+            animation: chatbot-mic-pulse 1.2s ease-in-out infinite;
+        }}
+        @keyframes chatbot-mic-pulse {{
+            0%, 100% {{ opacity: 1; }}
+            50% {{ opacity: 0.6; }}
+        }}
+        /* Keep the send button flush with the right end of the input bar: the
+           input column takes all spare width, the button column shrinks to it. */
+        .st-key-chatbot_panel [data-testid="stForm"] [data-testid="stColumn"]:first-child {{
+            flex: 1 1 0 !important;
+            min-width: 0 !important;
+        }}
+        .st-key-chatbot_panel [data-testid="stForm"] [data-testid="stColumn"]:last-child {{
+            flex: 0 0 auto !important;
+            width: auto !important;
+            min-width: 0 !important;
+            display: flex !important;
+            justify-content: flex-end !important;
+        }}
+        .st-key-chatbot_panel [data-testid="stTextInputRootElement"],
+        .st-key-chatbot_panel [data-testid="stTextAreaRootElement"] {{
+            background: transparent !important;
+            border: none !important;
+            box-shadow: none !important;
+            min-height: unset !important;
+            height: auto !important;
+        }}
+        /* Streamlit's own text_area chrome enforces a tall minimum height
+           (built for a standalone multi-line box); collapse all of that back
+           down to a single compact line so the pill only grows when the
+           user's text actually wraps, same as it did as a text_input. */
+        .st-key-chatbot_panel [data-testid="stTextArea"] {{
+            min-height: unset !important;
+        }}
+        .st-key-chatbot_panel [data-testid="stTextInput"] input,
+        .st-key-chatbot_panel [data-testid="stTextArea"] textarea {{
+            background: transparent !important;
+            border: none !important;
+            color: #FFFFFF !important;
+            box-shadow: none !important;
+            font-size: 14px !important;
+        }}
+        .st-key-chatbot_panel [data-testid="stTextArea"] textarea {{
+            resize: none !important;
+            overflow-y: auto !important;
+            line-height: 1.4 !important;
+            padding-top: 8px !important;
+            padding-bottom: 8px !important;
+            min-height: 24px !important;
+            height: 24px !important; /* starting height only — the script above grows this as you type */
+            max-height: 150px !important;
+        }}
+        .st-key-chatbot_panel [data-testid="stTextInput"] input::placeholder,
+        .st-key-chatbot_panel [data-testid="stTextArea"] textarea::placeholder {{
+            color: #9CA3AF !important;
+        }}
+        /* Streamlit names a form submit button's key class from the form's own
+           key plus the button label — "Send" here. */
+        .st-key-chatbot_panel [class*="st-key-FormSubmitter-chatbot_form"] {{
+            width: auto !important;
+        }}
+        /* Round blue send button with a white bold arrow (ChatGPT style). The
+           label text is hidden and the arrow is drawn as an SVG background. */
+        .st-key-chatbot_panel [class*="st-key-FormSubmitter-chatbot_form"] button,
+        .st-key-chatbot_panel [data-testid="stFormSubmitButton"] button {{
+            background-color: #4A67C8 !important;
+            background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'><line x1='12' y1='19' x2='12' y2='5'/><polyline points='5 12 12 5 19 12'/></svg>") !important;
+            background-repeat: no-repeat !important;
+            background-position: center !important;
+            background-size: 20px 20px !important;
+            color: transparent !important;
+            border-radius: 50% !important;
+            width: 36px !important;
+            height: 36px !important;
+            min-width: 36px !important;
+            min-height: 36px !important;
+            padding: 0 !important;
+            border: none !important;
+            box-shadow: none !important;
+            font-size: 0 !important;
+        }}
+        .st-key-chatbot_panel [data-testid="stFormSubmitButton"] button:hover:not(:disabled) {{
+            background-color: #5B78D8 !important;
+        }}
+        .st-key-chatbot_panel [data-testid="stFormSubmitButton"] button:disabled {{
+            opacity: 0.45 !important;
+        }}
+        .st-key-chatbot_panel [data-testid="stFormSubmitButton"] button p {{
+            margin: 0 !important;
+            font-size: 0 !important;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if not st.session_state.chatbot_open:
+        with st.container(key="chatbot_toggle_btn"):
+            if st.button("💬 Chat here", key="chatbot_open_btn"):
+                st.session_state.chatbot_open = True
+                st.rerun(scope="fragment")
+    else:
+        with st.container(key="chatbot_overlay"):
+            if st.button("", key="chatbot_overlay_btn"):
+                st.session_state.chatbot_open = False
+                st.session_state.chatbot_fullscreen = False
+                st.session_state.chatbot_sidebar_open = False
+                st.rerun(scope="fragment")
+
+        from database.db import (
+            create_chat_session, list_chat_sessions, get_chat_messages,
+            add_chat_message, rename_chat_session, delete_chat_session,
+        )
+        _chat_user = st.session_state.get("username", "")
+
+        def _reset_to_new_chat():
+            st.session_state.chatbot_session_id = None
+            st.session_state.chatbot_messages = []
+            st.session_state.chatbot_pending = False
+            st.session_state.chatbot_menu_for = None
+
+        with st.container(key="chatbot_panel"):
+            # Chat history sidebar — always rendered (so the CSS slide
+            # transition has an element to animate); hidden off-canvas until
+            # opened with the ☰ button.
+            with st.container(key="chatbot_history"):
+                if st.button("＋  New chat", key="chatbot_new_chat", use_container_width=True):
+                    _reset_to_new_chat()
+                    # Small panel: the sidebar is a drawer over the chat, so
+                    # picking something closes it. Fullscreen keeps it open.
+                    if not st.session_state.chatbot_fullscreen:
+                        st.session_state.chatbot_sidebar_open = False
+                    st.rerun(scope="fragment")
+
+                from datetime import date as _date, datetime as _dt
+                _today = _date.today()
+
+                def _bucket(updated_at):
+                    try:
+                        d = _dt.strptime((updated_at or "")[:10], "%Y-%m-%d").date()
+                    except ValueError:
+                        return "Older"
+                    age = (_today - d).days
+                    if age <= 0:
+                        return "Today"
+                    if age == 1:
+                        return "Yesterday"
+                    if age <= 7:
+                        return "Previous 7 days"
+                    return "Older"
+
+                _sessions = list_chat_sessions(_chat_user) if _chat_user else []
+                if not _sessions:
+                    st.markdown('<div class="chatbot-history-group">No chats yet</div>', unsafe_allow_html=True)
+                _grouped = {}
+                for _s in _sessions:
+                    _grouped.setdefault(_bucket(_s["updated_at"]), []).append(_s)
+                for _group in ("Today", "Yesterday", "Previous 7 days", "Older"):
+                    if _group not in _grouped:
+                        continue
+                    st.markdown(f'<div class="chatbot-history-group">{_group}</div>', unsafe_allow_html=True)
+                    for _s in _grouped[_group]:
+                        _sid = _s["id"]
+                        _title = _s["title"] or "New chat"
+                        _menu_open = st.session_state.chatbot_menu_for == _sid
+                        with st.container(key=f"chatbot_row_{_sid}"):
+                            _c_title, _c_dots = st.columns([8, 1.4], vertical_alignment="center")
+                            with _c_title:
+                                _prefix = "chatbot_active_" if _sid == st.session_state.chatbot_session_id else "chatbot_chat_"
+                                if st.button(_title, key=f"{_prefix}{_sid}", use_container_width=True):
+                                    st.session_state.chatbot_session_id = _sid
+                                    st.session_state.chatbot_messages = get_chat_messages(_sid, _chat_user)
+                                    st.session_state.chatbot_pending = False
+                                    st.session_state.chatbot_menu_for = None
+                                    if not st.session_state.chatbot_fullscreen:
+                                        st.session_state.chatbot_sidebar_open = False
+                                    st.rerun(scope="fragment")
+                            with _c_dots:
+                                _dots_key = f"chatbot_dots_open_{_sid}" if _menu_open else f"chatbot_dots_{_sid}"
+                                if st.button("⋯", key=_dots_key, help="Rename or delete"):
+                                    st.session_state.chatbot_menu_for = None if _menu_open else _sid
+                                    st.rerun(scope="fragment")
+                        if _menu_open:
+                            _new_title = st.text_input(
+                                "Rename chat", value=_title, key=f"chatbot_rename_{_sid}",
+                                label_visibility="collapsed",
+                            )
+                            _b_save, _b_del = st.columns(2)
+                            with _b_save:
+                                if st.button("Save", key=f"chatbot_menu_save_{_sid}", use_container_width=True):
+                                    if _new_title.strip():
+                                        rename_chat_session(_sid, _chat_user, _new_title.strip()[:60])
+                                    st.session_state.chatbot_menu_for = None
+                                    st.rerun(scope="fragment")
+                            with _b_del:
+                                if st.button("Delete", key=f"chatbot_menu_delete_{_sid}", use_container_width=True):
+                                    delete_chat_session(_sid, _chat_user)
+                                    if _sid == st.session_state.chatbot_session_id:
+                                        _reset_to_new_chat()
+                                    st.session_state.chatbot_menu_for = None
+                                    st.rerun(scope="fragment")
+
+            # Small panel only: clicking anywhere outside the open sidebar
+            # (i.e. on the chat area) closes it. Fullscreen has room for the
+            # sidebar next to the chat, so it stays open there.
+            if st.session_state.chatbot_sidebar_open and not st.session_state.chatbot_fullscreen:
+                with st.container(key="chatbot_sb_dismiss"):
+                    if st.button("", key="chatbot_sb_dismiss_btn"):
+                        st.session_state.chatbot_sidebar_open = False
+                        st.rerun(scope="fragment")
+
+            # ☰ history toggle, pinned to the panel's top-left corner (above the
+            # sidebar when it's open, so it stays reachable to close it again).
+            with st.container(key="chatbot_header_left"):
+                if st.button("☰", key="chatbot_history_btn", help="Chat history"):
+                    st.session_state.chatbot_sidebar_open = not st.session_state.chatbot_sidebar_open
+                    st.rerun(scope="fragment")
+
+            header_title, header_btns = st.columns([4, 1])
+            with header_title:
+                st.markdown('<div class="chatbot-header">🤖 Tender Assistant</div>', unsafe_allow_html=True)
+            with header_btns:
+                with st.container(key="chatbot_header_btns"):
+                    btn_fullscreen, btn_close = st.columns(2)
+                    with btn_fullscreen:
+                        fullscreen_icon = "⤡" if st.session_state.chatbot_fullscreen else "⤢"
+                        if st.button(fullscreen_icon, key="chatbot_fullscreen_btn", help="Toggle fullscreen"):
+                            st.session_state.chatbot_fullscreen = not st.session_state.chatbot_fullscreen
+                            # Fullscreen has room for the history sidebar (open
+                            # by default there); the small panel starts without it.
+                            st.session_state.chatbot_sidebar_open = st.session_state.chatbot_fullscreen
+                            st.rerun(scope="fragment")
+                    with btn_close:
+                        if st.button("✕", key="chatbot_close_btn", help="Close"):
+                            st.session_state.chatbot_open = False
+                            st.session_state.chatbot_fullscreen = False
+                            st.session_state.chatbot_sidebar_open = False
+                            st.rerun(scope="fragment")
+
+            with st.container(key="chatbot_messages_container"):
+                if not st.session_state.chatbot_messages:
+                    st.markdown(
+                        '<div class="chatbot-empty-hint">Ask me about tenders — e.g. "what came in today?" or "any tenders related to RTMS?"</div>',
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    for i, m in enumerate(st.session_state.chatbot_messages):
+                        marker = "chatbot-msg-user-marker" if m["role"] == "user" else "chatbot-msg-bot-marker"
+                        with st.container(key=f"chatbot_msg_{i}"):
+                            st.markdown(f'<div class="{marker}"></div>', unsafe_allow_html=True)
+                            st.markdown(m["content"])
+                            # "View all N tenders" — the AI's own reply only
+                            # describes the first few inline; this expands to
+                            # the real full list the tool actually fetched
+                            # (see reply_tenders below, where this is set).
+                            tenders = m.get("tenders")
+                            if tenders:
+                                expand_key = f"chatbot_tender_expand_{i}"
+                                if st.session_state.get(expand_key):
+                                    if st.button(f"Hide tenders ({len(tenders)})", key=f"chatbot_tender_btn_{i}"):
+                                        st.session_state[expand_key] = False
+                                        st.rerun(scope="fragment")
+                                    by_portal = {}
+                                    for t in tenders:
+                                        by_portal.setdefault(t.get("portal") or "Other", []).append(t)
+                                    for portal, rows in by_portal.items():
+                                        st.markdown(f"**{portal} ({len(rows)})**")
+                                        for t in rows:
+                                            st.markdown(
+                                                f"- `{t.get('tender_number') or '—'}` "
+                                                f"{(t.get('title') or '')[:90]} "
+                                                f"— {t.get('department') or ''} "
+                                                f"(deadline: {t.get('deadline') or '—'})"
+                                            )
+                                elif len(tenders) > 1:
+                                    if st.button(f"View all {len(tenders)} tenders", key=f"chatbot_tender_btn_{i}"):
+                                        st.session_state[expand_key] = True
+                                        st.rerun(scope="fragment")
+                # The user's own message is appended to chatbot_messages and
+                # rerun immediately on submit — BEFORE calling the (slow) AI
+                # — so it renders here, by itself, the instant Send is hit.
+                # This "thinking" placeholder then renders right after it, in
+                # the same rerun, and only THEN does the blocking AI call
+                # happen further down — so the message and the "thinking" cue
+                # are both already on screen while that call is running,
+                # instead of both the question and the answer popping in
+                # together only once the AI finishes.
+                if st.session_state.chatbot_pending:
+                    with st.container(key="chatbot_thinking"):
+                        st.markdown('<div class="chatbot-msg-bot-marker"></div>', unsafe_allow_html=True)
+                        st.markdown("🤖 _Thinking..._")
+
+            # Auto-scroll the message list to the latest message on every
+            # render. st.markdown can't run <script> tags itself, so this goes
+            # through st.iframe reaching back into window.parent.document, the
+            # same technique used for the sticky-stats-row sync and the
+            # scroll-to-table-anchor jump earlier in this file. The nonce
+            # forces the browser to treat this as fresh content and actually
+            # re-run it — otherwise Streamlit skips remounting an iframe whose
+            # rendered output is byte-for-byte identical to last time.
+            import time as _time
+            st.iframe(f"""
+            <!-- nonce:{_time.time()} -->
+            <script>
+            (function() {{
+                const doc = window.parent.document;
+                const el = doc.querySelector('.st-key-chatbot_messages_container');
+                if (el) el.scrollTop = el.scrollHeight;
+            }})();
+            </script>
+            """, height=1)
+
+            # Voice-dictation mic button next to Send. It is pure browser JS
+            # (Web Speech API) so clicking it never triggers a Streamlit rerun.
+            # The logic is copied into the PARENT page as a <script> (once) so
+            # it keeps working after this helper iframe is re-mounted on every
+            # render; a MutationObserver re-adds the button if Streamlit
+            # re-renders the form.
+            st.iframe("""
+            <script>
+            (function() {
+                function install() {
+                    if (window.__tenderMicInstalled) return;
+                    window.__tenderMicInstalled = true;
+                    var MIC = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><line x1="12" y1="18" x2="12" y2="22"/></svg>';
+                    var rec = null, listening = false, watchdog = null, lastActivity = 0, base = '';
+
+                    function input() {
+                        return document.querySelector('.st-key-chatbot_panel [data-testid="stTextArea"] textarea');
+                    }
+                    function setValue(v) {
+                        var el = input();
+                        if (!el) return;
+                        var setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+                        setter.call(el, v);
+                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                    }
+                    function clearWatchdog() {
+                        if (watchdog) { clearInterval(watchdog); watchdog = null; }
+                    }
+                    function stop(btn) {
+                        listening = false;
+                        clearWatchdog();
+                        if (btn) btn.classList.remove('listening');
+                        if (rec) { try { rec.onend = null; rec.stop(); } catch (e) {} }
+                    }
+                    // Starts one recognizer session. Called again, on a fresh
+                    // SpeechRecognition instance each time, whenever a
+                    // session ends (onend) or the watchdog below decides the
+                    // current one has silently stalled.
+                    function startSession(btn) {
+                        var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+                        rec = new SR();
+                        // Pin to Indian English explicitly rather than
+                        // trusting navigator.language, which may report a
+                        // generic/different locale and make the browser's
+                        // speech engine mis-hear accented words.
+                        rec.lang = 'en-IN';
+                        rec.interimResults = true;
+                        // continuous keeps the mic open through brief pauses
+                        // in speech instead of the browser auto-stopping it.
+                        rec.continuous = true;
+                        rec.onresult = function(e) {
+                            lastActivity = Date.now();
+                            var t = '';
+                            for (var i = 0; i < e.results.length; i++) t += e.results[i][0].transcript;
+                            setValue(base + t);
+                        };
+                        rec.onstart = function() { lastActivity = Date.now(); };
+                        // Some browsers still end the session on a long pause
+                        // even with continuous=true. If the user hasn't
+                        // clicked stop, treat that as a hiccup and restart
+                        // rather than actually stopping.
+                        rec.onend = function() {
+                            if (listening) {
+                                // Carry forward whatever is in the box now,
+                                // since this new session's results start
+                                // counting from zero again.
+                                var el2 = input();
+                                base = el2 && el2.value ? el2.value.trim() + ' ' : '';
+                                try { startSession(btn); return; } catch (e) {}
+                            }
+                            clearWatchdog();
+                            listening = false;
+                            btn.classList.remove('listening');
+                        };
+                        rec.onerror = function(e) {
+                            if (e.error === 'no-speech' || e.error === 'aborted') return;
+                            clearWatchdog();
+                            listening = false;
+                            btn.classList.remove('listening');
+                        };
+                        try { rec.start(); } catch (e) {}
+                    }
+                    function toggle(btn) {
+                        var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+                        if (!SR) { alert('Voice input is not supported in this browser. Please use Chrome or Edge.'); return; }
+                        if (listening) { stop(btn); return; }
+                        var el = input();
+                        if (!el || el.disabled) return;
+                        base = el.value ? el.value.trim() + ' ' : '';
+                        listening = true;
+                        lastActivity = Date.now();
+                        btn.classList.add('listening');
+                        startSession(btn);
+                        // Chrome occasionally goes silently stuck — the mic
+                        // stays "listening" (and the button stays red) but
+                        // no onresult/onend/onerror ever fires again, so
+                        // nothing above notices. Force a hard restart (brand
+                        // new recognizer) if nothing has happened for a
+                        // while, rather than leaving it looking alive but
+                        // deaf.
+                        clearWatchdog();
+                        watchdog = setInterval(function() {
+                            if (!listening) { clearWatchdog(); return; }
+                            if (Date.now() - lastActivity > 7000) {
+                                lastActivity = Date.now();
+                                var el2 = input();
+                                base = el2 && el2.value ? el2.value.trim() + ' ' : '';
+                                if (rec) { try { rec.onend = null; rec.abort(); } catch (e) {} }
+                                startSession(btn);
+                            }
+                        }, 3000);
+                    }
+                    function ensure() {
+                        var form = document.querySelector('.st-key-chatbot_panel [data-testid="stForm"]');
+                        if (!form || form.querySelector('.chatbot-mic-btn')) return;
+                        var cols = form.querySelectorAll('[data-testid="stColumn"]');
+                        var col = cols[cols.length - 1];
+                        if (!col) return;
+                        var btn = document.createElement('button');
+                        btn.type = 'button';
+                        btn.className = 'chatbot-mic-btn';
+                        btn.title = 'Speak';
+                        btn.setAttribute('aria-label', 'Voice input');
+                        btn.innerHTML = MIC;
+                        btn.addEventListener('click', function(ev) { ev.preventDefault(); toggle(btn); });
+                        col.insertBefore(btn, col.firstChild);
+                    }
+                    new MutationObserver(ensure).observe(document.body, { childList: true, subtree: true });
+                    ensure();
+                }
+                var s = window.parent.document.createElement('script');
+                s.textContent = '(' + install.toString() + ')();';
+                window.parent.document.head.appendChild(s);
+            })();
+            </script>
+            """, height=1)
+
+            with st.form(key="chatbot_form", clear_on_submit=True, border=False):
+                fcol1, fcol2 = st.columns([8, 1], vertical_alignment="center")
+                with fcol1:
+                    user_input = st.text_area(
+                        "Message", placeholder="Ask anything",
+                        label_visibility="collapsed", key="chatbot_input",
+                        disabled=st.session_state.chatbot_pending,
+                        height=52,
+                    )
+                with fcol2:
+                    sent = st.form_submit_button("↑", disabled=st.session_state.chatbot_pending)
+
+            # text_area wraps long text onto new lines (a text_input can't),
+            # but its default Enter key just inserts a newline instead of
+            # submitting. Make Enter submit (Shift+Enter still inserts a
+            # newline) and let the box grow with its content, both ChatGPT-
+            # style behaviours that Streamlit's widget doesn't give for free.
+            st.iframe("""
+            <script>
+            (function() {
+                function install() {
+                    if (window.__tenderChatAreaInstalled) return;
+                    window.__tenderChatAreaInstalled = true;
+                    function ta() {
+                        return document.querySelector('.st-key-chatbot_panel [data-testid="stTextArea"] textarea');
+                    }
+                    function autoGrow(el) {
+                        if (!el.value) {
+                            // Back to empty (e.g. backspaced out) — drop the
+                            // inline height so the compact CSS height applies
+                            // again, instead of measuring an empty box's own
+                            // padding as if it were content.
+                            el.style.removeProperty('height');
+                            return;
+                        }
+                        // setProperty(...,'important') is needed because the
+                        // panel's own CSS pins this box to 24px with
+                        // !important (so it starts compact, like a normal
+                        // one-line pill) — a plain el.style.height assignment
+                        // can't win against that, so it would never grow.
+                        el.style.setProperty('height', 'auto', 'important');
+                        var h = Math.min(el.scrollHeight, 150);
+                        el.style.setProperty('height', Math.max(h, 24) + 'px', 'important');
+                    }
+                    function wire(el) {
+                        if (el.__tenderWired) return;
+                        el.__tenderWired = true;
+                        // Only measure/grow once there's actual text — an
+                        // empty textarea's own padding still reports a
+                        // scrollHeight above 24px, which would start the box
+                        // taller than the compact CSS height even with
+                        // nothing typed in it.
+                        if (el.value) autoGrow(el);
+                        el.addEventListener('input', function() { autoGrow(el); });
+                        el.addEventListener('keydown', function(e) {
+                            if (e.key === 'Enter' && !e.shiftKey) {
+                                e.preventDefault();
+                                var form = el.closest('[data-testid="stForm"]');
+                                var btn = form && form.querySelector('[data-testid="stFormSubmitButton"] button');
+                                if (btn && !btn.disabled) btn.click();
+                            }
+                        });
+                        // Sending clears the text_area's VALUE, but Streamlit
+                        // reuses this same <textarea> node rather than
+                        // remounting it, and setting .value that way doesn't
+                        // fire an 'input' event — so autoGrow() above never
+                        // reruns and the box stayed at whatever height it had
+                        // grown to. Collapse it back down the instant Send is
+                        // actually clicked (covers both a direct click and
+                        // the Enter-key handler above, since that also just
+                        // calls btn.click()).
+                        var form = el.closest('[data-testid="stForm"]');
+                        var sendBtn = form && form.querySelector('[data-testid="stFormSubmitButton"] button');
+                        if (sendBtn && !sendBtn.__tenderWired) {
+                            sendBtn.__tenderWired = true;
+                            sendBtn.addEventListener('click', function() {
+                                el.style.removeProperty('height');
+                            });
+                        }
+                    }
+                    new MutationObserver(function() {
+                        var el = ta();
+                        if (el) wire(el);
+                    }).observe(document.body, { childList: true, subtree: true });
+                    var el0 = ta();
+                    if (el0) wire(el0);
+                }
+                var s = window.parent.document.createElement('script');
+                s.textContent = '(' + install.toString() + ')();';
+                window.parent.document.head.appendChild(s);
+            })();
+            </script>
+            """, height=1)
+
+            if sent and user_input.strip() and not st.session_state.chatbot_pending:
+                _text = user_input.strip()
+                # First message of a fresh chat creates the saved conversation,
+                # titled from that message.
+                if st.session_state.chatbot_session_id is None and _chat_user:
+                    _title = _text if len(_text) <= 40 else _text[:40].rstrip() + "…"
+                    st.session_state.chatbot_session_id = create_chat_session(_chat_user, _title)
+                if st.session_state.chatbot_session_id is not None:
+                    add_chat_message(st.session_state.chatbot_session_id, _chat_user, "user", _text)
+                st.session_state.chatbot_messages.append({"role": "user", "content": _text})
+                st.session_state.chatbot_pending = True
+                st.rerun(scope="fragment")
+
+            if st.session_state.chatbot_pending:
+                from agent.chatbot import ask as chatbot_ask
+                last_user_msg = st.session_state.chatbot_messages[-1]["content"]
+                history = st.session_state.chatbot_messages[:-1]
+                reply, reply_tenders = chatbot_ask(history, last_user_msg, st.session_state.get("user_role", "regular"))
+                if st.session_state.chatbot_session_id is not None:
+                    add_chat_message(st.session_state.chatbot_session_id, _chat_user, "assistant", reply)
+                # reply_tenders (the full tender list behind this answer, for
+                # the "View all N tenders" button below) is UI-only state —
+                # it isn't saved to the chat_messages table, so it's only
+                # available for messages from this session, not ones loaded
+                # back from a past saved chat.
+                st.session_state.chatbot_messages.append({"role": "assistant", "content": reply, "tenders": reply_tenders})
+                st.session_state.chatbot_pending = False
+                st.rerun(scope="fragment")
+
+
+_chatbot_widget()

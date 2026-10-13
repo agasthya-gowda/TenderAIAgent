@@ -711,11 +711,21 @@ def run_relevant_keyword_matching(scope: str = "incremental", keyword: str = Non
     if not tenders:
         return 0
 
+    # token_set_ratio splits on whitespace only, so a hyphenated word like
+    # "Body-Worn Camera" becomes one token ("body-worn") that shares no
+    # words at all with the saved keyword "body worn camera" — tanking the
+    # score to ~20 even though it's obviously the same thing. Normalizing
+    # punctuation (hyphens, slashes, commas...) to spaces first fixes that
+    # without changing anything else about the matching.
+    import re
+    def _normalize(s: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", s.lower()).strip()
+
     matched_count = 0
     for t in tenders:
         title = (t.get("title") or "").lower()
         tags = " ".join(t.get("item_tags") or []) if t.get("item_tags") else ""
-        text = f"{title} {tags}".strip()
+        text = _normalize(f"{title} {tags}".strip())
         if not text:
             continue
         for kw in keywords:
@@ -723,7 +733,7 @@ def run_relevant_keyword_matching(scope: str = "incremental", keyword: str = Non
             # not raw characters — avoids partial_ratio's false positives
             # (e.g. "PTZ Camera with Monitor" character-matching unrelated
             # "Camera Monitoring System" just because the letters overlap).
-            score = fuzz.token_set_ratio(kw.lower().strip(), text)
+            score = fuzz.token_set_ratio(_normalize(kw), text)
             if score < 70:
                 continue
             mark_tender_relevant(t["id"], kw)
