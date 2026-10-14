@@ -342,12 +342,27 @@ async def _search_kppp_once(criteria: dict, max_pages=None, stop_before_date=Non
                         from database.db import get_conn
                         conn = get_conn()
                         existing = conn.execute(
-                            "SELECT id FROM tenders WHERE tender_number=?", (tender_number_val,)
+                            "SELECT id, nit_id FROM tenders WHERE tender_number=?", (tender_number_val,)
                         ).fetchone()
-                        conn.close()
                         if existing:
+                            # Backfills nit_id for a tender that was saved
+                            # before nit_id existed (or saved before this
+                            # specific search started capturing it) — free,
+                            # since this doc's nitId is already right here;
+                            # no separate backfill pass needed, every future
+                            # search that happens to re-encounter an old
+                            # tender fixes it in passing.
+                            if existing["nit_id"] is None and doc.get("nitId"):
+                                conn.execute(
+                                    "UPDATE tenders SET nit_id=? WHERE id=?",
+                                    (doc.get("nitId"), existing["id"])
+                                )
+                                conn.commit()
+                                print(f"[KPPP] Backfilled nit_id for {tender_number_val}")
+                            conn.close()
                             print(f"[KPPP] Skipping {tender_number_val} — already in database")
                             continue
+                        conn.close()
 
                         ecv = doc.get("ecv")
                         estimated_value = str(ecv) if ecv is not None else "Not available"
@@ -443,3 +458,111 @@ async def search_kppp(criteria: dict, max_attempts: int = 7, max_pages=None, sto
 def search_kppp_sync(criteria: dict, max_pages=None, stop_before_date=None) -> list:
     """Synchronous wrapper for search_kppp."""
     return asyncio.run(search_kppp(criteria, max_pages=max_pages, stop_before_date=stop_before_date))
+
+
+async def _backfill_nit_ids_once() -> int:
+    """One pass: looks up nit_id for every KPPP tender that's missing it,
+    one targeted tenderNumber search per tender (not a full category walk —
+    a repeat/incremental search only revisits recently-found tenders, so an
+    old tender saved before nit_id existed would otherwise never get
+    backfilled; this fixes those directly instead of waiting for them to
+    maybe resurface). A single CAPTCHA solve is reused across every lookup
+    in this pass (same session/cookies), not one per tender. Returns how
+    many were actually backfilled."""
+    from database.db import get_conn
+
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT id, tender_number, category FROM tenders WHERE portal='KPPP' AND nit_id IS NULL"
+    ).fetchall()
+    conn.close()
+    if not rows:
+        return 0
+
+    print(f"[KPPP] Backfilling nit_id for {len(rows)} older tender(s)...")
+    backfilled = 0
+
+    from playwright.async_api import async_playwright
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
+        context = await browser.new_context(accept_downloads=True)
+        page = await context.new_page()
+        await page.goto(
+            "https://kppp.karnataka.gov.in/#/portal/searchTender/live",
+            timeout=30000, wait_until="domcontentloaded"
+        )
+        await page.wait_for_timeout(3000)
+
+        solved = False
+        for attempt in range(6):
+            if attempt > 0:
+                reload_btn = await page.query_selector("a.cpt-btn.reload")
+                if reload_btn:
+                    await reload_btn.click()
+                    await page.wait_for_timeout(1000)
+            canvas = await page.query_selector("canvas")
+            if not canvas:
+                break
+            img_bytes = await canvas.screenshot()
+            solution = solve_captcha(img_bytes)
+            if not solution:
+                continue
+            captcha_input = await page.query_selector("input[type='text']")
+            if captcha_input:
+                await captcha_input.fill(solution)
+            check_btn = await page.query_selector("input[type='button']")
+            if check_btn:
+                await check_btn.click()
+            await page.wait_for_timeout(2000)
+            page_text = await page.inner_text("body")
+            if "Please Enter correct Captcha" not in page_text:
+                solved = True
+                break
+
+        if not solved:
+            print("[KPPP] Backfill: CAPTCHA failed, skipping this pass")
+            await browser.close()
+            return 0
+
+        api_url = (
+            "https://kppp.karnataka.gov.in/supplier-registration-service"
+            "/v1/api/portal-service/search-eproc-tenders"
+        )
+        conn = get_conn()
+        for row in rows:
+            try:
+                body = json.dumps({
+                    "tenderNumber": row["tender_number"], "category": (row["category"] or "").upper(),
+                    "status": "PUBLISHED", "publishedFromDate": None, "publishedToDate": None,
+                    "tenderType": "OPEN", "title": "", "location": None,
+                    "tenderClosureFromDate": None, "tenderClosureToDate": None,
+                })
+                resp = await context.request.post(
+                    f"{api_url}?page=0&size=5&order-by-tender-publish=true",
+                    headers={"Content-Type": "application/json"},
+                    data=body,
+                )
+                if resp.status != 200:
+                    continue
+                docs = await resp.json()
+                match = next((d for d in docs if d.get("tenderNumber") == row["tender_number"]), None)
+                if match and match.get("nitId"):
+                    conn.execute("UPDATE tenders SET nit_id=? WHERE id=?", (match["nitId"], row["id"]))
+                    conn.commit()
+                    backfilled += 1
+            except Exception as e:
+                print(f"[KPPP] Backfill lookup failed for {row['tender_number']}: {e}")
+        conn.close()
+        await browser.close()
+
+    print(f"[KPPP] Backfilled nit_id for {backfilled}/{len(rows)} tender(s)")
+    return backfilled
+
+
+def backfill_kppp_nit_ids_sync() -> int:
+    """Synchronous wrapper for _backfill_nit_ids_once."""
+    try:
+        return asyncio.run(_backfill_nit_ids_once())
+    except Exception as e:
+        print(f"[KPPP] Backfill error: {e}")
+        return 0

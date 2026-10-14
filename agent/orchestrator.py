@@ -616,6 +616,11 @@ def _scheduled_search():
                 log(f"🚀 Running {len(kppp_criteria_list)} scheduled KPPP searches...")
                 _run_kppp_criteria_search(kppp_criteria_list, respect_stop_flag=True)
 
+                from portals.kppp import backfill_kppp_nit_ids_sync
+                n_backfilled = backfill_kppp_nit_ids_sync()
+                if n_backfilled:
+                    log(f"🔧 [KPPP] Backfilled nit_id for {n_backfilled} older tender(s)")
+
             # Nightly-only: download + analyze every new tender (not just
             # Relevant Tenders matches), capped at 100 — see
             # analyze_new_tenders_batch's docstring. Runs BEFORE the
@@ -677,6 +682,16 @@ def _run_full_catalog_search():
 
         if kppp_criteria_list:
             _run_kppp_criteria_search(kppp_criteria_list, respect_stop_flag=True)
+
+            # One-off (per tender) backfill for older KPPP tenders saved
+            # before nit_id existed, so their documents can be downloaded
+            # too — see backfill_kppp_nit_ids_sync's docstring. Cheap once
+            # the backlog's cleared: it's just a quick "any missing?" check,
+            # no browser launched at all when there's nothing left to do.
+            from portals.kppp import backfill_kppp_nit_ids_sync
+            n_backfilled = backfill_kppp_nit_ids_sync()
+            if n_backfilled:
+                log(f"🔧 [KPPP] Backfilled nit_id for {n_backfilled} older tender(s)")
 
         log("🎯 Checking Relevant Tenders keywords against today's new tenders...")
         run_relevant_keyword_matching(scope="incremental")
