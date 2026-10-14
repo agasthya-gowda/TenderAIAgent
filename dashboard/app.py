@@ -496,26 +496,19 @@ from portals.data.kppp_options import (
     PROCURING_ENTITIES as KPPP_ENTITIES,
 )
 
-PORTAL_FILTER_OPTIONS = ["🔵 GeM", "🟠 KPPP (KA)"]
-PORTAL_FILTER_DEFAULT = "🔵 GeM"
+PORTAL_FILTER_OPTIONS = ["🟠 KPPP (KA)", "🔵 GeM"]
+PORTAL_FILTER_DEFAULT = "🟠 KPPP (KA)"
 PORTAL_FILTER_MAP = {
     "🔵 GeM": "GeM",
     "🟠 KPPP (KA)": "KPPP",
 }
 
 
-def _sync_portal_from_pills():
-    """Keep the narrow-screen dropdown in sync when the pill control changes."""
-    label = st.session_state.get("portal_filter_display", PORTAL_FILTER_DEFAULT)
-    st.session_state.portal_filter_value = PORTAL_FILTER_MAP.get(label, "GeM")
-    st.session_state.portal_filter_dropdown = label
-
-
 def _sync_portal_from_dropdown():
-    """Keep the wide-screen pill control in sync when the dropdown changes."""
+    """Keeps portal_filter_value (the plain 'GeM'/'KPPP' used for actual
+    filtering elsewhere) in sync whenever the portal dropdown changes."""
     label = st.session_state.get("portal_filter_dropdown", PORTAL_FILTER_DEFAULT)
-    st.session_state.portal_filter_value = PORTAL_FILTER_MAP.get(label, "GeM")
-    st.session_state.portal_filter_display = label
+    st.session_state.portal_filter_value = PORTAL_FILTER_MAP.get(label, "KPPP")
 
 
 def _format_tender_price(numeric_value):
@@ -1476,28 +1469,13 @@ st.markdown("""
     div[data-testid="stLayoutWrapper"]:has(> div[data-testid="stHorizontalBlock"] div.col-marker-portal) {
         margin-top: -13px !important;
     }
+    /* Dropdown-only now (no pill control to switch between on screen
+       size), so this column just needs dropdown-sized width on every
+       screen — the old wide-vs-narrow pill/dropdown toggling is gone. */
     div[data-testid="stColumn"]:has(.col-marker-portal) {
-        flex: 0 0 auto !important;
-        min-width: 190px !important;
-        max-width: none !important;
-    }
-    /* Wide screens: show the pill control, hide the dropdown fallback */
-    div[data-testid="stColumn"]:has(.col-marker-portal) div[data-testid="stElementContainer"]:has(div[data-testid="stSelectbox"]) {
-        display: none !important;
-    }
-    @media (max-width: 900px) {
-        /* Narrow screens: the portal column only needs dropdown-sized width */
-        div[data-testid="stColumn"]:has(.col-marker-portal) {
-            flex: 0 0 200px !important;
-            min-width: 200px !important;
-            max-width: 220px !important;
-        }
-        div[data-testid="stColumn"]:has(.col-marker-portal) div[data-testid="stElementContainer"]:has(div[data-testid="stButtonGroup"]) {
-            display: none !important;
-        }
-        div[data-testid="stColumn"]:has(.col-marker-portal) div[data-testid="stElementContainer"]:has(div[data-testid="stSelectbox"]) {
-            display: block !important;
-        }
+        flex: 0 0 200px !important;
+        min-width: 200px !important;
+        max-width: 220px !important;
     }
     div[data-testid="stColumn"]:has(.col-marker-search) {
         flex: 1 1 0% !important;
@@ -1559,51 +1537,6 @@ st.markdown("""
     div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox:focus-within {
         border-color: #6366F1 !important;
         box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15) !important;
-    }
-    div[data-testid="stElementContainer"]:has(div[data-testid="stButtonGroup"]) {
-        width: 100% !important;
-    }
-    div[data-testid="stButtonGroup"] {
-        width: 100% !important;
-    }
-    div[data-testid="stButtonGroup"] div[role="radiogroup"] {
-        flex-wrap: nowrap !important;
-        overflow-x: auto;
-        justify-content: flex-start !important;
-        gap: 6px !important;
-        width: 100% !important;
-        max-width: 100% !important;
-    }
-    div[data-testid="stButtonGroup"] div[role="radiogroup"] button {
-        white-space: nowrap;
-        flex-shrink: 0;
-        border-radius: 8px !important;
-        font-weight: 600 !important;
-        color: #475569 !important;
-        padding: 6px 12px !important;
-        font-size: 12px !important;
-        background: #FFFFFF !important;
-        border: 1px solid #E2E8F0 !important;
-        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
-    }
-    div[data-testid="stButtonGroup"] div[role="radiogroup"] {
-        background: transparent;
-        border: none;
-        border-radius: 0;
-        padding: 0;
-        box-shadow: none;
-    }
-    /* Portal pills — each option gets its own tint when selected, matching
-       the reference's GeM (blue) / KPPP (amber). */
-    div[data-testid="stButtonGroup"] div[role="radiogroup"] button:nth-of-type(1)[aria-checked="true"] {
-        background: #EFF6FF !important;
-        color: #1D4ED8 !important;
-        border: 1px solid #BFDBFE !important;
-    }
-    div[data-testid="stButtonGroup"] div[role="radiogroup"] button:nth-of-type(2)[aria-checked="true"] {
-        background: #FFFBEB !important;
-        color: #92400E !important;
-        border: 1px solid #FDE68A !important;
     }
     div[data-testid="stButton"] button:has-text("🗑️") {
         background-color: #E74C3C !important;
@@ -2102,12 +2035,10 @@ if "show_change_password" not in st.session_state:
     st.session_state.show_change_password = False
 if "show_create_user" not in st.session_state:
     st.session_state.show_create_user = False
-if "portal_filter_display" not in st.session_state:
-    st.session_state.portal_filter_display = PORTAL_FILTER_DEFAULT
 if "portal_filter_dropdown" not in st.session_state:
     st.session_state.portal_filter_dropdown = PORTAL_FILTER_DEFAULT
 if "portal_filter_value" not in st.session_state:
-    st.session_state.portal_filter_value = PORTAL_FILTER_MAP.get(PORTAL_FILTER_DEFAULT, "GeM")
+    st.session_state.portal_filter_value = PORTAL_FILTER_MAP.get(PORTAL_FILTER_DEFAULT, "KPPP")
 
 _SIDEBAR_PANEL_KEYS = [
     "show_admin", "show_relevant_keywords",
@@ -2506,8 +2437,12 @@ st.markdown("""
 
 
 def _chart_portal_toggle(key: str) -> str:
-    label = st.segmented_control(
-        "Portal", ["GeM", "KPPP (KA)"], default="GeM",
+    # A dropdown rather than pills — adding more portals later only grows
+    # this list, instead of needing more and more pills to fit in the row.
+    # KPPP first so it's the default (st.selectbox defaults to its first
+    # option).
+    label = st.selectbox(
+        "Portal", ["KPPP (KA)", "GeM"],
         key=key, label_visibility="collapsed",
     )
     return "KPPP" if label and "KPPP" in label else "GeM"
@@ -3232,13 +3167,11 @@ else:
             )
             with col_portal:
                 st.markdown('<div class="col-marker-portal"></div>', unsafe_allow_html=True)
-                st.segmented_control(
-                    "Portal",
-                    PORTAL_FILTER_OPTIONS,
-                    key="portal_filter_display",
-                    label_visibility="collapsed",
-                    on_change=_sync_portal_from_pills,
-                )
+                # Dropdown always, on every screen size — a pill control
+                # (the old wide-screen behaviour) only fits 2-3 options
+                # comfortably; a dropdown scales to more portals later
+                # without needing a layout redesign. KPPP is first in
+                # PORTAL_FILTER_OPTIONS so it's the default.
                 st.selectbox(
                     "Portal",
                     PORTAL_FILTER_OPTIONS,
