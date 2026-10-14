@@ -975,6 +975,33 @@ def get_all_tenders(status_filter=None, today_only=False):
         tenders.append(t)
     return tenders
 
+def get_unprocessed_new_tenders():
+    """Every tender still marked 'new' (not yet reset to 'seen' by the
+    daily cycle), with NO restriction to today's calendar date — unlike
+    get_all_tenders(status_filter='new'), which intentionally only shows
+    *today's* new ones for the dashboard/chatbot's "what's new today" view.
+    This one is for incremental Relevant Tenders matching specifically: a
+    full search can take long enough to cross midnight (several keywords,
+    KPPP retries...), and tenders found just before midnight were being
+    silently skipped by the old today-only check once "today" flipped to
+    the next calendar day mid-run. Checking by status alone instead closes
+    that gap — a tender stays eligible for matching until it's actually
+    been processed, regardless of which side of midnight it landed on."""
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM tenders WHERE status='new' ORDER BY found_at DESC"
+    ).fetchall()
+    conn.close()
+    tenders = []
+    for r in rows:
+        t = dict(r)
+        try:
+            t["downloaded_files"] = json.loads(t.get("downloaded_files") or "[]")
+        except Exception:
+            t["downloaded_files"] = []
+        tenders.append(t)
+    return tenders
+
 def update_tender_title(tender_id: int, title: str):
     """Refreshes just the title — used to backfill older rows saved before
     the GeM scraper started pulling the real full item list (see the

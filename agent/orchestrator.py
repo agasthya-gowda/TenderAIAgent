@@ -691,7 +691,8 @@ def run_relevant_keyword_matching(scope: str = "incremental", keyword: str = Non
     older tenders were already checked once when each keyword was added.
     """
     from database.db import (
-        get_relevant_keywords_list, get_all_tenders, mark_tender_relevant,
+        get_relevant_keywords_list, get_all_tenders,
+        get_unprocessed_new_tenders, mark_tender_relevant,
         update_tender_pdfs,
     )
     from rapidfuzz import fuzz
@@ -706,7 +707,13 @@ def run_relevant_keyword_matching(scope: str = "incremental", keyword: str = Non
         keywords = [k["keyword"] for k in get_relevant_keywords_list()]
         if not keywords:
             return 0
-        tenders = get_all_tenders(status_filter="new", today_only=True)
+        # NOT get_all_tenders(status_filter="new", today_only=True) — that
+        # only counts tenders found on today's calendar date, so a search
+        # that crosses midnight silently skips anything found just before
+        # it (see get_unprocessed_new_tenders's docstring). Checking by
+        # status alone instead catches every still-unprocessed tender,
+        # regardless of which side of midnight it landed on.
+        tenders = get_unprocessed_new_tenders()
 
     if not tenders:
         return 0
