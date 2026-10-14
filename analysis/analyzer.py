@@ -743,8 +743,20 @@ def download_kppp_docs(tender: dict) -> str:
                 )
                 await page.wait_for_timeout(3000)
 
-                # Solve CAPTCHA
-                for attempt in range(3):
+                # Solve CAPTCHA. 6 attempts (not 3) with a reload between
+                # each retry — same fix, and same reasoning, already applied
+                # to the main search's CAPTCHA loop in portals/kppp.py: KPPP
+                # doesn't auto-refresh the image on a wrong guess, so without
+                # clicking its reload control (a.cpt-btn.reload) between
+                # attempts, every retry here was just re-guessing the exact
+                # same (already-wrong) image instead of getting a fresh one.
+                for attempt in range(6):
+                    if attempt > 0:
+                        reload_btn = await page.query_selector("a.cpt-btn.reload")
+                        if reload_btn:
+                            await reload_btn.click()
+                            await page.wait_for_timeout(1000)
+
                     canvas = await page.query_selector("canvas")
                     if not canvas:
                         break
@@ -831,7 +843,8 @@ def download_kppp_docs(tender: dict) -> str:
             # + CAPTCHA each time — since one failed CAPTCHA attempt
             # shouldn't sink the whole download when the portal's CAPTCHA
             # is this failure-prone (each of the 5 attempts also gets its
-            # own inner 3-try CAPTCHA loop, same as the search flow).
+            # own inner 6-try CAPTCHA loop with a reload between tries, same
+            # as the search flow — up to 30 real CAPTCHA attempts total).
             max_attempts = 5
             for attempt in range(1, max_attempts + 1):
                 try:
