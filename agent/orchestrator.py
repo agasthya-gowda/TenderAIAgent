@@ -607,6 +607,15 @@ def _scheduled_search():
                 log(f"🚀 Running {len(kppp_criteria_list)} scheduled KPPP searches...")
                 _run_kppp_criteria_search(kppp_criteria_list, respect_stop_flag=True)
 
+            # Nightly-only: download + analyze every new tender (not just
+            # Relevant Tenders matches), capped at 100 — see
+            # analyze_new_tenders_batch's docstring. Runs BEFORE the
+            # Relevant Tenders check below on purpose: that check still
+            # independently guarantees any relevant match gets analyzed
+            # even if it fell outside this cap, so the cap only affects
+            # the "everything else" tenders, never a relevant one.
+            analyze_new_tenders_batch(cap=100)
+
             log("🎯 Checking Relevant Tenders keywords against today's new tenders...")
             run_relevant_keyword_matching(scope="incremental")
         finally:
@@ -671,6 +680,36 @@ def _run_full_catalog_search():
             _state["last_search_completed_at"] = datetime.now().isoformat()
             _state["search_in_progress"] = False
     log("✅ Full catalog search complete — check New Tenders!")
+
+def analyze_new_tenders_batch(cap: int = 100):
+    """Nightly-2-AM-only step: downloads the document and runs the full AI
+    analysis for every new tender found that cycle, not just the ones that
+    turn out to match a Relevant Tenders keyword (which already get this
+    via run_relevant_keyword_matching, independently of this cap) — capped
+    at `cap` tenders so one unusually large batch can't make the whole
+    nightly run take hours. GeM/KPPP search logic and Relevant Tenders
+    matching are both completely unaffected by this; it only adds the
+    PDF+analysis step on top, for tenders that wouldn't otherwise have
+    gotten one. Returns how many were actually analyzed."""
+    from database.db import get_new_tenders_needing_analysis, update_tender_pdfs
+    from analysis.analyzer import analyze_tender
+
+    tenders = get_new_tenders_needing_analysis(limit=cap)
+    if not tenders:
+        return 0
+
+    log(f"📄 Downloading + analyzing {len(tenders)} new tender(s) (capped at {cap})...")
+    analyzed = 0
+    for t in tenders:
+        try:
+            path = analyze_tender(t)
+            if path:
+                update_tender_pdfs(t["id"], analysis_path=path)
+                analyzed += 1
+        except Exception as e:
+            log(f"⚠️ [New Tenders] Analysis failed for tender {t['id']}: {e}")
+    log(f"📄 Finished analyzing {analyzed} new tender(s)")
+    return analyzed
 
 def run_relevant_keyword_matching(scope: str = "incremental", keyword: str = None):
     """

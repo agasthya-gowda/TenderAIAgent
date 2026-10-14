@@ -1002,6 +1002,33 @@ def get_unprocessed_new_tenders():
         tenders.append(t)
     return tenders
 
+def get_new_tenders_needing_analysis(limit=100):
+    """The oldest-found `limit` tenders that are still 'new' AND don't
+    already have an analysis PDF (so a Relevant Tenders match that already
+    got analyzed isn't redone) — used by the nightly 2 AM run to also
+    download + AI-analyze every new tender, not just the Relevant Tenders
+    matches, but capped so an unusually large batch (hundreds of tenders in
+    one run) can't blow out how long the whole nightly run takes. Oldest
+    first, i.e. in the order they were actually found, so a capped run
+    always covers the earliest ones found that cycle first."""
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM tenders WHERE status='new' "
+        "AND (analysis_pdf_path IS NULL OR analysis_pdf_path = '') "
+        "ORDER BY found_at ASC LIMIT ?",
+        (limit,)
+    ).fetchall()
+    conn.close()
+    tenders = []
+    for r in rows:
+        t = dict(r)
+        try:
+            t["downloaded_files"] = json.loads(t.get("downloaded_files") or "[]")
+        except Exception:
+            t["downloaded_files"] = []
+        tenders.append(t)
+    return tenders
+
 def update_tender_title(tender_id: int, title: str):
     """Refreshes just the title — used to backfill older rows saved before
     the GeM scraper started pulling the real full item list (see the
