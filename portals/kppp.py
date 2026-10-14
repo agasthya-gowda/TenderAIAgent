@@ -319,6 +319,14 @@ async def _search_kppp_once(criteria: dict, max_pages=None, stop_before_date=Non
                 if not docs:
                     break
 
+                # TEMP DIAGNOSTIC — checking whether document/attachment info
+                # is already in this response, which would let document
+                # download call this same proven-reliable API instead of the
+                # old click-through-the-page approach. Remove after checking.
+                if page_num == 0:
+                    import json as _json
+                    print(f"[KPPP][DIAG] First result's full raw fields: {_json.dumps(docs[0], default=str)}")
+
                 page_has_newer = stop_before_date is None
                 for doc in docs:
                     try:
