@@ -214,10 +214,32 @@ async def _search_kppp_once(criteria: dict, max_pages=None, stop_before_date=Non
             # applied the same way here, after fetching.
             filter_verified = True
 
-            api_url = (
-                "https://kppp.karnataka.gov.in/supplier-registration-service"
-                "/v1/api/portal-service/search-eproc-tenders"
-            )
+            # Confirmed live (via the real site's own Network tab) that the
+            # category isn't just a body field — "Works" and "Services"
+            # searches actually go to their own URL, with the category as a
+            # path segment (".../portal-service/works/search-eproc-tenders",
+            # ".../services/search-eproc-tenders"). "Goods" deliberately
+            # keeps the exact same URL as before (no segment) rather than
+            # switching to ".../goods/..." too — that URL is confirmed
+            # working today, so it's left untouched to avoid any risk of
+            # regressing it; only Works/Services, which were never working,
+            # get the new per-category URL.
+            category_lower = (category or "").strip().lower()
+            if category_lower == "works":
+                api_url = (
+                    "https://kppp.karnataka.gov.in/supplier-registration-service"
+                    "/v1/api/portal-service/works/search-eproc-tenders"
+                )
+            elif category_lower == "services":
+                api_url = (
+                    "https://kppp.karnataka.gov.in/supplier-registration-service"
+                    "/v1/api/portal-service/services/search-eproc-tenders"
+                )
+            else:
+                api_url = (
+                    "https://kppp.karnataka.gov.in/supplier-registration-service"
+                    "/v1/api/portal-service/search-eproc-tenders"
+                )
 
             # "Regular Tenders" is the form's default and confirmed to map
             # to "OPEN"; the other two aren't currently used by any saved
