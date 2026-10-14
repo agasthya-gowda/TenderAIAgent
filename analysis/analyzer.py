@@ -719,21 +719,42 @@ def generate_analysis_pdf(tender: dict, details: dict, output_path: str, match: 
         print(f"[Analyzer] PDF generation error: {e}")
         return False
 def download_kppp_docs(tender: dict) -> str:
-    """Download KPPP tender documents on demand for analysis."""
+    """Download KPPP tender documents on demand for analysis.
+
+    Rewritten to call KPPP's real document APIs directly, instead of the
+    old approach (fill the search form, click through to the results page,
+    find the matching row, click its download icon, download a zip) — that
+    was the same kind of fragile page-clicking the main search already
+    moved away from (see the API-call comment in portals/kppp.py's
+    _search_kppp_once), just never updated here too. Confirmed live (via
+    the real site's own Network tab) that once logged in:
+      1. GET .../portal-service/{nit_id}/get-{category}-tender-files
+         returns a JSON list of this tender's files, each with its own
+         `uuid` and `fileName`.
+      2. GET .../portal-service/{nit_id}/{category}-tender-file/{uuid}/
+         download-file returns that one file's raw bytes directly.
+    `nit_id` comes from the tender row (captured at search time — see
+    portals/kppp.py); a tender saved before that existed has none, so this
+    returns nothing for those, same as it always has."""
+    tender_number = tender.get("tender_number", "")
+    nit_id = tender.get("nit_id")
+    category = (tender.get("category") or "").strip().lower()
+    if not nit_id or not category:
+        print(f"[Analyzer] KPPP download skipped for {tender_number} — no nit_id/category on this tender")
+        return ""
+
     try:
         import asyncio
         from playwright.async_api import async_playwright
         from captcha.solver import solve_captcha
-        import zipfile
 
-        tender_number = tender.get("tender_number", "")
         safe_name = "".join(c for c in tender_number if c.isalnum() or c in "-_")
         tender_folder = os.path.join(DOWNLOAD_PATH, safe_name)
         os.makedirs(tender_folder, exist_ok=True)
 
         async def _download_once():
             async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
+                browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
                 context = await browser.new_context(accept_downloads=True)
                 page = await context.new_page()
 
@@ -743,13 +764,11 @@ def download_kppp_docs(tender: dict) -> str:
                 )
                 await page.wait_for_timeout(3000)
 
-                # Solve CAPTCHA. 6 attempts (not 3) with a reload between
-                # each retry — same fix, and same reasoning, already applied
-                # to the main search's CAPTCHA loop in portals/kppp.py: KPPP
-                # doesn't auto-refresh the image on a wrong guess, so without
-                # clicking its reload control (a.cpt-btn.reload) between
-                # attempts, every retry here was just re-guessing the exact
-                # same (already-wrong) image instead of getting a fresh one.
+                # Solve CAPTCHA (needed once, to get an authenticated
+                # session/cookies the file APIs below also rely on) — same
+                # reload-between-retries fix as the main search's CAPTCHA
+                # loop in portals/kppp.py.
+                solved = False
                 for attempt in range(6):
                     if attempt > 0:
                         reload_btn = await page.query_selector("a.cpt-btn.reload")
@@ -776,65 +795,39 @@ def download_kppp_docs(tender: dict) -> str:
                     page_text = await page.inner_text("body")
                     if "Please Enter correct Captcha" not in page_text:
                         print("[Analyzer] KPPP CAPTCHA solved!")
+                        solved = True
                         break
 
-                # Search by tender number directly
-                inputs = await page.query_selector_all("input[type='text']")
-                if inputs:
-                    await inputs[0].fill(tender_number)
-                    await page.wait_for_timeout(500)
+                if not solved:
+                    await browser.close()
+                    return []
 
-                # Select Published status
-                selects = await page.query_selector_all("select")
-                if len(selects) >= 2:
-                    await selects[1].select_option(index=1)
-                    await page.wait_for_timeout(500)
+                base = f"https://kppp.karnataka.gov.in/supplier-registration-service/v1/api/portal-service/{nit_id}"
 
-                search_btn = await page.query_selector("button:has-text('Search')")
-                if search_btn:
-                    await search_btn.click()
-                    await page.wait_for_timeout(4000)
+                list_resp = await context.request.get(f"{base}/get-{category}-tender-files")
+                if list_resp.status != 200:
+                    print(f"[Analyzer] KPPP file list failed (status {list_resp.status}) for {tender_number}")
+                    await browser.close()
+                    return []
+                file_list = await list_resp.json()
 
-                # Find the specific tender row
-                rows = await page.query_selector_all("table tbody tr")
                 downloaded_files = []
-
-                for row in rows:
-                    cols = await row.query_selector_all("td")
-                    if len(cols) < 4:
+                for f in file_list:
+                    file_uuid = f.get("uuid")
+                    file_name = f.get("fileName") or f"{file_uuid}.pdf"
+                    if not file_uuid:
                         continue
-                    row_tender_number = " ".join((await cols[3].inner_text()).strip().split())
-                    if row_tender_number != tender_number:
+                    dl_resp = await context.request.get(f"{base}/{category}-tender-file/{file_uuid}/download-file")
+                    if dl_resp.status != 200:
+                        print(f"[Analyzer] KPPP file download failed (status {dl_resp.status}) for {file_name}")
                         continue
+                    file_bytes = await dl_resp.body()
+                    file_path = os.path.join(tender_folder, file_name)
+                    with open(file_path, "wb") as out:
+                        out.write(file_bytes)
+                    downloaded_files.append(file_path)
 
-                    # Found the tender — click download
-                    action_col = cols[-1]
-                    download_icon = await action_col.query_selector(
-                        "lib-icon[title='Download Tender Documents']"
-                    )
-                    if download_icon:
-                        await download_icon.click()
-                        await page.wait_for_timeout(2000)
-
-                        zip_btn = await page.query_selector("button:has-text('Download Zip')")
-                        if zip_btn:
-                            async with page.expect_download(timeout=30000) as dl:
-                                await zip_btn.click()
-                            download = await dl.value
-                            zip_path = os.path.join(tender_folder, f"{safe_name}.zip")
-                            await download.save_as(zip_path)
-
-                            with zipfile.ZipFile(zip_path, 'r') as z:
-                                z.extractall(tender_folder)
-                            os.remove(zip_path)
-
-                            for f in os.listdir(tender_folder):
-                                full_path = os.path.join(tender_folder, f)
-                                downloaded_files.append(full_path)
-
-                            print(f"[Analyzer] Downloaded {len(downloaded_files)} KPPP files")
-                    break
-
+                print(f"[Analyzer] Downloaded {len(downloaded_files)} KPPP file(s)")
                 await browser.close()
                 return downloaded_files
 

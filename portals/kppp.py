@@ -368,7 +368,18 @@ async def _search_kppp_once(criteria: dict, max_pages=None, stop_before_date=Non
                             "emd": "See tender document",
                             "description": f"KPPP tender by {dept_name}",
                             "downloaded_files": [],
-                            "relevance_score": 0.75
+                            "relevance_score": 0.75,
+                            # Confirmed live (captured the real site's own
+                            # Network tab) that this is the id the document-
+                            # download API actually needs — the search result
+                            # list endpoint is .../portal-service/{nitId}/
+                            # get-{category}-tender-files, and each file then
+                            # downloads from .../{nitId}/{category}-tender-
+                            # file/{uuid}/download-file. Saved here so
+                            # download_kppp_docs (analysis/analyzer.py) can
+                            # call that directly instead of clicking through
+                            # the page to find this same tender again.
+                            "nit_id": doc.get("nitId"),
                         })
 
                         try:

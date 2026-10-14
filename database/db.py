@@ -208,6 +208,11 @@ def init_db():
     c.execute("ALTER TABLE tenders ADD COLUMN IF NOT EXISTS is_relevant BOOLEAN DEFAULT FALSE")
     c.execute("ALTER TABLE tenders ADD COLUMN IF NOT EXISTS relevant_keywords TEXT[]")
     c.execute("ALTER TABLE tenders ADD COLUMN IF NOT EXISTS relevant_matched_at TIMESTAMP")
+    # KPPP only (NULL for GeM tenders) — the id KPPP's own document-download
+    # API needs; see the long comment where this gets captured in
+    # portals/kppp.py. Tenders saved before this existed just have NULL
+    # here, so their documents can't be fetched this way (same as today).
+    c.execute("ALTER TABLE tenders ADD COLUMN IF NOT EXISTS nit_id INTEGER")
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS relevant_keywords (
@@ -919,9 +924,10 @@ def save_tender(tender: dict):
                 deadline, published_date, category,
                 relevance_score, url, description,
                 found_via, downloaded_files, quantity,
-                start_date_parsed, end_date_parsed, quantity_count, item_tags
+                start_date_parsed, end_date_parsed, quantity_count, item_tags,
+                nit_id
             )
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             RETURNING id
         """, (
             tender.get("title"),
@@ -945,6 +951,7 @@ def save_tender(tender: dict):
             _parse_tender_datetime(tender.get("deadline")),
             _parse_tender_int(quantity_raw),
             _parse_item_tags(tender.get("title")),
+            tender.get("nit_id"),
         ))
         row_id = c.fetchone()["id"]
         conn.commit()
