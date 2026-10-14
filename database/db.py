@@ -1098,7 +1098,9 @@ def get_stats():
     ).fetchone()["c"]
     saved = conn.execute("SELECT COUNT(*) as c FROM tenders WHERE status='saved'").fetchone()["c"]
     expired = conn.execute("SELECT COUNT(*) as c FROM tenders WHERE status='expired'").fetchone()["c"]
-    relevant = conn.execute("SELECT COUNT(*) as c FROM tenders WHERE is_relevant=TRUE").fetchone()["c"]
+    # Same as `total` above - an expired tender has moved to its own
+    # Expired card, so it shouldn't also still count here.
+    relevant = conn.execute("SELECT COUNT(*) as c FROM tenders WHERE is_relevant=TRUE AND status != 'expired'").fetchone()["c"]
     searches = conn.execute("SELECT COUNT(*) as c FROM ceo_searches").fetchone()["c"]
     patterns = conn.execute("SELECT COUNT(*) as c FROM learned_patterns").fetchone()["c"]
     conn.close()
@@ -1257,8 +1259,14 @@ def delete_relevant_keyword(kw_id: int):
 
 def get_relevant_tenders_list():
     conn = get_conn()
+    # Excludes expired the same way "All Tenders" already does - a relevant
+    # match that's since passed its deadline belongs on the Expired card,
+    # not still listed here as if it were a live opportunity. The
+    # is_relevant flag/keywords themselves are untouched, so it still shows
+    # correctly over on the Expired list.
     rows = conn.execute(
-        "SELECT * FROM tenders WHERE is_relevant=TRUE ORDER BY relevant_matched_at DESC"
+        "SELECT * FROM tenders WHERE is_relevant=TRUE AND status != 'expired' "
+        "ORDER BY relevant_matched_at DESC"
     ).fetchall()
     conn.close()
     tenders = []
