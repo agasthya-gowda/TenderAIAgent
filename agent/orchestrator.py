@@ -421,7 +421,16 @@ def on_kppp_search(criteria: dict):
     cycle (Start Agent, 2 AM scheduled run) re-applies every saved KPPP
     criteria set automatically, the same way GeM's learned keywords do.
     """
-    save_kppp_criteria(criteria)
+    # Attach the saved row's own id to criteria before searching with it —
+    # without this, the search below ran with a criteria dict that had no
+    # id at all, so it could never record its own "last searched" time
+    # (that stamp only gets written when an id is present). Every later
+    # cycle (Start Agent, 2 AM) already fetches criteria from the database,
+    # id included, so this only ever mattered for a filter's very first,
+    # immediate search.
+    saved_id = save_kppp_criteria(criteria)
+    if saved_id is not None:
+        criteria = {**criteria, "id": saved_id}
     log(f"👀 CEO set KPPP search filter: {criteria}")
 
     # KPPP has no free-text keyword box and no AI expansion step of its own,

@@ -712,9 +712,17 @@ def save_kppp_criteria(criteria: dict):
     tender_name — that turns into an unscoped, every-department search that
     then runs forever on every future cycle (the UI is expected to require
     at least one of the two before calling this, but this guard exists so a
-    bad call can never quietly poison the criteria list)."""
+    bad call can never quietly poison the criteria list).
+
+    Returns the saved row's id (the new row's, or the existing matching
+    row's) — or None if refused above. on_kppp_search attaches this to the
+    criteria dict passed to the immediate search that follows, so that
+    search's own "last searched" timestamp actually gets recorded (it
+    didn't before: a brand-new filter's very first search ran with no id
+    in its criteria dict at all, and the code that stamps last_searched_at
+    only does so when an id is present — see _run_kppp_criteria_search)."""
     if not (criteria.get("procuring_entity") or "").strip() and not (criteria.get("tender_name") or "").strip():
-        return
+        return None
     conn = get_conn()
     c = conn.cursor()
     fields = ("category", "procuring_entity", "tender_number", "from_date", "to_date", "tender_type", "tender_name")
@@ -725,15 +733,18 @@ def save_kppp_criteria(criteria: dict):
              AND from_date=? AND to_date=? AND tender_type=? AND tender_name=?""",
         values
     ).fetchone()
-    if not existing:
-        c.execute(
-            """INSERT INTO kppp_search_criteria
-               (category, procuring_entity, tender_number, from_date, to_date, tender_type, tender_name)
-               VALUES (?,?,?,?,?,?,?)""",
-            values
-        )
+    if existing:
+        conn.close()
+        return existing["id"]
+    new_id = c.execute(
+        """INSERT INTO kppp_search_criteria
+           (category, procuring_entity, tender_number, from_date, to_date, tender_type, tender_name)
+           VALUES (?,?,?,?,?,?,?) RETURNING id""",
+        values
+    ).fetchone()["id"]
     conn.commit()
     conn.close()
+    return new_id
 
 def get_kppp_criteria_list():
     conn = get_conn()
