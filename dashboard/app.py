@@ -1473,9 +1473,9 @@ st.markdown("""
        size), so this column just needs dropdown-sized width on every
        screen — the old wide-vs-narrow pill/dropdown toggling is gone. */
     div[data-testid="stColumn"]:has(.col-marker-portal) {
-        flex: 0 0 200px !important;
-        min-width: 200px !important;
-        max-width: 220px !important;
+        flex: 0 0 155px !important;
+        min-width: 155px !important;
+        max-width: 170px !important;
     }
     div[data-testid="stColumn"]:has(.col-marker-search) {
         flex: 1 1 0% !important;
@@ -1494,16 +1494,18 @@ st.markdown("""
         box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15) !important;
     }
     div[data-testid="stColumn"]:has(.col-marker-sort) {
-        flex: 0 0 200px !important;
-        min-width: 200px !important;
-        max-width: 220px !important;
+        flex: 0 0 150px !important;
+        min-width: 150px !important;
+        max-width: 165px !important;
     }
-    div[data-testid="stColumn"]:has(.col-marker-search-btn) {
+    div[data-testid="stColumn"]:has(.col-marker-search-btn),
+    div[data-testid="stColumn"]:has(.col-marker-filter-btn) {
         flex: 0 0 44px !important;
         min-width: 44px !important;
         max-width: 44px !important;
     }
-    div[class*="st-key-apply_table_search_btn"] button {
+    div[class*="st-key-apply_table_search_btn"] button,
+    div[class*="st-key-open_filters_btn"] button {
         height: 38px !important;
         min-height: 38px !important;
         padding: 0 !important;
@@ -1512,10 +1514,12 @@ st.markdown("""
         border: 1px solid rgba(96, 165, 250, 0.4) !important;
         color: #FFFFFF !important;
     }
-    div[class*="st-key-apply_table_search_btn"] button:hover {
+    div[class*="st-key-apply_table_search_btn"] button:hover,
+    div[class*="st-key-open_filters_btn"] button:hover {
         background-color: #3B82F6 !important;
     }
-    div[class*="st-key-apply_table_search_btn"] button span[data-testid="stIconMaterial"] {
+    div[class*="st-key-apply_table_search_btn"] button span[data-testid="stIconMaterial"],
+    div[class*="st-key-open_filters_btn"] button span[data-testid="stIconMaterial"] {
         font-size: 18px !important;
     }
     div[data-testid="stColumn"]:has(.col-marker-sort) div[data-baseweb],
@@ -1775,15 +1779,18 @@ st.markdown("""
         }
         div[data-testid="stColumn"]:has(.col-marker-search) {
             order: 3;
-            /* Reserve the button's 44px plus Streamlit's own 16px gap
-               between columns, or the two overflow the row's real width
-               and the button wraps onto its own line below. */
-            flex: 1 1 calc(100% - 60px) !important;
+            /* Reserve both buttons' 44px plus Streamlit's own 16px gap
+               each, or they overflow the row's real width and wrap onto
+               their own line below. */
+            flex: 1 1 calc(100% - 120px) !important;
             min-width: 0 !important;
             max-width: none !important;
         }
         div[data-testid="stColumn"]:has(.col-marker-search-btn) {
             order: 4;
+        }
+        div[data-testid="stColumn"]:has(.col-marker-filter-btn) {
+            order: 5;
         }
 
         /* Gap between the Tenders Trend card and the filter bar below it:
@@ -3162,8 +3169,8 @@ else:
                         st.session_state.dept_chart_reset_counter += 1
                         st.rerun()
 
-            col_portal, col_search, col_search_btn, col_sort = st.columns(
-                [0.2, 0.5, 0.08, 0.22], vertical_alignment="center"
+            col_portal, col_search, col_search_btn, col_sort, col_filter_btn = st.columns(
+                [0.15, 0.5, 0.08, 0.17, 0.08], vertical_alignment="center"
             )
             with col_portal:
                 st.markdown('<div class="col-marker-portal"></div>', unsafe_allow_html=True)
@@ -3216,6 +3223,12 @@ else:
                     key="sort_by_select",
                     label_visibility="collapsed",
                     filter_mode=None,
+                )
+            with col_filter_btn:
+                st.markdown('<div class="col-marker-filter-btn"></div>', unsafe_allow_html=True)
+                st.button(
+                    "", icon=":material/filter_alt:", key="open_filters_btn",
+                    use_container_width=True, type="primary", help="Filters"
                 )
             tenders = fuzzy_filter_tenders(tenders, search_query)
 
