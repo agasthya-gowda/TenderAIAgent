@@ -611,6 +611,15 @@ def _scheduled_search():
                 with _lock:
                     _state["status"] = "searching"
                 _search_portal("GeM", gem_keywords, category, 15, respect_stop_flag=True, primary_keywords=gem_primary_keywords)
+                # Reset before the KPPP step below — _run_kppp_criteria_search
+                # refuses to run while status is "searching"/"expanding" (that
+                # guard exists to stop a manual KPPP search from colliding with
+                # one already running), but left at "searching" from the GeM
+                # step just above, it was tripping over its own leftover
+                # status and skipping the scheduled KPPP search entirely every
+                # night.
+                with _lock:
+                    _state["status"] = "watching"
 
             if kppp_criteria_list:
                 log(f"🚀 Running {len(kppp_criteria_list)} scheduled KPPP searches...")
