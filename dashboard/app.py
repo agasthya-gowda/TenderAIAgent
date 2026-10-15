@@ -3382,7 +3382,10 @@ else:
                     # dropdown with the new department selected.
                     if current_portal == "KPPP" and st.session_state.get(dept_key) == ADD_DEPT_SENTINEL:
                         st.markdown("Department")
-                        new_dept_col, new_dept_btn_col = st.columns([4, 1])
+                        back_col, new_dept_col, new_dept_btn_col = st.columns([1, 3.3, 1])
+                        if back_col.button("←", key="back_to_dept_list_btn", use_container_width=True, help="Back to department list"):
+                            st.session_state[dept_key] = "All Departments"
+                            st.rerun()
                         new_dept_name = new_dept_col.text_input(
                             "Department", placeholder="Enter department name",
                             label_visibility="collapsed", key="new_dept_filter_input",
