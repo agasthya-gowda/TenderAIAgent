@@ -13,7 +13,7 @@ from rapidfuzz import fuzz
 from database.db import (
     get_all_tenders, update_tender_status,
     update_tender_pdfs, get_all_ceo_searches, get_learned_patterns,
-    get_kppp_criteria_list,
+    get_kppp_criteria_list, get_gem_last_searched_at,
     delete_tender, delete_pattern, delete_ceo_search, clear_tender_analysis,
     get_stats as _get_stats,
     get_department_counts as _get_department_counts,
@@ -382,10 +382,11 @@ def render_admin_page():
         # Read-only view of exactly what the agent auto-searches with on
         # every cycle — KPPP's saved category/entity/tender-name
         # combinations (kppp_search_criteria, what _run_kppp_criteria_search
-        # replays as-is) and GeM's saved keyword groups (learned_patterns
-        # filtered to portal=GeM, what get_search_queries() builds the GeM
-        # search list from — see agent/learner.py). Pure SELECT + display,
-        # doesn't touch or call anything that writes to the database.
+        # replays as-is) and GeM's own raw saved keywords (ceo_searches,
+        # what _scheduled_search/_run_full_catalog_search build the GeM
+        # search list from — see agent/orchestrator.py). Pure SELECT +
+        # display, doesn't touch or call anything that writes to the
+        # database.
         title_col, dropdown_col = st.columns([4, 2])
         with title_col:
             st.markdown("#### What the agent searches with")
@@ -422,10 +423,18 @@ def render_admin_page():
                         return ", ".join(json.loads(r["keywords"]))
                     except Exception:
                         return r.get("keywords") or ""
+                def _last_searched(r):
+                    # One keyword per row now (see the cleanup above), so
+                    # its own search-log entry is the real "last searched"
+                    # time the agent actually uses as this keyword's next
+                    # search cutoff (see get_gem_last_searched_at).
+                    kw = _kw_list(r).strip()
+                    return get_gem_last_searched_at(kw) or "Never"
                 df = pd.DataFrame([{
                     "Category": r.get("category") or "",
                     "Weight": r.get("weight"),
                     "Keywords": _kw_list(r),
+                    "Last Searched At": _last_searched(r),
                 } for r in gem_rows])
                 st.dataframe(df, use_container_width=True, hide_index=True)
 
