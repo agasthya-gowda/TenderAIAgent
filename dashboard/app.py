@@ -3395,11 +3395,17 @@ else:
                                 "Department", placeholder="Enter department name",
                                 label_visibility="collapsed", key="new_dept_filter_input",
                             )
-                            if new_dept_btn_col.form_submit_button("➕", use_container_width=True):
+                            submitted = new_dept_btn_col.form_submit_button("➕", use_container_width=True)
+                            print(f"[DEBUG add-dept] submitted={submitted!r} new_dept_name={new_dept_name!r}")
+                            if submitted:
                                 if new_dept_name.strip():
-                                    add_department_filter("KPPP", new_dept_name.strip())
+                                    print(f"[DEBUG add-dept] calling add_department_filter with {new_dept_name.strip()!r}")
+                                    result_id = add_department_filter("KPPP", new_dept_name.strip())
+                                    print(f"[DEBUG add-dept] add_department_filter returned {result_id!r}")
                                     st.session_state[dept_key] = new_dept_name.strip()
                                     st.rerun()
+                                else:
+                                    print("[DEBUG add-dept] new_dept_name was empty after strip")
                         if st.button("← Back to department list", key="back_to_dept_list_btn"):
                             st.session_state[dept_key] = "All Departments"
                             st.rerun()
