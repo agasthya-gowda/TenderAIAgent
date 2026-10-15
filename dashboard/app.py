@@ -14,6 +14,7 @@ from database.db import (
     get_all_tenders, update_tender_status,
     update_tender_pdfs, get_all_ceo_searches, get_learned_patterns,
     get_kppp_criteria_list, get_gem_last_searched_at,
+    get_department_filters, add_department_filter,
     delete_tender, delete_pattern, delete_ceo_search, clear_tender_analysis,
     get_stats as _get_stats,
     get_department_counts as _get_department_counts,
@@ -605,6 +606,32 @@ def _apply_quantity_filter(tenders, bucket):
             continue
         result.append(t)
     return result
+
+
+def _apply_department_filter(tenders, portal, selected_label):
+    """Filters the table's tender list down to one department — KPPP
+    matches via that department's saved match_terms (short code + known
+    full name, see department_filters seed data), GeM matches the literal
+    department string the dropdown was built from (get_department_counts),
+    both case-insensitive substring checks against tender["department"]."""
+    if selected_label == "All Departments":
+        return tenders
+    if portal == "KPPP":
+        match_terms = None
+        for d in get_department_filters("KPPP"):
+            if d["label"] == selected_label:
+                match_terms = d["match_terms"]
+                break
+        if not match_terms:
+            return tenders
+        terms_lower = [t.lower() for t in match_terms]
+        return [
+            t for t in tenders
+            if any(term in (t.get("department") or "").lower() for term in terms_lower)
+        ]
+    else:
+        target = selected_label.lower()
+        return [t for t in tenders if target in (t.get("department") or "").lower()]
 
 
 def _format_tender_price(numeric_value):
@@ -3322,6 +3349,7 @@ else:
                 )
             with col_filter_btn:
                 st.markdown('<div class="col-marker-filter-btn"></div>', unsafe_allow_html=True)
+                current_portal = st.session_state.get("portal_filter_value", "KPPP")
                 with st.popover(
                     "", icon=":material/filter_alt:", key="open_filters_btn",
                     use_container_width=True, type="primary", help="Filters"
@@ -3331,8 +3359,39 @@ else:
                         QUANTITY_FILTER_OPTIONS,
                         key="quantity_filter_bucket",
                     )
+                    if current_portal == "KPPP":
+                        dept_rows = get_department_filters("KPPP")
+                        dept_options = ["All Departments"] + [d["label"] for d in dept_rows]
+                        dept_key = "department_filter_kppp"
+                    else:
+                        # GeM's dropdown is data-driven, not a saved list —
+                        # the busiest departments right now, recomputed each
+                        # time (no "Others" bucket here, that's chart-only).
+                        gem_counts = [
+                            d for d in get_department_counts("GeM", top_n=10)
+                            if d[0] != "Others"
+                        ]
+                        dept_options = ["All Departments"] + [d[0] for d in gem_counts]
+                        dept_key = "department_filter_gem"
+                    st.selectbox("Department", dept_options, key=dept_key)
+                    if current_portal == "KPPP":
+                        with st.form(key="add_dept_filter_form", clear_on_submit=True, border=False):
+                            new_dept_col, new_dept_btn_col = st.columns([3, 1])
+                            new_dept_name = new_dept_col.text_input(
+                                "Add Department", placeholder="e.g. BWSSB",
+                                label_visibility="collapsed", key="new_dept_filter_input",
+                            )
+                            if new_dept_btn_col.form_submit_button("➕ Add"):
+                                if new_dept_name.strip():
+                                    add_department_filter("KPPP", new_dept_name.strip())
+                                    st.rerun()
+            department_filter_value = st.session_state.get(
+                "department_filter_kppp" if current_portal == "KPPP" else "department_filter_gem",
+                "All Departments",
+            )
             tenders = fuzzy_filter_tenders(tenders, search_query)
             tenders = _apply_quantity_filter(tenders, st.session_state.get("quantity_filter_bucket", "All Quantities"))
+            tenders = _apply_department_filter(tenders, current_portal, department_filter_value)
 
             if not tenders:
                 st.info("🔍 No tenders found yet.")

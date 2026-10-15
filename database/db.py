@@ -231,6 +231,40 @@ def init_db():
         )
     """)
 
+    # KPPP's own department filter list for the tender table's Filters
+    # popover — a fixed curated starting list (common Karnataka procuring
+    # entities) the CEO can add to. GeM has no equivalent table: its
+    # department dropdown is computed live from get_department_counts()
+    # instead, since "the busiest departments" is itself data-driven there.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS department_filters (
+            id SERIAL PRIMARY KEY,
+            portal TEXT NOT NULL,
+            label TEXT NOT NULL,
+            match_terms TEXT NOT NULL,
+            created_at TEXT DEFAULT to_char(now() AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI:SS'),
+            UNIQUE(portal, label)
+        )
+    """)
+    _kppp_dept_seed = [
+        ("KSRTC", ["KSRTC", "Karnataka State Road Transport"]),
+        ("KSP", ["KSP", "Karnataka State Police"]),
+        ("PCSD", ["PCSD"]),
+        ("BMTC", ["BMTC", "Bangalore Metropolitan Transport"]),
+        ("KRDCL", ["KRDCL", "Karnataka Road Development"]),
+        ("KKRTC", ["KKRTC", "Kalyana Karnataka Road Transport"]),
+        ("NWKRTC", ["NWKRTC", "North Western Karnataka Road Transport"]),
+        ("DMA", ["DMA", "Directorate of Municipal Administration"]),
+        ("Health department", ["Health"]),
+        ("Transport Department", ["Transport Department"]),
+    ]
+    for label, terms in _kppp_dept_seed:
+        c.execute(
+            "INSERT INTO department_filters (portal, label, match_terms) VALUES (?,?,?) "
+            "ON CONFLICT (portal, label) DO NOTHING",
+            ("KPPP", label, json.dumps(terms))
+        )
+
     # Tables 4-8 — Chipscape's own company profile (turnover, credentials,
     # past-project references/quantities) plus subcontractor/system-integrator
     # partner credentials. Previously this all lived in static Excel files
@@ -1329,6 +1363,43 @@ def mark_tender_relevant(tender_id: int, keyword: str):
     )
     conn.commit()
     conn.close()
+
+def get_department_filters(portal: str):
+    """KPPP's saved department filter list (see department_filters table) —
+    the Filters popover's department dropdown for that portal."""
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT id, label, match_terms FROM department_filters WHERE portal=? ORDER BY label",
+        (portal,)
+    ).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        try:
+            terms = json.loads(r["match_terms"])
+        except Exception:
+            terms = [r["label"]]
+        out.append({"id": r["id"], "label": r["label"], "match_terms": terms})
+    return out
+
+def add_department_filter(portal: str, label: str):
+    """Adds a CEO-typed department to that portal's Filters dropdown list —
+    matched against tenders by plain substring on the label itself (no
+    abbreviation-expansion guesswork for a department only the CEO would
+    know the full name of)."""
+    label = (label or "").strip()
+    if not label:
+        return None
+    conn = get_conn()
+    c = conn.cursor()
+    row = c.execute(
+        "INSERT INTO department_filters (portal, label, match_terms) VALUES (?,?,?) "
+        "ON CONFLICT (portal, label) DO NOTHING RETURNING id",
+        (portal, label, json.dumps([label]))
+    ).fetchone()
+    conn.commit()
+    conn.close()
+    return row["id"] if row else None
 
 def get_department_counts(portal: str, top_n: int = 5):
     """Real per-department tender counts for one portal, top N plus an
