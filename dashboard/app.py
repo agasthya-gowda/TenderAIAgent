@@ -13,6 +13,7 @@ from rapidfuzz import fuzz
 from database.db import (
     get_all_tenders, update_tender_status,
     update_tender_pdfs, get_all_ceo_searches, get_learned_patterns,
+    get_kppp_criteria_list,
     delete_tender, delete_pattern, delete_ceo_search, clear_tender_analysis,
     get_stats as _get_stats,
     get_department_counts as _get_department_counts,
@@ -180,9 +181,9 @@ def render_admin_page():
         unsafe_allow_html=True,
     )
 
-    tab_turnover, tab_creds, tab_partners, tab_projects, tab_quantities, tab_users = st.tabs([
+    tab_turnover, tab_creds, tab_partners, tab_projects, tab_quantities, tab_users, tab_db_table = st.tabs([
         "💰 Turnover", "📜 Chipscape Credentials", "🤝 Partner Credentials",
-        "📁 Project References", "📦 Project Quantities", "👤 Users"
+        "📁 Project References", "📦 Project Quantities", "👤 Users", "🗄️ DB Table"
     ])
 
     with tab_turnover:
@@ -376,6 +377,57 @@ def render_admin_page():
                 row_cols[3].write(u["created_at"])
                 if row_cols[4].button("✏️", key=f"user_modify_{u['id']}", help=f"Edit {u['username']}"):
                     _edit_user_dialog(u)
+
+    with tab_db_table:
+        # Read-only view of exactly what the agent auto-searches with on
+        # every cycle — KPPP's saved category/entity/tender-name
+        # combinations (kppp_search_criteria, what _run_kppp_criteria_search
+        # replays as-is) and GeM's saved keyword groups (learned_patterns
+        # filtered to portal=GeM, what get_search_queries() builds the GeM
+        # search list from — see agent/learner.py). Pure SELECT + display,
+        # doesn't touch or call anything that writes to the database.
+        title_col, dropdown_col = st.columns([4, 2])
+        with title_col:
+            st.markdown("#### What the agent searches with")
+            st.caption("Every saved keyword/filter combination the agent replays on each auto-search cycle.")
+        with dropdown_col:
+            db_table_portal = st.selectbox(
+                "Portal", ["KPPP (KA)", "GeM"], key="admin_db_table_portal",
+                label_visibility="collapsed",
+            )
+
+        if db_table_portal == "KPPP (KA)":
+            kppp_rows = get_kppp_criteria_list()
+            if not kppp_rows:
+                st.info("No saved KPPP search filters yet.")
+            else:
+                df = pd.DataFrame([{
+                    "Category": r.get("category") or "",
+                    "Procuring Entity": r.get("procuring_entity") or "",
+                    "Tender Name": r.get("tender_name") or "",
+                    "Tender Number": r.get("tender_number") or "",
+                    "Tender Type": r.get("tender_type") or "",
+                    "From Date": r.get("from_date") or "",
+                    "To Date": r.get("to_date") or "",
+                    "Last Searched At": r.get("last_searched_at") or "Never",
+                } for r in kppp_rows])
+                st.dataframe(df, use_container_width=True, hide_index=True)
+        else:
+            gem_rows = [p for p in get_learned_patterns() if (p.get("portal") or "GeM") == "GeM"]
+            if not gem_rows:
+                st.info("No saved GeM keyword patterns yet.")
+            else:
+                def _kw_list(r):
+                    try:
+                        return ", ".join(json.loads(r["keywords"]))
+                    except Exception:
+                        return r.get("keywords") or ""
+                df = pd.DataFrame([{
+                    "Category": r.get("category") or "",
+                    "Weight": r.get("weight"),
+                    "Keywords": _kw_list(r),
+                } for r in gem_rows])
+                st.dataframe(df, use_container_width=True, hide_index=True)
 
 
 from agent.orchestrator import (
