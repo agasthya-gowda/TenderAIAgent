@@ -3375,22 +3375,25 @@ else:
                         ]
                         dept_options = ["All Departments"] + [d[0] for d in gem_counts]
                         dept_key = "department_filter_gem"
-                    st.selectbox("Department", dept_options, key=dept_key)
-                    # Picking the last option reveals an inline text box +
-                    # Add button right here, instead of a separate always-
-                    # visible row below the dropdown.
+                    # Picking the last option swaps the dropdown itself for
+                    # a plain text box + "+" button in the same spot — not
+                    # an extra row added below it — until something's typed
+                    # and added, at which point it's back to a normal
+                    # dropdown with the new department selected.
                     if current_portal == "KPPP" and st.session_state.get(dept_key) == ADD_DEPT_SENTINEL:
-                        with st.form(key="add_dept_filter_form", clear_on_submit=True, border=False):
-                            new_dept_col, new_dept_btn_col = st.columns([3, 1])
-                            new_dept_name = new_dept_col.text_input(
-                                "Add Department", placeholder="e.g. BWSSB",
-                                label_visibility="collapsed", key="new_dept_filter_input",
-                            )
-                            if new_dept_btn_col.form_submit_button("➕ Add"):
-                                if new_dept_name.strip():
-                                    add_department_filter("KPPP", new_dept_name.strip())
-                                    st.session_state[dept_key] = new_dept_name.strip()
-                                    st.rerun()
+                        st.markdown("Department")
+                        new_dept_col, new_dept_btn_col = st.columns([4, 1])
+                        new_dept_name = new_dept_col.text_input(
+                            "Department", placeholder="Enter department name",
+                            label_visibility="collapsed", key="new_dept_filter_input",
+                        )
+                        if new_dept_btn_col.button("➕", key="confirm_add_dept_btn", use_container_width=True):
+                            if new_dept_name.strip():
+                                add_department_filter("KPPP", new_dept_name.strip())
+                                st.session_state[dept_key] = new_dept_name.strip()
+                                st.rerun()
+                    else:
+                        st.selectbox("Department", dept_options, key=dept_key)
             department_filter_value = st.session_state.get(
                 "department_filter_kppp" if current_portal == "KPPP" else "department_filter_gem",
                 "All Departments",
