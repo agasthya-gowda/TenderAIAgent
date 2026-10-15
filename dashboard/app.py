@@ -3359,14 +3359,16 @@ else:
                         QUANTITY_FILTER_OPTIONS,
                         key="quantity_filter_bucket",
                     )
+                    ADD_DEPT_SENTINEL = "➕ Add Department..."
                     if current_portal == "KPPP":
                         dept_rows = get_department_filters("KPPP")
-                        dept_options = ["All Departments"] + [d["label"] for d in dept_rows]
+                        dept_options = ["All Departments"] + [d["label"] for d in dept_rows] + [ADD_DEPT_SENTINEL]
                         dept_key = "department_filter_kppp"
                     else:
                         # GeM's dropdown is data-driven, not a saved list —
                         # the busiest departments right now, recomputed each
-                        # time (no "Others" bucket here, that's chart-only).
+                        # time (no "Others" bucket here, that's chart-only;
+                        # no add-new option either, same as before).
                         gem_counts = [
                             d for d in get_department_counts("GeM", top_n=10)
                             if d[0] != "Others"
@@ -3374,7 +3376,10 @@ else:
                         dept_options = ["All Departments"] + [d[0] for d in gem_counts]
                         dept_key = "department_filter_gem"
                     st.selectbox("Department", dept_options, key=dept_key)
-                    if current_portal == "KPPP":
+                    # Picking the last option reveals an inline text box +
+                    # Add button right here, instead of a separate always-
+                    # visible row below the dropdown.
+                    if current_portal == "KPPP" and st.session_state.get(dept_key) == ADD_DEPT_SENTINEL:
                         with st.form(key="add_dept_filter_form", clear_on_submit=True, border=False):
                             new_dept_col, new_dept_btn_col = st.columns([3, 1])
                             new_dept_name = new_dept_col.text_input(
@@ -3384,11 +3389,14 @@ else:
                             if new_dept_btn_col.form_submit_button("➕ Add"):
                                 if new_dept_name.strip():
                                     add_department_filter("KPPP", new_dept_name.strip())
+                                    st.session_state[dept_key] = new_dept_name.strip()
                                     st.rerun()
             department_filter_value = st.session_state.get(
                 "department_filter_kppp" if current_portal == "KPPP" else "department_filter_gem",
                 "All Departments",
             )
+            if department_filter_value == "➕ Add Department...":
+                department_filter_value = "All Departments"
             tenders = fuzzy_filter_tenders(tenders, search_query)
             tenders = _apply_quantity_filter(tenders, st.session_state.get("quantity_filter_bucket", "All Quantities"))
             tenders = _apply_department_filter(tenders, current_portal, department_filter_value)
