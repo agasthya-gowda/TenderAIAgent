@@ -18,7 +18,6 @@ from database.db import (
     get_gem_last_searched_at, update_gem_last_searched,
     update_kppp_last_searched
 )
-from agent.learner import analyze_patterns, get_search_queries
 from agent.watcher import start_watching, register_callback
 
 
@@ -241,11 +240,11 @@ def _instant_expand_and_search(keyword: str, portal: str):
         # exactly what GeM's own "Contains" search returns for "X", nothing
         # more (previously an AI-guessed synonym list like "wear"/"weather"
         # for "worn" pulled in unrelated tenders GeM itself never showed).
-        # Still recorded as a (single-keyword) learned pattern so the
-        # existing daily/Start Agent incremental-refresh machinery
-        # (get_search_queries() -> _search_portal's stop_before_date logic)
-        # keeps re-checking this exact keyword for new tenders going
-        # forward, same as before.
+        # Still recorded as a (single-keyword) learned pattern — this isn't
+        # read back for the daily/Start Agent re-search list any more (that
+        # now comes straight from ceo_searches, see _scheduled_search /
+        # _run_full_catalog_search), but other things still read it (the
+        # Patterns Learned page, stats).
         from database.db import save_learned_patterns
         save_learned_patterns(
             category=keyword.title(),
@@ -592,25 +591,32 @@ def _scheduled_search():
         try:
             if searches:
                 with _lock:
-                    _state["status"] = "learning"
-
-                result = analyze_patterns()
-                summary = result.get("summary", "")
-                if summary:
-                    log(f"📋 Pattern summary: {summary}")
-
-                queries = get_search_queries()
-                gem_keywords = [q["keyword"] for q in queries if q["portal"] == "GeM"][:10]
-                gem_primary_keywords = {
-                    q["keyword"].strip().lower() for q in queries
-                    if q["portal"] == "GeM" and q.get("is_primary")
-                }
-                category = queries[0].get("category", "") if queries else ""
-
-                log(f"🚀 Running {len(gem_keywords)} scheduled GeM searches...")
-                with _lock:
                     _state["status"] = "searching"
-                _search_portal("GeM", gem_keywords, category, 15, respect_stop_flag=True, primary_keywords=gem_primary_keywords)
+
+                # Exactly the CEO's own raw typed keywords, one GeM search
+                # per keyword, nothing AI-expanded added on top — a search
+                # for "X" here must return exactly what GeM's own "Contains"
+                # search returns for "X" (see _instant_expand_and_search,
+                # the search-bar equivalent of this, which works the same
+                # way). No analyze_patterns()/get_search_queries() call here
+                # any more — those generated extra AI-guessed synonym
+                # keywords that aren't on GeM's own site for this term, and
+                # slowed the run down searching them.
+                gem_keywords = sorted({
+                    s["keyword"] for s in searches if s["portal"] == "GeM"
+                })
+                log(f"🚀 Running {len(gem_keywords)} scheduled GeM searches...")
+                for kw in gem_keywords:
+                    if not _state["running"]:
+                        log("🛑 [GeM] Stop requested — ending search early")
+                        break
+                    # primary_keywords (not the singular primary_keyword) —
+                    # that's what keeps this on the existing "full pagination
+                    # only on this keyword's very first-ever batch pass, then
+                    # incremental (stop_before_date) afterwards" behavior;
+                    # the singular form here would instead make every run,
+                    # every night, re-walk every GeM page for every keyword.
+                    _search_portal("GeM", [kw], kw.title(), 15, respect_stop_flag=True, primary_keywords={kw})
                 # Reset before the KPPP step below — _run_kppp_criteria_search
                 # refuses to run while status is "searching"/"expanding" (that
                 # guard exists to stop a manual KPPP search from colliding with
@@ -680,14 +686,16 @@ def _run_full_catalog_search():
 
     try:
         if searches:
-            queries = get_search_queries()
-            gem_keywords = [q["keyword"] for q in queries if q["portal"] == "GeM"][:8]
-            gem_primary_keywords = {
-                q["keyword"].strip().lower() for q in queries
-                if q["portal"] == "GeM" and q.get("is_primary")
-            }
-            category = queries[0].get("category", "") if queries else ""
-            _search_portal("GeM", gem_keywords, category, 15, respect_stop_flag=True, primary_keywords=gem_primary_keywords)
+            # Same as _scheduled_search — exactly the CEO's own raw typed
+            # keywords, one GeM search per keyword, no AI-expanded synonyms.
+            gem_keywords = sorted({
+                s["keyword"] for s in searches if s["portal"] == "GeM"
+            })
+            for kw in gem_keywords:
+                if not _state["running"]:
+                    log("🛑 [GeM] Stop requested — ending search early")
+                    break
+                _search_portal("GeM", [kw], kw.title(), 15, respect_stop_flag=True, primary_keywords={kw})
 
         if kppp_criteria_list:
             _run_kppp_criteria_search(kppp_criteria_list, respect_stop_flag=True)
