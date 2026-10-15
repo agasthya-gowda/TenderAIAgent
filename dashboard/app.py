@@ -3360,6 +3360,7 @@ else:
                         key="quantity_filter_bucket",
                     )
                     ADD_DEPT_SENTINEL = "➕ Add Department..."
+                    print(f"[DEBUG add-dept] filter popover rendering, current_portal={current_portal!r}, dept_key_val={st.session_state.get('department_filter_kppp')!r}", flush=True)
                     if current_portal == "KPPP":
                         dept_rows = get_department_filters("KPPP")
                         dept_options = ["All Departments"] + [d["label"] for d in dept_rows] + [ADD_DEPT_SENTINEL]
@@ -3396,12 +3397,12 @@ else:
                                 label_visibility="collapsed", key="new_dept_filter_input",
                             )
                             submitted = new_dept_btn_col.form_submit_button("➕", use_container_width=True)
-                            print(f"[DEBUG add-dept] submitted={submitted!r} new_dept_name={new_dept_name!r}")
+                            print(f"[DEBUG add-dept] submitted={submitted!r} new_dept_name={new_dept_name!r}", flush=True)
                             if submitted:
                                 if new_dept_name.strip():
-                                    print(f"[DEBUG add-dept] calling add_department_filter with {new_dept_name.strip()!r}")
+                                    print(f"[DEBUG add-dept] calling add_department_filter with {new_dept_name.strip()!r}", flush=True)
                                     result_id = add_department_filter("KPPP", new_dept_name.strip())
-                                    print(f"[DEBUG add-dept] add_department_filter returned {result_id!r}")
+                                    print(f"[DEBUG add-dept] add_department_filter returned {result_id!r}", flush=True)
                                     st.session_state[dept_key] = new_dept_name.strip()
                                     st.rerun()
                                 else:
