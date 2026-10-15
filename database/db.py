@@ -633,8 +633,8 @@ def update_gem_last_searched(keyword: str):
     conn = get_conn()
     conn.execute(
         """INSERT INTO gem_keyword_full_search_log (keyword, last_searched_at)
-           VALUES (?, to_char(now(), 'YYYY-MM-DD HH24:MI:SS'))
-           ON CONFLICT (keyword) DO UPDATE SET last_searched_at = to_char(now(), 'YYYY-MM-DD HH24:MI:SS')""",
+           VALUES (?, to_char(now() AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI:SS'))
+           ON CONFLICT (keyword) DO UPDATE SET last_searched_at = to_char(now() AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI:SS')""",
         (keyword.lower().strip(),)
     )
     conn.commit()
@@ -777,7 +777,7 @@ def update_kppp_last_searched(criteria_id: int):
     itself — see _run_kppp_criteria_search in orchestrator.py."""
     conn = get_conn()
     conn.execute(
-        "UPDATE kppp_search_criteria SET last_searched_at = to_char(now(), 'YYYY-MM-DD HH24:MI:SS') WHERE id=?",
+        "UPDATE kppp_search_criteria SET last_searched_at = to_char(now() AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI:SS') WHERE id=?",
         (criteria_id,)
     )
     conn.commit()
