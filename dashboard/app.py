@@ -3360,64 +3360,75 @@ else:
                         key="quantity_filter_bucket",
                     )
                     ADD_DEPT_SENTINEL = "➕ Add Department..."
-                    print(f"[DEBUG add-dept] filter popover rendering, current_portal={current_portal!r}, dept_key_val={st.session_state.get('department_filter_kppp')!r}", flush=True)
                     if current_portal == "KPPP":
+                        # Plain session_state the app manages itself, not a
+                        # widget's own bound value — a widget's key gets its
+                        # session_state entry silently reset by Streamlit
+                        # once that widget stops being instantiated for a
+                        # run (which happens here every time add-mode
+                        # swaps the selectbox out for the text box), so
+                        # relying on the selectbox's own key to remember
+                        # "add mode is on" or "which department is chosen"
+                        # across that swap doesn't actually hold.
+                        st.session_state.setdefault("kppp_dept_selected", "All Departments")
+                        st.session_state.setdefault("kppp_dept_add_mode", False)
                         dept_rows = get_department_filters("KPPP")
                         dept_options = ["All Departments"] + [d["label"] for d in dept_rows] + [ADD_DEPT_SENTINEL]
-                        dept_key = "department_filter_kppp"
+
+                        if st.session_state["kppp_dept_add_mode"]:
+                            st.markdown("Department")
+                            # The text box + "+" need to be inside a form —
+                            # a plain st.button next to a text_input can
+                            # fire its click before the text input's own
+                            # change event has committed the typed value to
+                            # session_state, so the add silently saw an
+                            # empty string and did nothing. A form only
+                            # reads its widgets' values at submit time,
+                            # which sidesteps that race entirely.
+                            with st.form(key="add_dept_filter_form", clear_on_submit=True, border=False):
+                                new_dept_col, new_dept_btn_col = st.columns([4, 1])
+                                new_dept_name = new_dept_col.text_input(
+                                    "Department", placeholder="Enter department name",
+                                    label_visibility="collapsed", key="new_dept_filter_input",
+                                )
+                                if new_dept_btn_col.form_submit_button("➕", use_container_width=True):
+                                    if new_dept_name.strip():
+                                        add_department_filter("KPPP", new_dept_name.strip())
+                                        st.session_state["kppp_dept_selected"] = new_dept_name.strip()
+                                        st.session_state["kppp_dept_add_mode"] = False
+                                        st.rerun()
+                            if st.button("← Back to department list", key="back_to_dept_list_btn"):
+                                st.session_state["kppp_dept_add_mode"] = False
+                                st.rerun()
+                        else:
+                            picked = st.selectbox(
+                                "Department", dept_options,
+                                index=dept_options.index(st.session_state["kppp_dept_selected"])
+                                if st.session_state["kppp_dept_selected"] in dept_options else 0,
+                                key="department_filter_kppp_select",
+                            )
+                            if picked == ADD_DEPT_SENTINEL:
+                                st.session_state["kppp_dept_add_mode"] = True
+                                st.rerun()
+                            else:
+                                st.session_state["kppp_dept_selected"] = picked
                     else:
                         # GeM's dropdown is data-driven, not a saved list —
                         # the busiest departments right now, recomputed each
                         # time (no "Others" bucket here, that's chart-only;
-                        # no add-new option either, same as before).
+                        # no add-new option either, same as before). Always
+                        # rendered every run, so it doesn't hit the same
+                        # widget-state issue KPPP's conditional swap does.
                         gem_counts = [
                             d for d in get_department_counts("GeM", top_n=10)
                             if d[0] != "Others"
                         ]
                         dept_options = ["All Departments"] + [d[0] for d in gem_counts]
-                        dept_key = "department_filter_gem"
-                    # Picking the last option swaps the dropdown itself for
-                    # a plain text box + "+" button in the same spot — not
-                    # an extra row added below it — until something's typed
-                    # and added, at which point it's back to a normal
-                    # dropdown with the new department selected.
-                    if current_portal == "KPPP" and st.session_state.get(dept_key) == ADD_DEPT_SENTINEL:
-                        st.markdown("Department")
-                        # The text box + "+" need to be inside a form — a
-                        # plain st.button next to a text_input can fire its
-                        # click before the text input's own change event has
-                        # committed the typed value to session_state, so the
-                        # add silently saw an empty string and did nothing.
-                        # A form only reads its widgets' values at submit
-                        # time, which sidesteps that race entirely.
-                        with st.form(key="add_dept_filter_form", clear_on_submit=True, border=False):
-                            new_dept_col, new_dept_btn_col = st.columns([4, 1])
-                            new_dept_name = new_dept_col.text_input(
-                                "Department", placeholder="Enter department name",
-                                label_visibility="collapsed", key="new_dept_filter_input",
-                            )
-                            submitted = new_dept_btn_col.form_submit_button("➕", use_container_width=True)
-                            print(f"[DEBUG add-dept] submitted={submitted!r} new_dept_name={new_dept_name!r}", flush=True)
-                            if submitted:
-                                if new_dept_name.strip():
-                                    print(f"[DEBUG add-dept] calling add_department_filter with {new_dept_name.strip()!r}", flush=True)
-                                    result_id = add_department_filter("KPPP", new_dept_name.strip())
-                                    print(f"[DEBUG add-dept] add_department_filter returned {result_id!r}", flush=True)
-                                    st.session_state[dept_key] = new_dept_name.strip()
-                                    st.rerun()
-                                else:
-                                    print("[DEBUG add-dept] new_dept_name was empty after strip")
-                        if st.button("← Back to department list", key="back_to_dept_list_btn"):
-                            st.session_state[dept_key] = "All Departments"
-                            st.rerun()
-                    else:
-                        st.selectbox("Department", dept_options, key=dept_key)
-            department_filter_value = st.session_state.get(
-                "department_filter_kppp" if current_portal == "KPPP" else "department_filter_gem",
-                "All Departments",
+                        st.selectbox("Department", dept_options, key="department_filter_gem")
+            department_filter_value = (
+                st.session_state.get("kppp_dept_selected", "All Departments") if current_portal == "KPPP"
+                else st.session_state.get("department_filter_gem", "All Departments")
             )
-            if department_filter_value == "➕ Add Department...":
-                department_filter_value = "All Departments"
             tenders = fuzzy_filter_tenders(tenders, search_query)
             tenders = _apply_quantity_filter(tenders, st.session_state.get("quantity_filter_bucket", "All Quantities"))
             tenders = _apply_department_filter(tenders, current_portal, department_filter_value)
