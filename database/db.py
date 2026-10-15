@@ -1401,6 +1401,17 @@ def add_department_filter(portal: str, label: str):
     conn.close()
     return row["id"] if row else None
 
+def delete_department_filter(portal: str, label: str):
+    """Removes one department from that portal's Filters dropdown list —
+    the CEO's own cleanup counterpart to add_department_filter."""
+    conn = get_conn()
+    conn.execute(
+        "DELETE FROM department_filters WHERE portal=? AND label=?",
+        (portal, label)
+    )
+    conn.commit()
+    conn.close()
+
 def get_department_counts(portal: str, top_n: int = 5):
     """Real per-department tender counts for one portal, top N plus an
     'Others' bucket for the rest — read-only, used by the dashboard charts."""

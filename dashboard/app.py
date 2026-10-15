@@ -14,7 +14,7 @@ from database.db import (
     get_all_tenders, update_tender_status,
     update_tender_pdfs, get_all_ceo_searches, get_learned_patterns,
     get_kppp_criteria_list, get_gem_last_searched_at,
-    get_department_filters, add_department_filter,
+    get_department_filters, add_department_filter, delete_department_filter,
     delete_tender, delete_pattern, delete_ceo_search, clear_tender_analysis,
     get_stats as _get_stats,
     get_department_counts as _get_department_counts,
@@ -3412,6 +3412,14 @@ else:
                                 st.rerun()
                             else:
                                 st.session_state["kppp_dept_selected"] = picked
+                                if picked != "All Departments":
+                                    if st.button(
+                                        "🗑️ Remove this department", key="delete_dept_filter_btn",
+                                        use_container_width=True,
+                                    ):
+                                        delete_department_filter("KPPP", picked)
+                                        st.session_state["kppp_dept_selected"] = "All Departments"
+                                        st.rerun()
                     else:
                         # GeM's dropdown is data-driven, not a saved list —
                         # the busiest departments right now, recomputed each
