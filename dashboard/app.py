@@ -3382,19 +3382,27 @@ else:
                     # dropdown with the new department selected.
                     if current_portal == "KPPP" and st.session_state.get(dept_key) == ADD_DEPT_SENTINEL:
                         st.markdown("Department")
-                        back_col, new_dept_col, new_dept_btn_col = st.columns([1, 3.3, 1])
-                        if back_col.button("←", key="back_to_dept_list_btn", use_container_width=True, help="Back to department list"):
+                        # The text box + "+" need to be inside a form — a
+                        # plain st.button next to a text_input can fire its
+                        # click before the text input's own change event has
+                        # committed the typed value to session_state, so the
+                        # add silently saw an empty string and did nothing.
+                        # A form only reads its widgets' values at submit
+                        # time, which sidesteps that race entirely.
+                        with st.form(key="add_dept_filter_form", clear_on_submit=True, border=False):
+                            new_dept_col, new_dept_btn_col = st.columns([4, 1])
+                            new_dept_name = new_dept_col.text_input(
+                                "Department", placeholder="Enter department name",
+                                label_visibility="collapsed", key="new_dept_filter_input",
+                            )
+                            if new_dept_btn_col.form_submit_button("➕", use_container_width=True):
+                                if new_dept_name.strip():
+                                    add_department_filter("KPPP", new_dept_name.strip())
+                                    st.session_state[dept_key] = new_dept_name.strip()
+                                    st.rerun()
+                        if st.button("← Back to department list", key="back_to_dept_list_btn"):
                             st.session_state[dept_key] = "All Departments"
                             st.rerun()
-                        new_dept_name = new_dept_col.text_input(
-                            "Department", placeholder="Enter department name",
-                            label_visibility="collapsed", key="new_dept_filter_input",
-                        )
-                        if new_dept_btn_col.button("➕", key="confirm_add_dept_btn", use_container_width=True):
-                            if new_dept_name.strip():
-                                add_department_filter("KPPP", new_dept_name.strip())
-                                st.session_state[dept_key] = new_dept_name.strip()
-                                st.rerun()
                     else:
                         st.selectbox("Department", dept_options, key=dept_key)
             department_filter_value = st.session_state.get(
