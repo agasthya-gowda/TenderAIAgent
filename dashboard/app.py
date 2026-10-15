@@ -572,6 +572,41 @@ def _sync_portal_from_dropdown():
     st.session_state.portal_filter_value = PORTAL_FILTER_MAP.get(label, "KPPP")
 
 
+# Quantity buckets for the table's Filters popover — half-open ranges
+# (lower bound inclusive, upper bound exclusive) so a tender can only ever
+# land in exactly one bucket, even at a boundary value like 50 or 100.
+QUANTITY_FILTER_OPTIONS = ["All Quantities", "Under 10", "10-50", "50-100", "100-200", "300+"]
+QUANTITY_FILTER_RANGES = {
+    "Under 10": (None, 10),
+    "10-50": (10, 50),
+    "50-100": (50, 100),
+    "100-200": (100, 200),
+    "300+": (300, None),
+}
+
+
+def _apply_quantity_filter(tenders, bucket):
+    """Filters the table's tender list down to one quantity_count bucket —
+    see QUANTITY_FILTER_RANGES. A tender with no parsed quantity_count
+    (quantity wasn't a clean number at L1 scrape time) is excluded from
+    every specific bucket, same as it would be from any numeric range
+    filter, but still shows up under "All Quantities"."""
+    if bucket == "All Quantities" or bucket not in QUANTITY_FILTER_RANGES:
+        return tenders
+    low, high = QUANTITY_FILTER_RANGES[bucket]
+    result = []
+    for t in tenders:
+        qty = t.get("quantity_count")
+        if qty is None:
+            continue
+        if low is not None and qty < low:
+            continue
+        if high is not None and qty >= high:
+            continue
+        result.append(t)
+    return result
+
+
 def _format_tender_price(numeric_value):
     """Formats a raw rupee amount (from L2 document analysis) in
     Lakh/Crore, the way these figures are normally written in Indian
@@ -3287,11 +3322,17 @@ else:
                 )
             with col_filter_btn:
                 st.markdown('<div class="col-marker-filter-btn"></div>', unsafe_allow_html=True)
-                st.button(
+                with st.popover(
                     "", icon=":material/filter_alt:", key="open_filters_btn",
                     use_container_width=True, type="primary", help="Filters"
-                )
+                ):
+                    st.selectbox(
+                        "Quantity",
+                        QUANTITY_FILTER_OPTIONS,
+                        key="quantity_filter_bucket",
+                    )
             tenders = fuzzy_filter_tenders(tenders, search_query)
+            tenders = _apply_quantity_filter(tenders, st.session_state.get("quantity_filter_bucket", "All Quantities"))
 
             if not tenders:
                 st.info("🔍 No tenders found yet.")
