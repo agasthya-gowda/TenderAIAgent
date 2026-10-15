@@ -173,7 +173,7 @@ def init_db():
             original_pdf_path TEXT,
             analysis_pdf_path TEXT,
             status TEXT DEFAULT 'new',
-            found_at TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS'),
+            found_at TEXT DEFAULT to_char(now() AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI:SS'),
             quantity TEXT
         )
     """)
@@ -213,6 +213,15 @@ def init_db():
     # portals/kppp.py. Tenders saved before this existed just have NULL
     # here, so their documents can't be fetched this way (same as today).
     c.execute("ALTER TABLE tenders ADD COLUMN IF NOT EXISTS nit_id INTEGER")
+    # found_at's column default used to run on Postgres's own session
+    # timezone (UTC), while every "is this today's tender" check elsewhere
+    # compares against the app server's local date (Asia/Kolkata) — a
+    # tender found between 12:00 AM-5:30 AM IST got stamped with
+    # yesterday's UTC calendar date, so it silently never showed up as
+    # "new" (see get_stats()/get_all_tenders("new")). Re-point the default
+    # at IST so found_at always matches the calendar date the CEO actually
+    # sees it on.
+    c.execute("ALTER TABLE tenders ALTER COLUMN found_at SET DEFAULT to_char(now() AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI:SS')")
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS relevant_keywords (
