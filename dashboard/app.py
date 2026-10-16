@@ -933,7 +933,7 @@ if not st.session_state.authenticated:
                     # never gets set (confirmed live: the iframe was gone by
                     # the very next render, having never had a chance to
                     # execute).
-                    time.sleep(0.5)
+                    time.sleep(0.25)
                     st.rerun()
                 else:
                     st.error("Incorrect username or password.")
@@ -1083,7 +1083,7 @@ def render_change_password_page():
                     st.session_state.username = ""
                     st.session_state.user_role = ""
                     _clear_session_cookie()
-                    time.sleep(0.5)
+                    time.sleep(0.25)
                     st.rerun()
 
 
@@ -2482,7 +2482,7 @@ with st.sidebar:
                        "chatbot_sidebar_open", "chatbot_menu_for"):
                 st.session_state.pop(_k, None)
             _clear_session_cookie()
-            time.sleep(0.5)
+            time.sleep(0.25)
             st.rerun()
 
 
