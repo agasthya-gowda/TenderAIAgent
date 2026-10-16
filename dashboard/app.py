@@ -2742,7 +2742,12 @@ st.iframe("""
 st.iframe("""
 <script>
 (function() {
+    // Desktop never hits this stuck-tooltip problem (real hover-out works
+    // normally there) - without this check, the scroll listener below was
+    // also hiding a desktop tooltip the instant the page scrolled at all,
+    // even with the mouse still right over the chart point.
     function hideStuckTooltip() {
+        if (window.parent.innerWidth > 900) return;
         const el = window.parent.document.getElementById('vg-tooltip-element');
         if (el) el.classList.remove('visible');
     }
