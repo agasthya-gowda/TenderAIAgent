@@ -406,9 +406,11 @@ def init_db():
             session_id INTEGER NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
             role TEXT NOT NULL,
             content TEXT NOT NULL,
+            tenders TEXT,
             created_at TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS')
         )
     """)
+    c.execute("ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS tenders TEXT")
     c.execute("CREATE INDEX IF NOT EXISTS idx_chat_sessions_user ON chat_sessions(username, updated_at)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, id)")
 
@@ -449,16 +451,22 @@ def list_chat_sessions(username: str):
 def get_chat_messages(session_id: int, username: str):
     conn = get_conn()
     rows = conn.execute(
-        "SELECT m.role, m.content FROM chat_messages m "
+        "SELECT m.role, m.content, m.tenders FROM chat_messages m "
         "JOIN chat_sessions s ON s.id = m.session_id "
         "WHERE m.session_id = ? AND s.username = ? ORDER BY m.id",
         (session_id, username)
     ).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    messages = []
+    for r in rows:
+        m = dict(r)
+        raw_tenders = m.pop("tenders", None)
+        m["tenders"] = json.loads(raw_tenders) if raw_tenders else None
+        messages.append(m)
+    return messages
 
 
-def add_chat_message(session_id: int, username: str, role: str, content: str):
+def add_chat_message(session_id: int, username: str, role: str, content: str, tenders=None):
     conn = get_conn()
     owner = conn.execute(
         "SELECT 1 FROM chat_sessions WHERE id = ? AND username = ?",
@@ -466,8 +474,8 @@ def add_chat_message(session_id: int, username: str, role: str, content: str):
     ).fetchone()
     if owner:
         conn.execute(
-            "INSERT INTO chat_messages (session_id, role, content) VALUES (?, ?, ?)",
-            (session_id, role, content)
+            "INSERT INTO chat_messages (session_id, role, content, tenders) VALUES (?, ?, ?, ?)",
+            (session_id, role, content, json.dumps(tenders) if tenders else None)
         )
         conn.execute(
             "UPDATE chat_sessions SET updated_at = to_char(now(), 'YYYY-MM-DD HH24:MI:SS') "

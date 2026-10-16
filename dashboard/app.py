@@ -4920,12 +4920,10 @@ def _chatbot_widget():
                 history = st.session_state.chatbot_messages[:-1]
                 reply, reply_tenders = chatbot_ask(history, last_user_msg, st.session_state.get("user_role", "regular"))
                 if st.session_state.chatbot_session_id is not None:
-                    add_chat_message(st.session_state.chatbot_session_id, _chat_user, "assistant", reply)
-                # reply_tenders (the full tender list behind this answer, for
-                # the "View all N tenders" button below) is UI-only state —
-                # it isn't saved to the chat_messages table, so it's only
-                # available for messages from this session, not ones loaded
-                # back from a past saved chat.
+                    add_chat_message(
+                        st.session_state.chatbot_session_id, _chat_user, "assistant", reply,
+                        tenders=reply_tenders,
+                    )
                 st.session_state.chatbot_messages.append({"role": "assistant", "content": reply, "tenders": reply_tenders})
                 st.session_state.chatbot_pending = False
                 st.rerun(scope="fragment")
