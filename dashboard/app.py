@@ -3910,6 +3910,16 @@ def _chatbot_widget():
         msg_font_size = "13px"
         msg_code_font_size = "12px"
 
+    # Streamlit's own "≫" sidebar-reopen control sits fixed top-left at all
+    # times, same corner as the chat panel's own ☰/history button - on a
+    # phone, where the chat now covers the full screen, tapping it opened
+    # the main app sidebar UNDER the chat, overlapping its header buttons.
+    # Hidden only while chat is actually open; untouched otherwise.
+    sidebar_toggle_mobile_hide_css = (
+        '[data-testid="stExpandSidebarButton"] { display: none !important; }'
+        if st.session_state.chatbot_open else ''
+    )
+
     st.markdown(
         f"""
         <style>
@@ -4162,6 +4172,7 @@ def _chatbot_widget():
                 bottom: 0px !important;
                 border-radius: 0px !important;
             }}
+            {sidebar_toggle_mobile_hide_css}
             .st-key-chatbot_panel .st-key-chatbot_header_btns [data-testid="stHorizontalBlock"] {{
                 flex-wrap: nowrap !important;
             }}
