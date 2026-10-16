@@ -4445,6 +4445,13 @@ def _chatbot_widget():
         with st.container(key="chatbot_toggle_btn"):
             if st.button("💬 Chat here", key="chatbot_open_btn"):
                 st.session_state.chatbot_open = True
+                # On a phone the small floating panel (sized for desktop,
+                # ~50vw) is cramped - open straight into the existing
+                # fullscreen mode instead, same layout a desktop user gets
+                # by tapping the expand icon. Left untouched for desktop
+                # (its User-Agent won't contain "Mobi").
+                if "Mobi" in (st.context.headers.get("User-Agent", "") or ""):
+                    st.session_state.chatbot_fullscreen = True
                 st.rerun(scope="fragment")
     else:
         with st.container(key="chatbot_overlay"):
