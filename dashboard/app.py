@@ -4422,46 +4422,35 @@ def _chatbot_widget():
                         with st.container(key=f"chatbot_msg_{i}"):
                             st.markdown(f'<div class="{marker}"></div>', unsafe_allow_html=True)
                             st.markdown(m["content"])
-                            # "View all N tenders" — the AI's own reply only
-                            # describes the first few inline; this expands to
-                            # the real full list the tool actually fetched
-                            # (see reply_tenders below, where this is set).
+                            # The real full tender list the tool actually
+                            # fetched (see reply_tenders below, where this is
+                            # set) — shown in full immediately, every time,
+                            # as one table per portal. No "View all"/"Hide"
+                            # toggle: the CEO wants the complete list on
+                            # screen as soon as the answer appears, not
+                            # behind an extra click, however many there are.
                             tenders = m.get("tenders")
                             if tenders:
-                                expand_key = f"chatbot_tender_expand_{i}"
-                                if st.session_state.get(expand_key):
-                                    if st.button(f"Hide tenders ({len(tenders)})", key=f"chatbot_tender_btn_{i}"):
-                                        st.session_state[expand_key] = False
-                                        st.rerun(scope="fragment")
-                                    by_portal = {}
-                                    for t in tenders:
-                                        by_portal.setdefault(t.get("portal") or "Other", []).append(t)
-                                    for portal, rows in by_portal.items():
-                                        st.markdown(f"**{portal} ({len(rows)})**")
-                                        # A real table here too — matches the
-                                        # chatbot's own inline reply format,
-                                        # instead of this "view all" section
-                                        # being a plain bullet list while the
-                                        # first few rows above it are a table.
-                                        def _cell(v):
-                                            return str(v or "—").replace("|", "/").replace("\n", " ")
-                                        table_lines = [
-                                            "| Tender Number | Title | Department | Start Date | Deadline |",
-                                            "|---|---|---|---|---|",
-                                        ]
-                                        for t in rows:
-                                            table_lines.append(
-                                                f"| {_cell(t.get('tender_number'))} "
-                                                f"| {_cell((t.get('title') or '')[:90])} "
-                                                f"| {_cell(t.get('department'))} "
-                                                f"| {_cell(t.get('start_date'))} "
-                                                f"| {_cell(t.get('deadline'))} |"
-                                            )
-                                        st.markdown("\n".join(table_lines))
-                                elif len(tenders) > 1:
-                                    if st.button(f"View all {len(tenders)} tenders", key=f"chatbot_tender_btn_{i}"):
-                                        st.session_state[expand_key] = True
-                                        st.rerun(scope="fragment")
+                                by_portal = {}
+                                for t in tenders:
+                                    by_portal.setdefault(t.get("portal") or "Other", []).append(t)
+                                for portal, rows in by_portal.items():
+                                    st.markdown(f"**{portal} ({len(rows)})**")
+                                    def _cell(v):
+                                        return str(v or "—").replace("|", "/").replace("\n", " ")
+                                    table_lines = [
+                                        "| Tender Number | Title | Department | Start Date | Deadline |",
+                                        "|---|---|---|---|---|",
+                                    ]
+                                    for t in rows:
+                                        table_lines.append(
+                                            f"| {_cell(t.get('tender_number'))} "
+                                            f"| {_cell((t.get('title') or '')[:90])} "
+                                            f"| {_cell(t.get('department'))} "
+                                            f"| {_cell(t.get('start_date'))} "
+                                            f"| {_cell(t.get('deadline'))} |"
+                                        )
+                                    st.markdown("\n".join(table_lines))
                 # The user's own message is appended to chatbot_messages and
                 # rerun immediately on submit — BEFORE calling the (slow) AI
                 # — so it renders here, by itself, the instant Send is hit.
