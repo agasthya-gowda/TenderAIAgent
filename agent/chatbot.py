@@ -276,6 +276,7 @@ def _clean(rows, drop=("created_at", "updated_at", "last_updated")):
 
 def _summarize_tender(t: dict) -> dict:
     return {
+        "id": t.get("id"),
         "tender_number": t.get("tender_number"),
         "title": (t.get("title") or "")[:150],
         "portal": t.get("portal"),
