@@ -3771,15 +3771,32 @@ else:
 @st.fragment
 def _chatbot_widget():
     if "chatbot_open" not in st.session_state:
-        st.session_state.chatbot_open = False
+        # Open by default, showing the same ongoing conversation, every
+        # time - a page reload (e.g. clicking a tender link in a table)
+        # used to always land back on a closed, empty chat even though the
+        # actual messages were safely in the DB the whole time. Starting a
+        # genuinely new chat is still just a click away via the panel's own
+        # "＋ New chat" control; this only changes what greets a fresh page
+        # load.
+        st.session_state.chatbot_open = True
+    if "chatbot_session_id" not in st.session_state:
+        from database.db import list_chat_sessions, get_chat_messages
+        _resume_user = st.session_state.get("username", "")
+        _existing_sessions = list_chat_sessions(_resume_user) if _resume_user else []
+        if _existing_sessions:
+            st.session_state.chatbot_session_id = _existing_sessions[0]["id"]
+            st.session_state.chatbot_messages = get_chat_messages(
+                st.session_state.chatbot_session_id, _resume_user
+            )
+        else:
+            st.session_state.chatbot_session_id = None
+            st.session_state.chatbot_messages = []
     if "chatbot_messages" not in st.session_state:
         st.session_state.chatbot_messages = []
     if "chatbot_pending" not in st.session_state:
         st.session_state.chatbot_pending = False
     if "chatbot_fullscreen" not in st.session_state:
         st.session_state.chatbot_fullscreen = False
-    if "chatbot_session_id" not in st.session_state:
-        st.session_state.chatbot_session_id = None
     if "chatbot_sidebar_open" not in st.session_state:
         st.session_state.chatbot_sidebar_open = False
     if "chatbot_menu_for" not in st.session_state:
