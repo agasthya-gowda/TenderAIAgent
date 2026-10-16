@@ -4462,9 +4462,18 @@ def _chatbot_widget():
                                     st.markdown(f"**{portal} ({len(rows)})**")
                                     def _cell(v):
                                         return str(v or "—").replace("|", "/").replace("\n", " ")
+                                    # KPPP tenders don't carry a quantity on
+                                    # their listing page (GeM does); GeM's
+                                    # listing has no site/location field the
+                                    # way KPPP's does - so each portal gets
+                                    # its own extra column instead of a
+                                    # shared one that's always blank on one
+                                    # side.
+                                    extra_col = "Location" if portal == "KPPP" else "Quantity"
+                                    extra_key = "location" if portal == "KPPP" else "quantity"
                                     table_lines = [
-                                        "| SL No | Tender Number | Title | Department | Start Date | Deadline |",
-                                        "|---|---|---|---|---|---|",
+                                        f"| SL No | Tender Number | Title | Department | {extra_col} | Start Date | Deadline |",
+                                        "|---|---|---|---|---|---|---|",
                                     ]
                                     for sl, t in enumerate(rows, start=1):
                                         table_lines.append(
@@ -4472,6 +4481,7 @@ def _chatbot_widget():
                                             f"| {_cell(t.get('tender_number'))} "
                                             f"| {_cell((t.get('title') or '')[:90])} "
                                             f"| {_cell(t.get('department'))} "
+                                            f"| {_cell(t.get(extra_key))} "
                                             f"| {_cell(t.get('start_date'))} "
                                             f"| {_cell(t.get('deadline'))} |"
                                         )

@@ -280,6 +280,8 @@ def _summarize_tender(t: dict) -> dict:
         "title": (t.get("title") or "")[:150],
         "portal": t.get("portal"),
         "department": t.get("department"),
+        "location": t.get("location"),
+        "quantity": t.get("quantity"),
         "start_date": str(t.get("start_date_parsed") or ""),
         "deadline": t.get("deadline"),
         "status": t.get("status"),
