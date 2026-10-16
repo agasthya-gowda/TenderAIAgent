@@ -573,6 +573,22 @@ def _sync_portal_from_dropdown():
     st.session_state.portal_filter_value = PORTAL_FILTER_MAP.get(label, "KPPP")
 
 
+_PORTAL_VALUE_TO_LABEL = {v: k for k, v in PORTAL_FILTER_MAP.items()}
+
+
+def _sync_main_portal_dropdown(portal_plain: str):
+    """The reverse of _sync_portal_from_dropdown — drilling into a chart
+    (Tenders by Department / Tenders Trend) shows tenders for whichever
+    portal that CHART's own toggle was set to, which can differ from the
+    main table's portal dropdown above it. Without this, the table's
+    dropdown kept showing its old selection (e.g. "KPPP (KA)") while the
+    rows underneath it were actually GeM, from the chart's own toggle —
+    confusing since the two looked disconnected. Called right when a drill
+    starts, so the main dropdown always matches what's actually shown."""
+    st.session_state.portal_filter_value = portal_plain
+    st.session_state.portal_filter_dropdown = _PORTAL_VALUE_TO_LABEL.get(portal_plain, PORTAL_FILTER_DEFAULT)
+
+
 # Quantity buckets for the table's Filters popover — half-open ranges
 # (lower bound inclusive, upper bound exclusive) so a tender can only ever
 # land in exactly one bucket, even at a boundary value like 50 or 100.
@@ -2689,6 +2705,7 @@ def _render_dept_chart():
                     "is_others": is_others,
                     "named_departments": named_departments if is_others else [],
                 }
+                _sync_main_portal_dropdown(dept_portal)
                 st.session_state.active_section = "all"
                 st.session_state.viewing_tender_id = None
                 st.session_state.page_num = 1
@@ -2855,6 +2872,7 @@ def _render_trend_chart():
                 st.session_state.chart_drill_filter = {
                     "type": "date", "date": clicked_date, "portal": trend_portal, "label": clicked_label,
                 }
+                _sync_main_portal_dropdown(trend_portal)
                 st.session_state.active_section = "all"
                 st.session_state.viewing_tender_id = None
                 st.session_state.page_num = 1
