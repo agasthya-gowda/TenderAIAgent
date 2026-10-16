@@ -2663,6 +2663,30 @@ st.iframe("""
 </script>
 """, height=1)
 
+# The Trend/Department charts' tooltip (vega-tooltip) is ONE shared element
+# reused by every chart, appended straight to <body> - shown/hidden by
+# toggling a "visible" CSS class in response to hover. A touch screen has no
+# real "hover out" when a finger lifts, so on mobile the tooltip can get
+# stuck showing and follow the user around the rest of the site (even over
+# the chatbot) instead of disappearing. Forcing it hidden on any scroll or
+# tap elsewhere fixes that without touching how it's shown in the first
+# place — a genuine new hover still re-adds the "visible" class itself.
+st.iframe("""
+<script>
+(function() {
+    function hideStuckTooltip() {
+        const el = window.parent.document.getElementById('vg-tooltip-element');
+        if (el) el.classList.remove('visible');
+    }
+    const doc = window.parent.document;
+    doc.removeEventListener('scroll', hideStuckTooltip, true);
+    doc.addEventListener('scroll', hideStuckTooltip, true);
+    doc.removeEventListener('touchstart', hideStuckTooltip, true);
+    doc.addEventListener('touchstart', hideStuckTooltip, true);
+})();
+</script>
+""", height=1)
+
 # ── OVERVIEW CHARTS — real data from the tenders table, one GeM/KPPP
 # toggle per chart (defaults to GeM). Purely additive/visual: no existing
 # query, filter, or button behavior above/below this block is touched. ──
