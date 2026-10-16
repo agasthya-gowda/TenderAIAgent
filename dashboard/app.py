@@ -7,6 +7,9 @@ from streamlit_autorefresh import st_autorefresh
 import os
 import json
 import html
+import hmac
+import hashlib
+import time
 import pandas as pd
 import altair as alt
 from rapidfuzz import fuzz
@@ -29,6 +32,7 @@ from database.db import (
     get_relevant_tenders_list,
     verify_user_login, create_user, update_user_password,
     update_last_active, get_all_users, update_user, delete_user, count_admins,
+    get_user_by_username,
 )
 
 
@@ -690,6 +694,81 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# ── "STAY LOGGED IN" COOKIE ───────────────────────────────
+# st.session_state alone doesn't survive a full browser reload (a fresh
+# page load gets a brand-new Streamlit session, wiping it) — so without
+# this, every reload sent an already-logged-in CEO back to the login
+# screen. A signed cookie fixes that: once set, it's read back on every
+# future page load/session and silently re-authenticates before the login
+# form would even render, exactly like how most apps (e.g. Instagram) stay
+# signed in until you explicitly log out, across closing/reopening/
+# reloading the app. The cookie only ever carries the username + an
+# expiry, HMAC-signed with SESSION_SECRET (.env) so it can't be forged or
+# edited client-side — it is NOT a password or anything sensitive, just
+# "the browser that holds this exact signed value already proved who it
+# is once."
+_SESSION_SECRET = os.getenv("SESSION_SECRET", "")
+_SESSION_COOKIE_NAME = "chipscape_session"
+_SESSION_MAX_AGE_SECONDS = 365 * 24 * 60 * 60  # 1 year — "until logout", in practice
+
+
+def _make_session_token(username: str) -> str:
+    expiry = int(time.time()) + _SESSION_MAX_AGE_SECONDS
+    payload = f"{username}:{expiry}"
+    sig = hmac.new(_SESSION_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    return f"{payload}:{sig}"
+
+
+def _verify_session_token(token: str):
+    """Returns the username if the token is validly signed and not expired,
+    else None. Never trusts the token's username without checking the
+    signature first — that's the whole point of signing it."""
+    if not token or not _SESSION_SECRET:
+        return None
+    parts = token.split(":")
+    if len(parts) != 3:
+        return None
+    username, expiry_str, sig = parts
+    payload = f"{username}:{expiry_str}"
+    expected_sig = hmac.new(_SESSION_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected_sig):
+        return None
+    try:
+        if int(expiry_str) < int(time.time()):
+            return None
+    except ValueError:
+        return None
+    return username
+
+
+def _set_session_cookie(token: str):
+    # document.cookie set from inside an iframe's own document would be
+    # scoped to that iframe's (different/opaque) origin and never reach the
+    # main page's requests — reaching into window.parent.document, same
+    # trick already used elsewhere in this file (the chat auto-scroll),
+    # is what actually sets it on the app's own origin.
+    st.iframe(f"""
+    <!-- nonce:{time.time()} -->
+    <script>
+    (function() {{
+        const expires = new Date(Date.now() + {_SESSION_MAX_AGE_SECONDS * 1000}).toUTCString();
+        window.parent.document.cookie = "{_SESSION_COOKIE_NAME}={token}; expires=" + expires + "; path=/; SameSite=Lax";
+    }})();
+    </script>
+    """, height=1)
+
+
+def _clear_session_cookie():
+    st.iframe(f"""
+    <!-- nonce:{time.time()} -->
+    <script>
+    (function() {{
+        window.parent.document.cookie = "{_SESSION_COOKIE_NAME}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/; SameSite=Lax";
+    }})();
+    </script>
+    """, height=1)
+
+
 # ── LOGIN GATE ────────────────────────────────────────────
 # Added ahead of moving this app onto a server other people/devices can
 # reach — without this, anyone with the URL would have full access, no
@@ -704,6 +783,19 @@ if "username" not in st.session_state:
     st.session_state.username = ""
 if "user_role" not in st.session_state:
     st.session_state.user_role = ""
+
+# A fresh session (new tab, reload, browser reopened) starts unauthenticated
+# above — before falling through to the login form, check for a still-valid
+# "stay logged in" cookie from a previous login and silently restore the
+# session from it instead.
+if not st.session_state.authenticated:
+    _cookie_username = _verify_session_token(st.context.cookies.get(_SESSION_COOKIE_NAME, ""))
+    if _cookie_username:
+        _cookie_user = get_user_by_username(_cookie_username)
+        if _cookie_user:
+            st.session_state.authenticated = True
+            st.session_state.username = _cookie_user["username"]
+            st.session_state.user_role = _cookie_user["role"]
 
 if not st.session_state.authenticated:
 
@@ -834,6 +926,7 @@ if not st.session_state.authenticated:
                     st.session_state.username = user["username"]
                     st.session_state.user_role = user["role"]
                     update_last_active(user["username"])
+                    _set_session_cookie(_make_session_token(user["username"]))
                     st.rerun()
                 else:
                     st.error("Incorrect username or password.")
@@ -982,6 +1075,7 @@ def render_change_password_page():
                     st.session_state.authenticated = False
                     st.session_state.username = ""
                     st.session_state.user_role = ""
+                    _clear_session_cookie()
                     st.rerun()
 
 
@@ -2147,6 +2241,21 @@ if "page_num" not in st.session_state:
     st.session_state.page_num = 1
 if "viewing_tender_id" not in st.session_state:
     st.session_state.viewing_tender_id = None
+# A tender number clicked inside a chatbot table (a plain markdown link,
+# not a Streamlit widget - there's no Python callback for a click inside
+# raw HTML/markdown) lands here as a query param instead, the standard way
+# to make a link trigger app state: the browser does a real navigation to
+# "?open_tender=<id>", which Streamlit reads back on the next run. Consumed
+# immediately and cleared so it doesn't keep re-opening on every later
+# rerun (e.g. clicking elsewhere, sending another chat message).
+_open_tender_param = st.query_params.get("open_tender")
+if _open_tender_param:
+    try:
+        st.session_state.viewing_tender_id = int(_open_tender_param)
+    except ValueError:
+        pass
+    st.query_params.clear()
+    st.session_state.active_section = "all"
 if "chart_drill_filter" not in st.session_state:
     st.session_state.chart_drill_filter = None
 if "trend_chart_reset_counter" not in st.session_state:
@@ -2364,6 +2473,7 @@ with st.sidebar:
                        "chatbot_fullscreen", "chatbot_session_id",
                        "chatbot_sidebar_open", "chatbot_menu_for"):
                 st.session_state.pop(_k, None)
+            _clear_session_cookie()
             st.rerun()
 
 
@@ -4476,9 +4586,24 @@ def _chatbot_widget():
                                         "|---|---|---|---|---|---|---|",
                                     ]
                                     for sl, t in enumerate(rows, start=1):
+                                        # A real nav link ("?open_tender=<id>")
+                                        # rather than a Streamlit button - a
+                                        # button per row inside a markdown
+                                        # table isn't possible, but a plain
+                                        # link is, and the query-param reader
+                                        # near the top of the script turns it
+                                        # into the same viewing_tender_id the
+                                        # "View" button on the main table
+                                        # sets, opening the exact same detail
+                                        # page. Falls back to plain text if
+                                        # this tender has no id (shouldn't
+                                        # normally happen).
+                                        tender_number_cell = _cell(t.get("tender_number"))
+                                        if t.get("id") is not None:
+                                            tender_number_cell = f"[{tender_number_cell}](?open_tender={t['id']})"
                                         table_lines.append(
                                             f"| {sl} "
-                                            f"| {_cell(t.get('tender_number'))} "
+                                            f"| {tender_number_cell} "
                                             f"| {_cell((t.get('title') or '')[:90])} "
                                             f"| {_cell(t.get('department'))} "
                                             f"| {_cell(t.get(extra_key))} "
