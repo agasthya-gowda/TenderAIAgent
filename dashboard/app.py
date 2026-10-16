@@ -2181,6 +2181,7 @@ if "show_change_password" not in st.session_state:
     st.session_state.show_change_password = False
 if "show_create_user" not in st.session_state:
     st.session_state.show_create_user = False
+print(f"[DEBUG portal] TOP OF SCRIPT: dropdown_in_state={'portal_filter_dropdown' in st.session_state!r} dropdown_val={st.session_state.get('portal_filter_dropdown')!r} value_val={st.session_state.get('portal_filter_value')!r}", flush=True)
 if "portal_filter_dropdown" not in st.session_state:
     st.session_state.portal_filter_dropdown = PORTAL_FILTER_DEFAULT
 if "portal_filter_value" not in st.session_state:
@@ -3320,7 +3321,8 @@ else:
                 # comfortably; a dropdown scales to more portals later
                 # without needing a layout redesign. KPPP is first in
                 # PORTAL_FILTER_OPTIONS so it's the default.
-                st.selectbox(
+                print(f"[DEBUG portal] BEFORE main selectbox: session_val={st.session_state.get('portal_filter_dropdown')!r}", flush=True)
+                _picked_portal_label = st.selectbox(
                     "Portal",
                     PORTAL_FILTER_OPTIONS,
                     key="portal_filter_dropdown",
@@ -3328,6 +3330,7 @@ else:
                     on_change=_sync_portal_from_dropdown,
                     filter_mode=None,
                 )
+                print(f"[DEBUG portal] AFTER main selectbox: returned={_picked_portal_label!r} session_val={st.session_state.get('portal_filter_dropdown')!r} portal_filter_value={st.session_state.get('portal_filter_value')!r}", flush=True)
             with col_search:
                 st.markdown('<div class="col-marker-search"></div>', unsafe_allow_html=True)
                 # st_keyup (a third-party "Components v2" widget) was used here for
