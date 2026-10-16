@@ -3851,6 +3851,15 @@ def _chatbot_widget():
         if st.session_state.chatbot_fullscreen:
             panel_width = "100vw"
             panel_height = "100vh"
+            # Phones size 100vh off the viewport with the browser's address
+            # bar HIDDEN - taller than what's actually visible once that
+            # bar is showing (normally), leaving a white bar of page
+            # background below the panel. 100dvh tracks the real visible
+            # viewport instead; browsers that don't support it (desktop
+            # included, though it's a no-op there since there's no address
+            # bar to collapse) just ignore this second, invalid line and
+            # keep the 100vh above.
+            panel_height_dvh = "100dvh"
             panel_inset = "0px"
             panel_radius = "0px"
             # Fullscreen is wide enough that edge-to-edge text reads badly
@@ -3863,13 +3872,14 @@ def _chatbot_widget():
         else:
             panel_width = "50vw"
             panel_height = "82vh"
+            panel_height_dvh = "82dvh"
             panel_inset = "24px"
             panel_radius = "16px"
             content_max_width = "100%"
             msg_font_size = "13px"
             msg_code_font_size = "12px"
     else:
-        panel_width = panel_height = "0"
+        panel_width = panel_height = panel_height_dvh = "0"
         panel_inset = "24px"
         panel_radius = "16px"
         content_max_width = "100%"
@@ -3909,6 +3919,7 @@ def _chatbot_widget():
         .st-key-chatbot_overlay button {{
             width: 100vw !important;
             height: 100vh !important;
+            height: 100dvh !important;
             background: transparent !important;
             border: none !important;
             cursor: default !important;
@@ -3920,6 +3931,7 @@ def _chatbot_widget():
             z-index: 1999999 !important;
             width: {panel_width} !important;
             height: {panel_height} !important;
+            height: {panel_height_dvh} !important;
             background: #000000 !important;
             border-radius: {panel_radius} !important;
             box-shadow: 0 10px 40px rgba(0,0,0,0.3) !important;
