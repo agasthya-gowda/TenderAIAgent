@@ -4036,6 +4036,17 @@ def _chatbot_widget():
         .st-key-chatbot_messages_container [data-testid="stMarkdownContainer"] {{
             margin-bottom: 6px !important;
         }}
+        /* Tender tables (Tender Number/Title/Department/Start Date/Deadline)
+           are wider than the chat panel — rather than wrapping/squeezing
+           every column unreadably, let the table itself scroll sideways
+           with a mouse drag, touchpad swipe or finger swipe, while the rest
+           of the message stays put. */
+        .st-key-chatbot_messages_container [data-testid="stMarkdownContainer"] table {{
+            display: block !important;
+            overflow-x: auto !important;
+            white-space: nowrap !important;
+            -webkit-overflow-scrolling: touch !important;
+        }}
         /* The bubble's background + rounded corners go on stMarkdownContainer
            (one level deeper than the div the display:block fix above targets)
            rather than on that div itself. That div's own display just changed
@@ -4453,11 +4464,12 @@ def _chatbot_widget():
                                     def _cell(v):
                                         return str(v or "—").replace("|", "/").replace("\n", " ")
                                     table_lines = [
-                                        "| Tender Number | Title | Department | Start Date | Deadline |",
-                                        "|---|---|---|---|---|",
+                                        "| SL No | Tender Number | Title | Department | Start Date | Deadline |",
+                                        "|---|---|---|---|---|---|",
                                     ]
-                                    for t in rows:
+                                    for sl, t in enumerate(rows, start=1):
                                         table_lines.append(
+                                            f"| {sl} "
                                             f"| {_cell(t.get('tender_number'))} "
                                             f"| {_cell((t.get('title') or '')[:90])} "
                                             f"| {_cell(t.get('department'))} "
