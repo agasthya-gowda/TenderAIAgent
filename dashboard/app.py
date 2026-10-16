@@ -4022,6 +4022,20 @@ def _chatbot_widget():
         .st-key-chatbot_messages_container [data-testid="stMarkdown"] > div {{
             display: block !important;
         }}
+        /* Streamlit gives every stMarkdownContainer a built-in -16px bottom
+           margin, normally cancelled out by the default gap Streamlit puts
+           between elements in a vertical block — but the message bubbles
+           above set that gap to 0 for tight spacing, so nothing was left to
+           cancel it. With a bot reply made of several separate st.markdown()
+           calls (the summary text, then a "KPPP (12)" heading, then its
+           table, then "GeM (8)", then its table), that negative margin
+           pulled each one 16px up into the one before it - visibly
+           overlapping text once a short heading followed a multi-line
+           paragraph. Overriding it to a small positive value keeps replies
+           compact without the overlap. */
+        .st-key-chatbot_messages_container [data-testid="stMarkdownContainer"] {{
+            margin-bottom: 6px !important;
+        }}
         /* The bubble's background + rounded corners go on stMarkdownContainer
            (one level deeper than the div the display:block fix above targets)
            rather than on that div itself. That div's own display just changed
