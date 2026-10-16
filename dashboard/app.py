@@ -113,7 +113,7 @@ def _admin_crud_section(key_prefix, get_list_fn, add_fn, update_fn, delete_fn, f
         st.markdown('<div class="admin-table-card-marker"></div>', unsafe_allow_html=True)
         col_widths = [2] * len(fields) + [1]
         header_cols = st.columns(col_widths)
-        header_cols[0].markdown(f'<div class="admin-tbl-header-row"></div>**{fields[0]["label"]}**', unsafe_allow_html=True)
+        header_cols[0].markdown(f'<div class="admin-tbl-header-row"></div><strong>{fields[0]["label"]}</strong>', unsafe_allow_html=True)
         for col, f in zip(header_cols[1:-1], fields[1:]):
             col.markdown(f"**{f['label']}**")
         header_cols[-1].markdown("**Action**")
@@ -384,7 +384,7 @@ def render_admin_page():
             st.markdown('<div class="admin-table-card-marker"></div>', unsafe_allow_html=True)
             col_widths = [2, 2, 2, 2, 1]
             header_cols = st.columns(col_widths)
-            header_cols[0].markdown('<div class="admin-tbl-header-row"></div>**Username**', unsafe_allow_html=True)
+            header_cols[0].markdown('<div class="admin-tbl-header-row"></div><strong>Username</strong>', unsafe_allow_html=True)
             for col, label in zip(header_cols[1:], ["Role", "Last Active", "Created At", "Action"]):
                 col.markdown(f"**{label}**")
             st.markdown("<hr style='margin:2px 0 8px 0;'>", unsafe_allow_html=True)
