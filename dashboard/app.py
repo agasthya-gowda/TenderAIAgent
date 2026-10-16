@@ -4093,6 +4093,24 @@ def _chatbot_widget():
         .st-key-chatbot_panel .st-key-chatbot_header_btns [data-testid="stHorizontalBlock"] {{
             gap: 6px !important;
         }}
+        /* Mobile only: Streamlit gives every st.columns() column a built-in
+           min-width that auto-stacks them once the real browser viewport
+           (not this panel's own width) drops below its own breakpoint -
+           on a phone that dropped the ✕ close button onto its own row
+           below the ⤢ fullscreen toggle instead of sitting beside it in
+           the empty space there. Desktop never hits that breakpoint (the
+           panel's 50vw is still wide enough), so this is scoped to mobile
+           only and changes nothing there. */
+        @media (max-width: 900px) {{
+            .st-key-chatbot_panel .st-key-chatbot_header_btns [data-testid="stHorizontalBlock"] {{
+                flex-wrap: nowrap !important;
+            }}
+            .st-key-chatbot_panel .st-key-chatbot_header_btns div[data-testid="stColumn"] {{
+                min-width: 0 !important;
+                width: auto !important;
+                flex: 0 0 auto !important;
+            }}
+        }}
         .st-key-chatbot_panel .st-key-chatbot_header_btns button {{
             padding: 0 !important;
             width: 32px !important;
