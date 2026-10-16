@@ -4037,14 +4037,13 @@ def _chatbot_widget():
             margin-bottom: 6px !important;
         }}
         /* Tender tables (Tender Number/Title/Department/Start Date/Deadline)
-           are wider than the chat panel — rather than wrapping/squeezing
-           every column unreadably, let the table itself scroll sideways
-           with a mouse drag, touchpad swipe or finger swipe, while the rest
-           of the message stays put. */
+           keep wrapping text inside each cell exactly as before - just
+           scrollable sideways (mouse drag, touchpad or finger swipe) on top
+           of that, for whenever the table's still wider than the chat panel
+           even with wrapped cells. */
         .st-key-chatbot_messages_container [data-testid="stMarkdownContainer"] table {{
             display: block !important;
             overflow-x: auto !important;
-            white-space: nowrap !important;
             -webkit-overflow-scrolling: touch !important;
         }}
         /* The bubble's background + rounded corners go on stMarkdownContainer
