@@ -927,6 +927,13 @@ if not st.session_state.authenticated:
                     st.session_state.user_role = user["role"]
                     update_last_active(user["username"])
                     _set_session_cookie(_make_session_token(user["username"]))
+                    # The iframe above needs a moment to actually mount and
+                    # run its script in the browser before st.rerun() tears
+                    # it straight back out again - without this, the cookie
+                    # never gets set (confirmed live: the iframe was gone by
+                    # the very next render, having never had a chance to
+                    # execute).
+                    time.sleep(0.5)
                     st.rerun()
                 else:
                     st.error("Incorrect username or password.")
@@ -1076,6 +1083,7 @@ def render_change_password_page():
                     st.session_state.username = ""
                     st.session_state.user_role = ""
                     _clear_session_cookie()
+                    time.sleep(0.5)
                     st.rerun()
 
 
@@ -2474,6 +2482,7 @@ with st.sidebar:
                        "chatbot_sidebar_open", "chatbot_menu_for"):
                 st.session_state.pop(_k, None)
             _clear_session_cookie()
+            time.sleep(0.5)
             st.rerun()
 
 
