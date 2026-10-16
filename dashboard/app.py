@@ -4146,6 +4146,22 @@ def _chatbot_widget():
            panel's 50vw is still wide enough), so this is scoped to mobile
            only and changes nothing there. */
         @media (max-width: 900px) {{
+            /* Guaranteed mobile-fullscreen purely from the real screen
+               width, independent of the "is this a phone" User-Agent check
+               the Chat-here button also does - that check can miss some
+               phone browsers (in-app browsers, certain Android variants),
+               leaving the small desktop-sized panel open on a phone with
+               gaps around it exposing the page behind. This always wins
+               once the viewport is this narrow, whether or not that
+               separate check succeeded. */
+            .st-key-chatbot_panel {{
+                width: 100vw !important;
+                height: 100vh !important;
+                height: 100dvh !important;
+                right: 0px !important;
+                bottom: 0px !important;
+                border-radius: 0px !important;
+            }}
             .st-key-chatbot_panel .st-key-chatbot_header_btns [data-testid="stHorizontalBlock"] {{
                 flex-wrap: nowrap !important;
             }}
