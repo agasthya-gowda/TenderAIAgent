@@ -3161,7 +3161,15 @@ if st.session_state.collapse_sidebar_on_mobile:
     <script>
     (function() {{
         const btn = window.parent.document.querySelector('[data-testid="stSidebarCollapseButton"] button');
-        if (btn) btn.click();
+        if (!btn) return;
+        // A plain .click() doesn't trigger this button's handler - it needs
+        // the full native pointer/mouse event sequence a real click sends.
+        const r = btn.getBoundingClientRect();
+        const cx = r.x + r.width / 2, cy = r.y + r.height / 2;
+        for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {{
+            const EventCtor = type.startsWith('pointer') ? window.parent.PointerEvent : window.parent.MouseEvent;
+            btn.dispatchEvent(new EventCtor(type, {{bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0}}));
+        }}
     }})();
     </script>
     """, height=1)
