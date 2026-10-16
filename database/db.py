@@ -590,6 +590,28 @@ def update_last_active(username: str):
     conn.close()
 
 
+def update_last_active_if_stale(username: str, min_gap_minutes: int = 5):
+    """Same as update_last_active, but only actually writes if the existing
+    last_active is missing or more than min_gap_minutes old. Used for the
+    silent cookie-based session restore that runs on every page load
+    (reload, new tab, reopened browser) - a plain reload shouldn't keep
+    re-stamping "now" over and over, but a genuine return after being away
+    for a while should still show up as recent activity. An explicit
+    username/password login always uses the unconditional update_last_active
+    instead, since that's a deliberate action."""
+    conn = get_conn()
+    conn.execute(
+        "UPDATE app_users SET last_active = to_char(now() AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI:SS') "
+        "WHERE LOWER(username)=LOWER(?) AND ("
+        "  last_active IS NULL OR "
+        f"  to_timestamp(last_active, 'YYYY-MM-DD HH24:MI:SS') <= (now() AT TIME ZONE 'Asia/Kolkata') - INTERVAL '{int(min_gap_minutes)} minutes'"
+        ")",
+        ((username or "").strip(),)
+    )
+    conn.commit()
+    conn.close()
+
+
 def get_all_users():
     conn = get_conn()
     rows = conn.execute(

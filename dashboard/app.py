@@ -31,7 +31,7 @@ from database.db import (
     get_relevant_keywords_list, delete_relevant_keyword,
     get_relevant_tenders_list,
     verify_user_login, create_user, update_user_password,
-    update_last_active, get_all_users, update_user, delete_user, count_admins,
+    update_last_active, update_last_active_if_stale, get_all_users, update_user, delete_user, count_admins,
     get_user_by_username,
 )
 
@@ -796,6 +796,11 @@ if not st.session_state.authenticated:
             st.session_state.authenticated = True
             st.session_state.username = _cookie_user["username"]
             st.session_state.user_role = _cookie_user["role"]
+            # A plain reload shouldn't keep re-stamping "now" as last_active
+            # every time - only bump it here if it's been a while (5+ min)
+            # since it was last set, so this reads as a genuine return visit
+            # rather than noise from refreshing the page.
+            update_last_active_if_stale(_cookie_user["username"])
 
 if not st.session_state.authenticated:
 
