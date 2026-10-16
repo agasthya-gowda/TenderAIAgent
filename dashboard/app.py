@@ -3771,15 +3771,14 @@ else:
 @st.fragment
 def _chatbot_widget():
     if "chatbot_open" not in st.session_state:
-        # Open by default, showing the same ongoing conversation, every
-        # time - a page reload (e.g. clicking a tender link in a table)
-        # used to always land back on a closed, empty chat even though the
-        # actual messages were safely in the DB the whole time. Starting a
-        # genuinely new chat is still just a click away via the panel's own
-        # "＋ New chat" control; this only changes what greets a fresh page
-        # load.
-        st.session_state.chatbot_open = True
+        st.session_state.chatbot_open = False
     if "chatbot_session_id" not in st.session_state:
+        # Not auto-opened on reload, but whenever the user does open it,
+        # it should resume the same ongoing conversation rather than
+        # starting blank - the actual messages were always safe in the DB,
+        # only this in-memory pointer to them was being reset. Starting a
+        # genuinely new chat is still just a click away via the panel's own
+        # "＋ New chat" control.
         from database.db import list_chat_sessions, get_chat_messages
         _resume_user = st.session_state.get("username", "")
         _existing_sessions = list_chat_sessions(_resume_user) if _resume_user else []
