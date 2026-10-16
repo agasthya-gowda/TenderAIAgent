@@ -3910,13 +3910,14 @@ def _chatbot_widget():
         msg_font_size = "13px"
         msg_code_font_size = "12px"
 
-    # Streamlit's own "≫" sidebar-reopen control sits fixed top-left at all
-    # times, same corner as the chat panel's own ☰/history button - on a
-    # phone, where the chat now covers the full screen, tapping it opened
-    # the main app sidebar UNDER the chat, overlapping its header buttons.
-    # Hidden only while chat is actually open; untouched otherwise.
+    # Streamlit's own top header bar (its "≫" sidebar-reopen control sits
+    # inside it) is a full-width, near-white strip pinned to the very top of
+    # the viewport at all times - on a phone, where the chat now covers the
+    # full screen, that strip was still showing above/behind the chat's own
+    # header instead of being fully covered by it. Hidden only while chat is
+    # actually open; untouched otherwise.
     sidebar_toggle_mobile_hide_css = (
-        '[data-testid="stExpandSidebarButton"] { display: none !important; }'
+        'header[data-testid="stHeader"] { display: none !important; }'
         if st.session_state.chatbot_open else ''
     )
 
