@@ -2260,6 +2260,11 @@ _open_tender_param = st.query_params.get("open_tender")
 if _open_tender_param:
     try:
         st.session_state.viewing_tender_id = int(_open_tender_param)
+        # Auto-scroll past the department/trend charts straight down to the
+        # detail view, reusing the same "scroll to the table anchor" jump
+        # the stat cards already trigger - the anchor sits right below the
+        # charts, right above where the detail view renders.
+        st.session_state.scroll_to_table = True
     except ValueError:
         pass
     st.query_params.clear()
