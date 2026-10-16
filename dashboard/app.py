@@ -2237,6 +2237,14 @@ st.markdown("""
         div[data-testid="stHorizontalBlock"]:has(div.pgn-prev-marker) {
             margin-top: -14px !important;
         }
+        /* The page's real scroll container isn't <body> (Streamlit scrolls
+           section[data-testid="stMain"] internally instead) - without this,
+           touch-drag scrolling on iOS/some Android browsers feels stiff or
+           unresponsive instead of the normal smooth momentum scroll, since
+           that only kicks in on elements explicitly marked for it. */
+        section[data-testid="stMain"] {
+            -webkit-overflow-scrolling: touch !important;
+        }
     }
 
 
@@ -4109,6 +4117,11 @@ def _chatbot_widget():
                 min-width: 0 !important;
                 width: auto !important;
                 flex: 0 0 auto !important;
+            }}
+            /* The message list's own vertical scroll was missing this too -
+               same touch-drag stiffness issue as the main page's scroll. */
+            .st-key-chatbot_messages_container {{
+                -webkit-overflow-scrolling: touch !important;
             }}
         }}
         .st-key-chatbot_panel .st-key-chatbot_header_btns button {{
