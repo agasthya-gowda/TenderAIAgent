@@ -2367,12 +2367,6 @@ def _open_sidebar_panel(panel_key):
     screen at a time."""
     for k in _SIDEBAR_PANEL_KEYS:
         st.session_state[k] = (k == panel_key)
-    # Mobile: picking one of these should close the app's own sidebar
-    # behind it, same "drawer closes once you've picked something"
-    # expectation as the chatbot's own history sidebar. Desktop (sidebar
-    # sits beside the content, not over it) is unaffected.
-    if _is_mobile_view:
-        st.session_state.collapse_sidebar_on_mobile = True
 
 
 # A real "is this a phone" signal for Python-side logic (not just CSS) - a
@@ -3140,36 +3134,6 @@ if st.session_state.scroll_to_table:
         const barHeight = bar ? bar.getBoundingClientRect().height : 0;
         const targetTop = anchor.getBoundingClientRect().top - main.getBoundingClientRect().top + main.scrollTop - barHeight - 12;
         main.scrollTo({{top: targetTop, behavior: 'smooth'}});
-    }})();
-    </script>
-    """, height=1)
-
-if "collapse_sidebar_on_mobile" not in st.session_state:
-    st.session_state.collapse_sidebar_on_mobile = False
-if st.session_state.collapse_sidebar_on_mobile:
-    st.session_state.collapse_sidebar_on_mobile = False
-    import time as _time
-    # Selecting Admin/Relevant Tenders Keyword/Patterns Learned/Search
-    # History on mobile opens that full-screen panel but used to leave the
-    # app's own sidebar open behind it too - same "drawer should close once
-    # you've picked something" expectation as the chatbot's own history
-    # sidebar. Streamlit's sidebar collapse isn't exposed as session_state,
-    # so this clicks its real collapse button directly (nonce needed so the
-    # click actually re-fires every time, not just the first).
-    st.iframe(f"""
-    <!-- nonce:{_time.time()} -->
-    <script>
-    (function() {{
-        const btn = window.parent.document.querySelector('[data-testid="stSidebarCollapseButton"] button');
-        if (!btn) return;
-        // A plain .click() doesn't trigger this button's handler - it needs
-        // the full native pointer/mouse event sequence a real click sends.
-        const r = btn.getBoundingClientRect();
-        const cx = r.x + r.width / 2, cy = r.y + r.height / 2;
-        for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {{
-            const EventCtor = type.startsWith('pointer') ? window.parent.PointerEvent : window.parent.MouseEvent;
-            btn.dispatchEvent(new EventCtor(type, {{bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0}}));
-        }}
     }})();
     </script>
     """, height=1)
