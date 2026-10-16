@@ -105,16 +105,29 @@ def _admin_crud_section(key_prefix, get_list_fn, add_fn, update_fn, delete_fn, f
             st.rerun()
 
     if rows:
+        # Mobile: same horizontally-scrolling-card treatment as the main
+        # tender table (table-card-marker/tbl-header-row/tbl-data-row), under
+        # its own admin-prefixed marker classes since this table's column
+        # count/shape varies per tab (Turnover, Credentials, Users, ...)
+        # rather than the tender table's fixed shape.
+        st.markdown('<div class="admin-table-card-marker"></div>', unsafe_allow_html=True)
         col_widths = [2] * len(fields) + [1]
         header_cols = st.columns(col_widths)
-        for col, f in zip(header_cols[:-1], fields):
+        header_cols[0].markdown(f'<div class="admin-tbl-header-row"></div>**{fields[0]["label"]}**', unsafe_allow_html=True)
+        for col, f in zip(header_cols[1:-1], fields[1:]):
             col.markdown(f"**{f['label']}**")
         header_cols[-1].markdown("**Action**")
         st.markdown("<hr style='margin:2px 0 8px 0;'>", unsafe_allow_html=True)
 
         for r in rows:
             row_cols = st.columns(col_widths)
-            for col, f in zip(row_cols[:-1], fields):
+            first_value = r.get(fields[0]["key"])
+            first_value_text = html.escape(str(first_value)) if first_value not in (None, "") else "—"
+            row_cols[0].markdown(
+                f'<div class="admin-tbl-data-row"></div>{first_value_text}',
+                unsafe_allow_html=True,
+            )
+            for col, f in zip(row_cols[1:-1], fields[1:]):
                 value = r.get(f["key"])
                 col.write(value if value not in (None, "") else "—")
             if row_cols[-1].button("✏️", key=f"{key_prefix}_modify_{r['id']}", help=f"Modify {row_title_fn(r)}"):
@@ -368,15 +381,20 @@ def render_admin_page():
         if not users:
             st.info("No users found.")
         else:
+            st.markdown('<div class="admin-table-card-marker"></div>', unsafe_allow_html=True)
             col_widths = [2, 2, 2, 2, 1]
             header_cols = st.columns(col_widths)
-            for col, label in zip(header_cols, ["Username", "Role", "Last Active", "Created At", "Action"]):
+            header_cols[0].markdown('<div class="admin-tbl-header-row"></div>**Username**', unsafe_allow_html=True)
+            for col, label in zip(header_cols[1:], ["Role", "Last Active", "Created At", "Action"]):
                 col.markdown(f"**{label}**")
             st.markdown("<hr style='margin:2px 0 8px 0;'>", unsafe_allow_html=True)
 
             for u in users:
                 row_cols = st.columns(col_widths)
-                row_cols[0].write(u["username"])
+                row_cols[0].markdown(
+                    f'<div class="admin-tbl-data-row"></div>{html.escape(u["username"])}',
+                    unsafe_allow_html=True,
+                )
                 row_cols[1].write(u["role"].capitalize())
                 row_cols[2].write(u["last_active"] or "Never logged in")
                 row_cols[3].write(u["created_at"])
@@ -2111,6 +2129,32 @@ st.markdown("""
             font-size: 10.5px !important;
             padding: 6px 4px !important;
             white-space: nowrap !important;
+        }
+
+        /* Admin section's own tables (Turnover, Credentials, Partners,
+           Project References/Quantities, Users): same problem as the
+           tender table above (st.columns() rows auto-stacking into one
+           value per line instead of a table), but these vary in column
+           count per tab, so a fixed total row width like the tender
+           table's 780px doesn't generalize - each column instead gets its
+           own fixed floor width and the row sizes to fit its own content,
+           scrolling sideways via admin-table-card-marker if it's wider
+           than the screen. */
+        div[data-testid="stVerticalBlock"]:has(> div[data-testid="stElementContainer"] div.admin-table-card-marker) {
+            overflow-x: auto !important;
+            overflow-y: hidden !important;
+            -webkit-overflow-scrolling: touch;
+        }
+        div[data-testid="stHorizontalBlock"]:has(div.admin-tbl-header-row),
+        div[data-testid="stHorizontalBlock"]:has(div.admin-tbl-data-row) {
+            flex-wrap: nowrap !important;
+            width: max-content !important;
+            max-width: none !important;
+        }
+        div[data-testid="stHorizontalBlock"]:has(div.admin-tbl-header-row) div[data-testid="stColumn"],
+        div[data-testid="stHorizontalBlock"]:has(div.admin-tbl-data-row) div[data-testid="stColumn"] {
+            min-width: 130px !important;
+            flex: 0 0 130px !important;
         }
 
         /* Tenders Trend header: title / portal toggle / date-range dropdown
