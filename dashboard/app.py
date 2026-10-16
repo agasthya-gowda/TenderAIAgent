@@ -3773,25 +3773,11 @@ def _chatbot_widget():
     if "chatbot_open" not in st.session_state:
         st.session_state.chatbot_open = False
     if "chatbot_session_id" not in st.session_state:
-        # Not auto-opened on reload, but whenever the user does open it,
-        # it should resume the same ongoing conversation rather than
-        # starting blank - the actual messages were always safe in the DB,
-        # only this in-memory pointer to them was being reset. Starting a
-        # genuinely new chat is still just a click away via the panel's own
-        # "＋ New chat" control.
-        from database.db import list_chat_sessions, get_chat_messages
-        _resume_user = st.session_state.get("username", "")
-        _existing_sessions = list_chat_sessions(_resume_user) if _resume_user else []
-        if _existing_sessions:
-            st.session_state.chatbot_session_id = _existing_sessions[0]["id"]
-            st.session_state.chatbot_messages = get_chat_messages(
-                st.session_state.chatbot_session_id, _resume_user
-            )
-        else:
-            st.session_state.chatbot_session_id = None
-            st.session_state.chatbot_messages = []
+        st.session_state.chatbot_session_id = None
     if "chatbot_messages" not in st.session_state:
         st.session_state.chatbot_messages = []
+    if "chatbot_resumed" not in st.session_state:
+        st.session_state.chatbot_resumed = False
     if "chatbot_pending" not in st.session_state:
         st.session_state.chatbot_pending = False
     if "chatbot_fullscreen" not in st.session_state:
@@ -3800,6 +3786,25 @@ def _chatbot_widget():
         st.session_state.chatbot_sidebar_open = False
     if "chatbot_menu_for" not in st.session_state:
         st.session_state.chatbot_menu_for = None
+
+    if st.session_state.chatbot_open and not st.session_state.chatbot_resumed:
+        # Deferred until the panel is actually opened, not run on every page
+        # load - it should resume the same ongoing conversation rather than
+        # starting blank (the messages were always safe in the DB, only this
+        # in-memory pointer to them was being reset on reload), but doing the
+        # DB lookup unconditionally on every fresh session was adding to
+        # every page's initial load time even when chat was never opened.
+        # Starting a genuinely new chat is still just a click away via the
+        # panel's own "＋ New chat" control.
+        st.session_state.chatbot_resumed = True
+        from database.db import list_chat_sessions, get_chat_messages
+        _resume_user = st.session_state.get("username", "")
+        _existing_sessions = list_chat_sessions(_resume_user) if _resume_user else []
+        if _existing_sessions:
+            st.session_state.chatbot_session_id = _existing_sessions[0]["id"]
+            st.session_state.chatbot_messages = get_chat_messages(
+                st.session_state.chatbot_session_id, _resume_user
+            )
 
     # History sidebar: slides in/out via transform (the element is always
     # rendered, so its CSS transition actually animates). In the small panel it
