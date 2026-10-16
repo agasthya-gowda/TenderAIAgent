@@ -2362,11 +2362,41 @@ _SIDEBAR_PANEL_KEYS = [
 
 def _open_sidebar_panel(panel_key):
     """Opens one sidebar full-screen panel (Admin / Relevant Tenders Keyword /
-    Patterns Learned / Search History) and closes any other one that was
-    left open — only one of these should ever be on screen at a time."""
+    Patterns Learned / Search History / Change Password) and closes any
+    other one that was left open — only one of these should ever be on
+    screen at a time."""
     for k in _SIDEBAR_PANEL_KEYS:
         st.session_state[k] = (k == panel_key)
+    # Mobile: picking one of these should close the app's own sidebar
+    # behind it, same "drawer closes once you've picked something"
+    # expectation as the chatbot's own history sidebar. Desktop (sidebar
+    # sits beside the content, not over it) is unaffected.
+    if _is_mobile_view:
+        st.session_state.collapse_sidebar_on_mobile = True
 
+
+# A real "is this a phone" signal for Python-side logic (not just CSS) - a
+# User-Agent check (used for the chat's initial fullscreen-on-open) can
+# miss some phone browsers, so anything that needs to make an actual
+# server-side decision (not just hide/show via CSS) reads this cookie
+# instead, set from the browser's own real width - the same 900px
+# breakpoint the mobile CSS throughout the app already uses. Needs to be
+# read before the sidebar below, which uses it.
+st.iframe("""
+<script>
+(function() {
+    function syncMobileCookie() {
+        const isMobile = window.parent.innerWidth <= 900;
+        window.parent.document.cookie = "chipscape_mobile=" + (isMobile ? "1" : "0") + "; path=/; SameSite=Lax";
+    }
+    syncMobileCookie();
+    window.parent.removeEventListener('resize', window.parent.__mobileCookieSync);
+    window.parent.__mobileCookieSync = syncMobileCookie;
+    window.parent.addEventListener('resize', window.parent.__mobileCookieSync);
+})();
+</script>
+""", height=1)
+_is_mobile_view = st.context.cookies.get("chipscape_mobile", "0") == "1"
 
 # ── SIDEBAR ───────────────────────────────────────────────
 with st.sidebar:
@@ -2730,28 +2760,6 @@ st.iframe("""
 })();
 </script>
 """, height=1)
-
-# A real "is this a phone" signal for Python-side logic (not just CSS) -
-# a User-Agent check (used for the chat's initial fullscreen-on-open) can
-# miss some phone browsers, so anything that needs to make an actual
-# server-side decision (not just hide/show via CSS) reads this cookie
-# instead, set from the browser's own real width - the same 900px
-# breakpoint the mobile CSS throughout the app already uses.
-st.iframe("""
-<script>
-(function() {
-    function syncMobileCookie() {
-        const isMobile = window.parent.innerWidth <= 900;
-        window.parent.document.cookie = "chipscape_mobile=" + (isMobile ? "1" : "0") + "; path=/; SameSite=Lax";
-    }
-    syncMobileCookie();
-    window.parent.removeEventListener('resize', window.parent.__mobileCookieSync);
-    window.parent.__mobileCookieSync = syncMobileCookie;
-    window.parent.addEventListener('resize', window.parent.__mobileCookieSync);
-})();
-</script>
-""", height=1)
-_is_mobile_view = st.context.cookies.get("chipscape_mobile", "0") == "1"
 
 # ── OVERVIEW CHARTS — real data from the tenders table, one GeM/KPPP
 # toggle per chart (defaults to GeM). Purely additive/visual: no existing
@@ -3132,6 +3140,28 @@ if st.session_state.scroll_to_table:
         const barHeight = bar ? bar.getBoundingClientRect().height : 0;
         const targetTop = anchor.getBoundingClientRect().top - main.getBoundingClientRect().top + main.scrollTop - barHeight - 12;
         main.scrollTo({{top: targetTop, behavior: 'smooth'}});
+    }})();
+    </script>
+    """, height=1)
+
+if "collapse_sidebar_on_mobile" not in st.session_state:
+    st.session_state.collapse_sidebar_on_mobile = False
+if st.session_state.collapse_sidebar_on_mobile:
+    st.session_state.collapse_sidebar_on_mobile = False
+    import time as _time
+    # Selecting Admin/Relevant Tenders Keyword/Patterns Learned/Search
+    # History on mobile opens that full-screen panel but used to leave the
+    # app's own sidebar open behind it too - same "drawer should close once
+    # you've picked something" expectation as the chatbot's own history
+    # sidebar. Streamlit's sidebar collapse isn't exposed as session_state,
+    # so this clicks its real collapse button directly (nonce needed so the
+    # click actually re-fires every time, not just the first).
+    st.iframe(f"""
+    <!-- nonce:{_time.time()} -->
+    <script>
+    (function() {{
+        const btn = window.parent.document.querySelector('[data-testid="stSidebarCollapseButton"] button');
+        if (btn) btn.click();
     }})();
     </script>
     """, height=1)
