@@ -167,8 +167,20 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_relevant_tenders",
-            "description": "Get tenders matched against the saved 'Relevant Tenders' keyword list.",
-            "parameters": {"type": "object", "properties": {}},
+            "description": (
+                "Get tenders matched against the saved 'Relevant Tenders' keyword list. "
+                "Omit date_from/date_to for every current (non-expired) match. To answer "
+                "'relevant tenders found yesterday/on <date>', pass date_from/date_to for "
+                "that day instead of guessing - without them this returns the full current "
+                "list, not just one day's worth."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "date_from": {"type": "string", "description": "Earliest day the agent found it, YYYY-MM-DD"},
+                    "date_to": {"type": "string", "description": "Latest day the agent found it, YYYY-MM-DD"},
+                },
+            },
         },
     },
     {
@@ -352,7 +364,7 @@ def _run_tool(name: str, args: dict, is_admin: bool = False, sidecar: dict = Non
             return json.dumps({"total_matches": total, "showing": min(len(rows), 30),
                                "tenders": [_summarize_tender(t) for t in rows[:30]]})
         if name == "get_relevant_tenders":
-            rows = get_relevant_tenders_list()
+            rows = get_relevant_tenders_list(args.get("date_from"), args.get("date_to"))
             _sidecar_put(sidecar, name, args, rows)
             return json.dumps({"total_matches": len(rows), "tenders": [_summarize_tender(t) for t in rows[:30]]})
         if name == "get_new_tenders":

@@ -1326,16 +1326,28 @@ def delete_relevant_keyword(kw_id: int):
     conn.close()
 
 
-def get_relevant_tenders_list():
+def get_relevant_tenders_list(date_from: str = None, date_to: str = None):
+    """date_from/date_to (YYYY-MM-DD, inclusive) filter on found_at - the
+    day the agent found the tender, same semantics as get_tenders_by_date/
+    search_tenders_by_text - so "relevant tenders found yesterday" can
+    actually be answered instead of always returning every current match."""
     conn = get_conn()
     # Excludes expired the same way "All Tenders" already does - a relevant
     # match that's since passed its deadline belongs on the Expired card,
     # not still listed here as if it were a live opportunity. The
     # is_relevant flag/keywords themselves are untouched, so it still shows
     # correctly over on the Expired list.
+    where = ["is_relevant=TRUE", "status != 'expired'"]
+    params = []
+    if date_from:
+        where.append("LEFT(found_at, 10) >= ?")
+        params.append(date_from)
+    if date_to:
+        where.append("LEFT(found_at, 10) <= ?")
+        params.append(date_to)
     rows = conn.execute(
-        "SELECT * FROM tenders WHERE is_relevant=TRUE AND status != 'expired' "
-        "ORDER BY relevant_matched_at DESC"
+        "SELECT * FROM tenders WHERE " + " AND ".join(where) + " ORDER BY relevant_matched_at DESC",
+        tuple(params)
     ).fetchall()
     conn.close()
     tenders = []
