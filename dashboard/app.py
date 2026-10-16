@@ -4438,13 +4438,26 @@ def _chatbot_widget():
                                         by_portal.setdefault(t.get("portal") or "Other", []).append(t)
                                     for portal, rows in by_portal.items():
                                         st.markdown(f"**{portal} ({len(rows)})**")
+                                        # A real table here too — matches the
+                                        # chatbot's own inline reply format,
+                                        # instead of this "view all" section
+                                        # being a plain bullet list while the
+                                        # first few rows above it are a table.
+                                        def _cell(v):
+                                            return str(v or "—").replace("|", "/").replace("\n", " ")
+                                        table_lines = [
+                                            "| Tender Number | Title | Department | Start Date | Deadline |",
+                                            "|---|---|---|---|---|",
+                                        ]
                                         for t in rows:
-                                            st.markdown(
-                                                f"- `{t.get('tender_number') or '—'}` "
-                                                f"{(t.get('title') or '')[:90]} "
-                                                f"— {t.get('department') or ''} "
-                                                f"(deadline: {t.get('deadline') or '—'})"
+                                            table_lines.append(
+                                                f"| {_cell(t.get('tender_number'))} "
+                                                f"| {_cell((t.get('title') or '')[:90])} "
+                                                f"| {_cell(t.get('department'))} "
+                                                f"| {_cell(t.get('start_date'))} "
+                                                f"| {_cell(t.get('deadline'))} |"
                                             )
+                                        st.markdown("\n".join(table_lines))
                                 elif len(tenders) > 1:
                                     if st.button(f"View all {len(tenders)} tenders", key=f"chatbot_tender_btn_{i}"):
                                         st.session_state[expand_key] = True
