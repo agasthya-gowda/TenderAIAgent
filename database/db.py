@@ -375,11 +375,17 @@ def init_db():
             username TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
             role TEXT NOT NULL DEFAULT 'regular',
-            created_at TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS'),
+            created_at TEXT DEFAULT to_char(now() AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI:SS'),
             last_active TEXT
         )
     """)
     c.execute("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS last_active TEXT")
+    # created_at's column default used to run on Postgres's own session
+    # timezone (UTC) - re-point an already-existing table's default at IST
+    # too, same fix as found_at above (CREATE TABLE IF NOT EXISTS is a
+    # no-op once the table exists, so the DEFAULT above alone only helps a
+    # brand new install).
+    c.execute("ALTER TABLE app_users ALTER COLUMN created_at SET DEFAULT to_char(now() AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI:SS')")
     c.execute("SELECT COUNT(*) AS cnt FROM app_users")
     if c.fetchone()["cnt"] == 0:
         seed_user = os.getenv("LOGIN_USERNAME", "").strip()
@@ -576,7 +582,8 @@ def update_user_password(username: str, new_password: str):
 def update_last_active(username: str):
     conn = get_conn()
     conn.execute(
-        "UPDATE app_users SET last_active=to_char(now(), 'YYYY-MM-DD HH24:MI:SS') WHERE LOWER(username)=LOWER(?)",
+        "UPDATE app_users SET last_active=to_char(now() AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI:SS') "
+        "WHERE LOWER(username)=LOWER(?)",
         ((username or "").strip(),)
     )
     conn.commit()
