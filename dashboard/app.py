@@ -4611,36 +4611,46 @@ def _chatbot_widget():
                                     # side.
                                     extra_col = "Location" if portal == "KPPP" else "Quantity"
                                     extra_key = "location" if portal == "KPPP" else "quantity"
-                                    table_lines = [
-                                        f"| SL No | Tender Number | Title | Department | {extra_col} | Start Date | Deadline |",
-                                        "|---|---|---|---|---|---|---|",
-                                    ]
+                                    header_cells = ["SL No", "Tender Number", "Title", "Department", extra_col, "Start Date", "Deadline"]
+                                    table_html = ["<table><thead><tr>"]
+                                    table_html += [f"<th>{html.escape(h)}</th>" for h in header_cells]
+                                    table_html.append("</tr></thead><tbody>")
                                     for sl, t in enumerate(rows, start=1):
                                         # A real nav link ("?open_tender=<id>")
                                         # rather than a Streamlit button - a
-                                        # button per row inside a markdown
-                                        # table isn't possible, but a plain
-                                        # link is, and the query-param reader
-                                        # near the top of the script turns it
-                                        # into the same viewing_tender_id the
-                                        # "View" button on the main table
-                                        # sets, opening the exact same detail
-                                        # page. Falls back to plain text if
-                                        # this tender has no id (shouldn't
+                                        # button per row inside a table isn't
+                                        # possible, but a plain link is, and
+                                        # the query-param reader near the top
+                                        # of the script turns it into the
+                                        # same viewing_tender_id the "View"
+                                        # button on the main table sets,
+                                        # opening the exact same detail page.
+                                        # Rendered as raw HTML (not a markdown
+                                        # link) so it stays in the current
+                                        # tab - Streamlit's markdown renderer
+                                        # forces every markdown link to
+                                        # target="_blank", which was opening
+                                        # a new browser tab on every click.
+                                        # Falls back to plain text if this
+                                        # tender has no id (shouldn't
                                         # normally happen).
-                                        tender_number_cell = _cell(t.get("tender_number"))
+                                        tender_number_text = html.escape(_cell(t.get("tender_number")))
                                         if t.get("id") is not None:
-                                            tender_number_cell = f"[{tender_number_cell}](?open_tender={t['id']})"
-                                        table_lines.append(
-                                            f"| {sl} "
-                                            f"| {tender_number_cell} "
-                                            f"| {_cell((t.get('title') or '')[:90])} "
-                                            f"| {_cell(t.get('department'))} "
-                                            f"| {_cell(t.get(extra_key))} "
-                                            f"| {_cell(t.get('start_date'))} "
-                                            f"| {_cell(t.get('deadline'))} |"
-                                        )
-                                    st.markdown("\n".join(table_lines))
+                                            tender_number_cell = f"<a href='?open_tender={t['id']}' target='_self'>{tender_number_text}</a>"
+                                        else:
+                                            tender_number_cell = tender_number_text
+                                        row_cells = [
+                                            str(sl),
+                                            tender_number_cell,
+                                            html.escape(_cell((t.get('title') or '')[:90])),
+                                            html.escape(_cell(t.get('department'))),
+                                            html.escape(_cell(t.get(extra_key))),
+                                            html.escape(_cell(t.get('start_date'))),
+                                            html.escape(_cell(t.get('deadline'))),
+                                        ]
+                                        table_html.append("<tr>" + "".join(f"<td>{c}</td>" for c in row_cells) + "</tr>")
+                                    table_html.append("</tbody></table>")
+                                    st.markdown("".join(table_html), unsafe_allow_html=True)
                 # The user's own message is appended to chatbot_messages and
                 # rerun immediately on submit — BEFORE calling the (slow) AI
                 # — so it renders here, by itself, the instant Send is hit.
