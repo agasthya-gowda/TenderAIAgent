@@ -2687,6 +2687,28 @@ st.iframe("""
 </script>
 """, height=1)
 
+# A real "is this a phone" signal for Python-side logic (not just CSS) -
+# a User-Agent check (used for the chat's initial fullscreen-on-open) can
+# miss some phone browsers, so anything that needs to make an actual
+# server-side decision (not just hide/show via CSS) reads this cookie
+# instead, set from the browser's own real width - the same 900px
+# breakpoint the mobile CSS throughout the app already uses.
+st.iframe("""
+<script>
+(function() {
+    function syncMobileCookie() {
+        const isMobile = window.parent.innerWidth <= 900;
+        window.parent.document.cookie = "chipscape_mobile=" + (isMobile ? "1" : "0") + "; path=/; SameSite=Lax";
+    }
+    syncMobileCookie();
+    window.parent.removeEventListener('resize', window.parent.__mobileCookieSync);
+    window.parent.__mobileCookieSync = syncMobileCookie;
+    window.parent.addEventListener('resize', window.parent.__mobileCookieSync);
+})();
+</script>
+""", height=1)
+_is_mobile_view = st.context.cookies.get("chipscape_mobile", "0") == "1"
+
 # ── OVERVIEW CHARTS — real data from the tenders table, one GeM/KPPP
 # toggle per chart (defaults to GeM). Purely additive/visual: no existing
 # query, filter, or button behavior above/below this block is touched. ──
@@ -4576,8 +4598,11 @@ def _chatbot_widget():
                 if st.button("＋  New chat", key="chatbot_new_chat", use_container_width=True):
                     _reset_to_new_chat()
                     # Small panel: the sidebar is a drawer over the chat, so
-                    # picking something closes it. Fullscreen keeps it open.
-                    if not st.session_state.chatbot_fullscreen:
+                    # picking something closes it. Desktop fullscreen (room
+                    # for the sidebar beside the chat) keeps it open; mobile
+                    # fullscreen (the sidebar covers the whole chat there)
+                    # still closes it.
+                    if not st.session_state.chatbot_fullscreen or _is_mobile_view:
                         st.session_state.chatbot_sidebar_open = False
                     st.rerun(scope="fragment")
 
@@ -4621,7 +4646,7 @@ def _chatbot_widget():
                                     st.session_state.chatbot_messages = get_chat_messages(_sid, _chat_user)
                                     st.session_state.chatbot_pending = False
                                     st.session_state.chatbot_menu_for = None
-                                    if not st.session_state.chatbot_fullscreen:
+                                    if not st.session_state.chatbot_fullscreen or _is_mobile_view:
                                         st.session_state.chatbot_sidebar_open = False
                                     st.rerun(scope="fragment")
                             with _c_dots:
