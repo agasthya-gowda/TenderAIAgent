@@ -566,27 +566,17 @@ PORTAL_FILTER_MAP = {
 }
 
 
-def _sync_portal_from_dropdown():
-    """Keeps portal_filter_value (the plain 'GeM'/'KPPP' used for actual
-    filtering elsewhere) in sync whenever the portal dropdown changes."""
-    label = st.session_state.get("portal_filter_dropdown", PORTAL_FILTER_DEFAULT)
-    st.session_state.portal_filter_value = PORTAL_FILTER_MAP.get(label, "KPPP")
-
-
 _PORTAL_VALUE_TO_LABEL = {v: k for k, v in PORTAL_FILTER_MAP.items()}
 
 
 def _sync_main_portal_dropdown(portal_plain: str):
-    """The reverse of _sync_portal_from_dropdown — drilling into a chart
-    (Tenders by Department / Tenders Trend) shows tenders for whichever
-    portal that CHART's own toggle was set to, which can differ from the
-    main table's portal dropdown above it. Without this, the table's
-    dropdown kept showing its old selection (e.g. "KPPP (KA)") while the
-    rows underneath it were actually GeM, from the chart's own toggle —
-    confusing since the two looked disconnected. Called right when a drill
-    starts, so the main dropdown always matches what's actually shown."""
+    """Drilling into a chart (Tenders by Department / Tenders Trend) shows
+    tenders for whichever portal that CHART's own toggle was set to, which
+    can differ from the main table's portal dropdown above it. portal_filter_value
+    is the single source of truth the main dropdown's display is computed
+    from on every render (see its index= below), so just updating it here
+    is enough to keep the dropdown and the rows it's showing in agreement."""
     st.session_state.portal_filter_value = portal_plain
-    st.session_state.portal_filter_dropdown = _PORTAL_VALUE_TO_LABEL.get(portal_plain, PORTAL_FILTER_DEFAULT)
 
 
 # Quantity buckets for the table's Filters popover — half-open ranges
@@ -2181,9 +2171,6 @@ if "show_change_password" not in st.session_state:
     st.session_state.show_change_password = False
 if "show_create_user" not in st.session_state:
     st.session_state.show_create_user = False
-print(f"[DEBUG portal] TOP OF SCRIPT: dropdown_in_state={'portal_filter_dropdown' in st.session_state!r} dropdown_val={st.session_state.get('portal_filter_dropdown')!r} value_val={st.session_state.get('portal_filter_value')!r}", flush=True)
-if "portal_filter_dropdown" not in st.session_state:
-    st.session_state.portal_filter_dropdown = PORTAL_FILTER_DEFAULT
 if "portal_filter_value" not in st.session_state:
     st.session_state.portal_filter_value = PORTAL_FILTER_MAP.get(PORTAL_FILTER_DEFAULT, "KPPP")
 
@@ -3321,16 +3308,34 @@ else:
                 # comfortably; a dropdown scales to more portals later
                 # without needing a layout redesign. KPPP is first in
                 # PORTAL_FILTER_OPTIONS so it's the default.
-                print(f"[DEBUG portal] BEFORE main selectbox: session_val={st.session_state.get('portal_filter_dropdown')!r}", flush=True)
-                _picked_portal_label = st.selectbox(
+                #
+                # Driven by index= from portal_filter_value (which survives
+                # reliably) rather than trusting the widget's own key to
+                # remember its value — a stat-card button (Total/New/
+                # Saved/...) calls st.rerun() as soon as its click is
+                # handled, well before the script reaches this selectbox;
+                # Streamlit drops a widget's session_state the moment a run
+                # ends without instantiating it, so that early rerun wiped
+                # this dropdown back to its default on the very next run,
+                # even though portal_filter_value itself (not tied to any
+                # widget) stayed correct the whole time. Recomputing the
+                # shown option from that reliable value every render means
+                # it can never drift from what the table is actually
+                # showing, regardless of which button triggered the rerun.
+                current_portal_label = _PORTAL_VALUE_TO_LABEL.get(
+                    st.session_state.get("portal_filter_value", "KPPP"), PORTAL_FILTER_DEFAULT
+                )
+                picked_portal_label = st.selectbox(
                     "Portal",
                     PORTAL_FILTER_OPTIONS,
+                    index=PORTAL_FILTER_OPTIONS.index(current_portal_label),
                     key="portal_filter_dropdown",
                     label_visibility="collapsed",
-                    on_change=_sync_portal_from_dropdown,
                     filter_mode=None,
                 )
-                print(f"[DEBUG portal] AFTER main selectbox: returned={_picked_portal_label!r} session_val={st.session_state.get('portal_filter_dropdown')!r} portal_filter_value={st.session_state.get('portal_filter_value')!r}", flush=True)
+                if picked_portal_label != current_portal_label:
+                    st.session_state.portal_filter_value = PORTAL_FILTER_MAP.get(picked_portal_label, "KPPP")
+                    st.rerun()
             with col_search:
                 st.markdown('<div class="col-marker-search"></div>', unsafe_allow_html=True)
                 # st_keyup (a third-party "Components v2" widget) was used here for
