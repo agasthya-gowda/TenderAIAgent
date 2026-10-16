@@ -126,7 +126,13 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_tenders_by_date",
-            "description": "Get tenders the agent found on a specific date (YYYY-MM-DD).",
+            "description": (
+                "Get EVERY tender the agent found on a specific date (YYYY-MM-DD), "
+                "regardless of relevance. This is the right tool for a plain "
+                "'tenders found yesterday/on <date>' question - only use "
+                "get_relevant_tenders instead when the user's own words say "
+                "'relevant' (or similarly specify the saved keyword list)."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -168,11 +174,15 @@ TOOLS = [
         "function": {
             "name": "get_relevant_tenders",
             "description": (
-                "Get tenders matched against the saved 'Relevant Tenders' keyword list. "
-                "Omit date_from/date_to for every current (non-expired) match. To answer "
-                "'relevant tenders found yesterday/on <date>', pass date_from/date_to for "
-                "that day instead of guessing - without them this returns the full current "
-                "list, not just one day's worth."
+                "Get tenders matched against the saved 'Relevant Tenders' keyword list - "
+                "only use this when the user's own words say 'relevant' (or similarly "
+                "specify the saved keyword list); a plain 'tenders found yesterday/on "
+                "<date>' with no mention of relevance means get_tenders_by_date instead, "
+                "which covers every tender found that day, not just relevant ones. "
+                "Omit date_from/date_to for every current (non-expired) relevant match. To "
+                "answer 'relevant tenders found yesterday/on <date>', pass date_from/"
+                "date_to for that day instead of guessing - without them this returns the "
+                "full current list, not just one day's worth."
             ),
             "parameters": {
                 "type": "object",
