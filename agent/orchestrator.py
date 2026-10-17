@@ -556,7 +556,9 @@ def _scheduled_search():
     import datetime as dt
     while _state["running"]:
         now = dt.datetime.now()
-        next_2am = now.replace(hour=2, minute=0, second=0, microsecond=0)
+        # TEMPORARY test trigger — revert to hour=2, minute=0 (2 AM) once
+        # testing confirms the scheduler fires and recovers correctly.
+        next_2am = now.replace(hour=11, minute=59, second=0, microsecond=0)
         if now >= next_2am:
             next_2am += dt.timedelta(days=1)
 
