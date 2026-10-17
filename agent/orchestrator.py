@@ -647,6 +647,18 @@ def _scheduled_search():
 
             log("🎯 Checking Relevant Tenders keywords against today's new tenders...")
             run_relevant_keyword_matching(scope="incremental")
+        except Exception as e:
+            # Without this, any single failure in the steps above (a page
+            # timeout, a CAPTCHA site hiccup, a network blip) propagated
+            # straight out of the `while` loop after the `finally` below ran
+            # its cleanup, silently killing this thread forever - no retry,
+            # no visible error, nothing until someone eventually notices new
+            # tenders stopped showing up (exactly what happened the night
+            # this was found). Logging it and letting the loop continue
+            # means a bad night costs one missed run, not every run after it.
+            import traceback
+            log(f"❌ Scheduled search failed: {e}")
+            log(traceback.format_exc())
         finally:
             # In a `finally` for the same reason as _run_full_catalog_search
             # — this flag must never get stuck True, or the dashboard would
