@@ -602,15 +602,18 @@ def _sync_main_portal_dropdown(portal_plain: str):
 
 
 # Quantity buckets for the table's Filters popover — half-open ranges
-# (lower bound inclusive, upper bound exclusive) so a tender can only ever
-# land in exactly one bucket, even at a boundary value like 50 or 100.
-QUANTITY_FILTER_OPTIONS = ["All Quantities", "Under 10", "10-50", "50-100", "100-200", "300+"]
+# (lower bound inclusive, upper bound exclusive). Each option is its own
+# independent cumulative cutoff (e.g. "Less than 50" includes everything
+# "Less than 20" does too) rather than a mutually-exclusive slice — that's
+# fine since only one is ever selected at a time in the dropdown.
+QUANTITY_FILTER_OPTIONS = ["All Quantities", "Less than 20", "Less than 50", "Less than 100", "Less than 200", "Less than 300", "More than 300"]
 QUANTITY_FILTER_RANGES = {
-    "Under 10": (None, 10),
-    "10-50": (10, 50),
-    "50-100": (50, 100),
-    "100-200": (100, 200),
-    "300+": (300, None),
+    "Less than 20": (None, 20),
+    "Less than 50": (None, 50),
+    "Less than 100": (None, 100),
+    "Less than 200": (None, 200),
+    "Less than 300": (None, 300),
+    "More than 300": (300, None),
 }
 
 
