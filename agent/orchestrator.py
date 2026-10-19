@@ -478,12 +478,41 @@ def _run_kppp_criteria_search(criteria_list: list, respect_stop_flag: bool = Fal
     try:
         from portals.kppp import search_kppp_sync
 
+        # search_kppp now always checks all 3 categories (Goods/Works/
+        # Services) in one pass regardless of a filter's own saved
+        # "category" value (see portals/kppp.py) — so saved filters that
+        # only ever differed BY category (e.g. "camera" saved once per
+        # category, 3 rows) would otherwise run the exact same full search
+        # 3 times over, tripling CAPTCHA solves and search time for zero
+        # extra coverage. Grouping here runs each distinct filter once;
+        # every row sharing that filter still gets its own last_searched_at
+        # bumped below, so the Admin DB Table stays accurate per row.
+        groups = {}
+        for criteria in criteria_list:
+            dedup_key = (
+                (criteria.get("procuring_entity") or "").strip().lower(),
+                (criteria.get("tender_number") or "").strip().lower(),
+                (criteria.get("tender_name") or "").strip().lower(),
+                (criteria.get("from_date") or "").strip(),
+                (criteria.get("to_date") or "").strip(),
+                (criteria.get("tender_type") or "").strip().lower(),
+            )
+            groups.setdefault(dedup_key, []).append(criteria)
+
         # Not gated on _state["running"] by default — see _search_portal for
         # why. respect_stop_flag=True (agent-driven callers only) stops the
         # loop before starting the next saved filter once Stop Agent is hit;
         # it can't abort a single KPPP search already mid-CAPTCHA-retry.
         found_count = 0
-        for criteria in criteria_list:
+        for sibling_rows in groups.values():
+            # The row with the OLDEST last_searched_at (or no prior search
+            # at all) sets the incremental cutoff for the group - using the
+            # most conservative row's checkpoint means nothing any sibling
+            # row might have found newer gets missed.
+            criteria = min(
+                sibling_rows,
+                key=lambda c: _parse_db_timestamp(c.get("last_searched_at")) or datetime.min,
+            )
             if respect_stop_flag and not _state["running"]:
                 log("🛑 [KPPP] Stop requested — ending search early")
                 break
@@ -536,8 +565,15 @@ def _run_kppp_criteria_search(criteria_list: list, respect_stop_flag: bool = Fal
                         if files:
                             update_downloaded_files(tender_id, files)
                         log(f"📄 [KPPP] Found: {tender['title'][:60]}...")
-                if criteria_id is not None:
-                    update_kppp_last_searched(criteria_id)
+                # Every sibling row in this group just got covered by the
+                # one search above (it now checks all 3 categories), so all
+                # of them - not just the one actually searched - advance
+                # their own last_searched_at, keeping the Admin DB Table
+                # accurate for each saved row.
+                for sibling in sibling_rows:
+                    sibling_id = sibling.get("id")
+                    if sibling_id is not None:
+                        update_kppp_last_searched(sibling_id)
             except Exception as e:
                 log(f"⚠️ [KPPP] Error searching with filter {criteria}: {e}")
 

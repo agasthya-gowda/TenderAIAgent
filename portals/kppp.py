@@ -214,33 +214,6 @@ async def _search_kppp_once(criteria: dict, max_pages=None, stop_before_date=Non
             # applied the same way here, after fetching.
             filter_verified = True
 
-            # Confirmed live (via the real site's own Network tab) that the
-            # category isn't just a body field — "Works" and "Services"
-            # searches actually go to their own URL, with the category as a
-            # path segment (".../portal-service/works/search-eproc-tenders",
-            # ".../services/search-eproc-tenders"). "Goods" deliberately
-            # keeps the exact same URL as before (no segment) rather than
-            # switching to ".../goods/..." too — that URL is confirmed
-            # working today, so it's left untouched to avoid any risk of
-            # regressing it; only Works/Services, which were never working,
-            # get the new per-category URL.
-            category_lower = (category or "").strip().lower()
-            if category_lower == "works":
-                api_url = (
-                    "https://kppp.karnataka.gov.in/supplier-registration-service"
-                    "/v1/api/portal-service/works/search-eproc-tenders"
-                )
-            elif category_lower == "services":
-                api_url = (
-                    "https://kppp.karnataka.gov.in/supplier-registration-service"
-                    "/v1/api/portal-service/services/search-eproc-tenders"
-                )
-            else:
-                api_url = (
-                    "https://kppp.karnataka.gov.in/supplier-registration-service"
-                    "/v1/api/portal-service/search-eproc-tenders"
-                )
-
             # "Regular Tenders" is the form's default and confirmed to map
             # to "OPEN"; the other two aren't currently used by any saved
             # filter in this app, so they're a best-effort guess following
@@ -254,20 +227,6 @@ async def _search_kppp_once(criteria: dict, max_pages=None, stop_before_date=Non
             }
             api_tender_type = tender_type_map.get(tender_type, "OPEN")
 
-            def _build_kppp_body() -> str:
-                return json.dumps({
-                    "tenderNumber": tender_number or "",
-                    "category": category.upper() if category else "",
-                    "status": "PUBLISHED",
-                    "publishedFromDate": from_date or None,
-                    "publishedToDate": to_date or None,
-                    "tenderType": api_tender_type,
-                    "title": tender_name_filter or "",
-                    "location": None,
-                    "tenderClosureFromDate": None,
-                    "tenderClosureToDate": None,
-                })
-
             # "CODE - Full Entity Name" is how the dropdown presents each
             # option (see portals/data/kppp_options.py) — match against the
             # name half, since that's what the API's own deptName field
@@ -279,152 +238,188 @@ async def _search_kppp_once(criteria: dict, max_pages=None, stop_before_date=Non
                     if " - " in procuring_entity else procuring_entity
                 ).strip().lower()
 
+            def _build_kppp_body(cat: str) -> str:
+                return json.dumps({
+                    "tenderNumber": tender_number or "",
+                    "category": cat,
+                    "status": "PUBLISHED",
+                    "publishedFromDate": from_date or None,
+                    "publishedToDate": to_date or None,
+                    "tenderType": api_tender_type,
+                    "title": tender_name_filter or "",
+                    "location": None,
+                    "tenderClosureFromDate": None,
+                    "tenderClosureToDate": None,
+                })
+
             print(f"[KPPP] Searching via API with filter: {criteria}")
 
             # ── EXTRACT RESULTS ───────────────────────────
+            # A saved filter's own `category` field used to send only ONE of
+            # these three API calls - but the live site itself (confirmed via
+            # its own Network tab) fires all three from a single search/
+            # CAPTCHA-solve and merges the results into its Goods/Works/
+            # Services tabs, and a keyword or procuring-entity match can
+            # genuinely land in any of the three (e.g. KSRTC turned out to
+            # have 23 "Services" tenders a Goods-only search would silently
+            # never see). So every search now does the same - one CAPTCHA
+            # solve above, then all three categories below, reusing the same
+            # authenticated context/cookies for each. The site is a
+            # different URL segment per category: Works and Services get
+            # their own dedicated path, Goods keeps the original no-segment
+            # URL (confirmed working, left untouched).
+            CATEGORY_URLS = {
+                "GOODS": "https://kppp.karnataka.gov.in/supplier-registration-service/v1/api/portal-service/search-eproc-tenders",
+                "WORKS": "https://kppp.karnataka.gov.in/supplier-registration-service/v1/api/portal-service/works/search-eproc-tenders",
+                "SERVICES": "https://kppp.karnataka.gov.in/supplier-registration-service/v1/api/portal-service/services/search-eproc-tenders",
+            }
             HARD_PAGE_CEILING = 500
-            page_num = 0
             page_size = 20
+            total_pages_fetched = 0
 
-            while max_pages is None or page_num < max_pages:
-                if page_num >= HARD_PAGE_CEILING:
-                    print(f"[KPPP] Hit hard safety ceiling of {HARD_PAGE_CEILING} pages, stopping")
-                    break
+            for cat, api_url in CATEGORY_URLS.items():
+                page_num = 0
 
-                docs = None
-                for attempt in range(1, 4):
-                    try:
-                        resp = await context.request.post(
-                            f"{api_url}?page={page_num}&size={page_size}&order-by-tender-publish=true",
-                            headers={"Content-Type": "application/json"},
-                            data=_build_kppp_body(),
-                        )
-                        if resp.status != 200:
-                            print(f"[KPPP] Page {page_num + 1} API returned status {resp.status} (attempt {attempt}/3)")
-                            await page.wait_for_timeout(3000)
-                            continue
-                        docs = await resp.json()
+                while max_pages is None or page_num < max_pages:
+                    if page_num >= HARD_PAGE_CEILING:
+                        print(f"[KPPP] [{cat}] Hit hard safety ceiling of {HARD_PAGE_CEILING} pages, stopping")
                         break
-                    except Exception as e:
-                        print(f"[KPPP] Page {page_num + 1} API call failed (attempt {attempt}/3): {e}")
-                        docs = None
-                        await page.wait_for_timeout(3000)
 
-                if docs is None:
-                    print(f"[KPPP] Giving up on page {page_num + 1} after 3 failed attempts")
-                    break
+                    docs = None
+                    for attempt in range(1, 4):
+                        try:
+                            resp = await context.request.post(
+                                f"{api_url}?page={page_num}&size={page_size}&order-by-tender-publish=true",
+                                headers={"Content-Type": "application/json"},
+                                data=_build_kppp_body(cat),
+                            )
+                            if resp.status != 200:
+                                print(f"[KPPP] [{cat}] Page {page_num + 1} API returned status {resp.status} (attempt {attempt}/3)")
+                                await page.wait_for_timeout(3000)
+                                continue
+                            docs = await resp.json()
+                            break
+                        except Exception as e:
+                            print(f"[KPPP] [{cat}] Page {page_num + 1} API call failed (attempt {attempt}/3): {e}")
+                            docs = None
+                            await page.wait_for_timeout(3000)
 
-                print(f"[KPPP] Page {page_num + 1}: found {len(docs)} results")
+                    if docs is None:
+                        print(f"[KPPP] [{cat}] Giving up on page {page_num + 1} after 3 failed attempts")
+                        break
 
-                if not docs:
-                    break
+                    print(f"[KPPP] [{cat}] Page {page_num + 1}: found {len(docs)} results")
+                    total_pages_fetched += 1
 
-                page_has_newer = stop_before_date is None
-                for doc in docs:
-                    try:
-                        tender_number_val = doc.get("tenderNumber") or ""
-                        if not tender_number_val:
-                            continue
+                    if not docs:
+                        break
 
-                        dept_name = doc.get("deptName") or ""
-                        published_date = doc.get("publishedDate") or "Not available"
-                        deadline = doc.get("tenderClosureDate") or "Not available"
+                    page_has_newer = stop_before_date is None
+                    for doc in docs:
+                        try:
+                            tender_number_val = doc.get("tenderNumber") or ""
+                            if not tender_number_val:
+                                continue
 
-                        if stop_before_date is not None:
-                            parsed = _parse_kppp_datetime(published_date)
-                            if parsed is None or parsed > stop_before_date:
-                                page_has_newer = True
+                            dept_name = doc.get("deptName") or ""
+                            published_date = doc.get("publishedDate") or "Not available"
+                            deadline = doc.get("tenderClosureDate") or "Not available"
 
-                        if entity_name_filter and entity_name_filter not in dept_name.strip().lower():
-                            continue
+                            if stop_before_date is not None:
+                                parsed = _parse_kppp_datetime(published_date)
+                                if parsed is None or parsed > stop_before_date:
+                                    page_has_newer = True
 
-                        # Skip if already in database
-                        from database.db import get_conn
-                        conn = get_conn()
-                        existing = conn.execute(
-                            "SELECT id, nit_id FROM tenders WHERE tender_number=?", (tender_number_val,)
-                        ).fetchone()
-                        if existing:
-                            # Backfills nit_id for a tender that was saved
-                            # before nit_id existed (or saved before this
-                            # specific search started capturing it) — free,
-                            # since this doc's nitId is already right here;
-                            # no separate backfill pass needed, every future
-                            # search that happens to re-encounter an old
-                            # tender fixes it in passing.
-                            if existing["nit_id"] is None and doc.get("nitId"):
-                                conn.execute(
-                                    "UPDATE tenders SET nit_id=? WHERE id=?",
-                                    (doc.get("nitId"), existing["id"])
-                                )
-                                conn.commit()
-                                print(f"[KPPP] Backfilled nit_id for {tender_number_val}")
+                            if entity_name_filter and entity_name_filter not in dept_name.strip().lower():
+                                continue
+
+                            # Skip if already in database
+                            from database.db import get_conn
+                            conn = get_conn()
+                            existing = conn.execute(
+                                "SELECT id, nit_id FROM tenders WHERE tender_number=?", (tender_number_val,)
+                            ).fetchone()
+                            if existing:
+                                # Backfills nit_id for a tender that was saved
+                                # before nit_id existed (or saved before this
+                                # specific search started capturing it) — free,
+                                # since this doc's nitId is already right here;
+                                # no separate backfill pass needed, every future
+                                # search that happens to re-encounter an old
+                                # tender fixes it in passing.
+                                if existing["nit_id"] is None and doc.get("nitId"):
+                                    conn.execute(
+                                        "UPDATE tenders SET nit_id=? WHERE id=?",
+                                        (doc.get("nitId"), existing["id"])
+                                    )
+                                    conn.commit()
+                                    print(f"[KPPP] Backfilled nit_id for {tender_number_val}")
+                                conn.close()
+                                print(f"[KPPP] Skipping {tender_number_val} — already in database")
+                                continue
                             conn.close()
-                            print(f"[KPPP] Skipping {tender_number_val} — already in database")
+
+                            ecv = doc.get("ecv")
+                            estimated_value = str(ecv) if ecv is not None else "Not available"
+
+                            tenders.append({
+                                "title": doc.get("title") or "Not available",
+                                "portal": "KPPP",
+                                "url": "https://kppp.karnataka.gov.in/#/portal/searchTender/live",
+                                "category": doc.get("categoryText") or cat.capitalize(),
+                                "found_via": found_via_label,
+                                "tender_number": tender_number_val,
+                                "department": dept_name or "Not available",
+                                "location": doc.get("locationName") or "Not available",
+                                "tender_type": doc.get("invitingStrategyText") or "Not available",
+                                "value": estimated_value,
+                                "deadline": deadline,
+                                "published_date": published_date,
+                                "emd": "See tender document",
+                                "description": f"KPPP tender by {dept_name}",
+                                "downloaded_files": [],
+                                "relevance_score": 0.75,
+                                # Confirmed live (captured the real site's own
+                                # Network tab) that this is the id the document-
+                                # download API actually needs — the search result
+                                # list endpoint is .../portal-service/{nitId}/
+                                # get-{category}-tender-files, and each file then
+                                # downloads from .../{nitId}/{category}-tender-
+                                # file/{uuid}/download-file. Saved here so
+                                # download_kppp_docs (analysis/analyzer.py) can
+                                # call that directly instead of clicking through
+                                # the page to find this same tender again.
+                                "nit_id": doc.get("nitId"),
+                            })
+
+                            try:
+                                print(f"[KPPP] [{cat}] Extracted: {tender_number_val} - {(doc.get('title') or '')[:50]}...")
+                            except Exception:
+                                pass
+
+                        except Exception as e:
+                            try:
+                                print(f"[KPPP] Doc extraction error: {e}")
+                            except Exception:
+                                pass
                             continue
-                        conn.close()
 
-                        ecv = doc.get("ecv")
-                        estimated_value = str(ecv) if ecv is not None else "Not available"
+                    if not page_has_newer:
+                        print(
+                            f"[KPPP] [{cat}] Page {page_num + 1} had no tenders newer than "
+                            f"{stop_before_date} — stopping (date-limited repeat search)"
+                        )
+                        break
 
-                        tenders.append({
-                            "title": doc.get("title") or "Not available",
-                            "portal": "KPPP",
-                            "url": "https://kppp.karnataka.gov.in/#/portal/searchTender/live",
-                            "category": category,
-                            "found_via": found_via_label,
-                            "tender_number": tender_number_val,
-                            "department": dept_name or "Not available",
-                            "location": doc.get("locationName") or "Not available",
-                            "tender_type": doc.get("invitingStrategyText") or "Not available",
-                            "value": estimated_value,
-                            "deadline": deadline,
-                            "published_date": published_date,
-                            "emd": "See tender document",
-                            "description": f"KPPP tender by {dept_name}",
-                            "downloaded_files": [],
-                            "relevance_score": 0.75,
-                            # Confirmed live (captured the real site's own
-                            # Network tab) that this is the id the document-
-                            # download API actually needs — the search result
-                            # list endpoint is .../portal-service/{nitId}/
-                            # get-{category}-tender-files, and each file then
-                            # downloads from .../{nitId}/{category}-tender-
-                            # file/{uuid}/download-file. Saved here so
-                            # download_kppp_docs (analysis/analyzer.py) can
-                            # call that directly instead of clicking through
-                            # the page to find this same tender again.
-                            "nit_id": doc.get("nitId"),
-                        })
+                    if len(docs) < page_size:
+                        # A short page (fewer results than requested) is KPPP's
+                        # own signal there's nothing more to page through.
+                        break
 
-                        try:
-                            print(f"[KPPP] Extracted: {tender_number_val} - {(doc.get('title') or '')[:50]}...")
-                        except Exception:
-                            pass
-
-                    except Exception as e:
-                        try:
-                            print(f"[KPPP] Doc extraction error: {e}")
-                        except Exception:
-                            pass
-                        continue
-
-                if not page_has_newer:
-                    print(
-                        f"[KPPP] Page {page_num + 1} had no tenders newer than "
-                        f"{stop_before_date} — stopping (date-limited repeat search)"
-                    )
-                    break
-
-                if len(docs) < page_size:
-                    # A short page (fewer results than requested) is KPPP's
-                    # own signal there's nothing more to page through.
-                    break
-
-                page_num += 1
+                    page_num += 1
 
             await browser.close()
-            print(f"[KPPP] Done. Total: {len(tenders)} tenders across {page_num + 1} page(s)")
+            print(f"[KPPP] Done. Total: {len(tenders)} tenders across {total_pages_fetched} page(s) across all 3 categories")
             return tenders, filter_verified
 
     except Exception as e:
