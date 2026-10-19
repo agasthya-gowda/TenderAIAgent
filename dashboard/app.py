@@ -3252,6 +3252,16 @@ else:
     else:
         tenders = sorted(tenders, key=lambda x: x.get("relevance_score", 0), reverse=True)
 
+    # Filters popover's own "Sort" (by Quantity) - applied after the sort
+    # above so it's the dominant/final order when chosen. A tender with no
+    # parsed quantity_count always sorts to the end, in either direction,
+    # rather than being treated as 0.
+    quantity_sort = st.session_state.get("quantity_sort_select", "Default")
+    if quantity_sort == "Low to High":
+        tenders = sorted(tenders, key=lambda x: (x.get("quantity_count") is None, x.get("quantity_count") or 0))
+    elif quantity_sort == "High to Low":
+        tenders = sorted(tenders, key=lambda x: (x.get("quantity_count") is None, -(x.get("quantity_count") or 0)))
+
     # A single st.empty() placeholder around this whole detail/list
     # toggle — clicking View/Back-to-list otherwise showed a brief flash
     # of the old table mixed with the new page while Streamlit streamed
@@ -3617,6 +3627,12 @@ else:
                     "", icon=":material/filter_alt:", key="open_filters_btn",
                     use_container_width=True, type="primary", help="Filters"
                 ):
+                    st.selectbox(
+                        "Sort",
+                        ["Default", "Low to High", "High to Low"],
+                        key="quantity_sort_select",
+                        help="Orders the table by the Quantity column",
+                    )
                     st.selectbox(
                         "Quantity",
                         QUANTITY_FILTER_OPTIONS,
