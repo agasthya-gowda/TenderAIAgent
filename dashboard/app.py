@@ -3780,6 +3780,49 @@ else:
                         """,
                         unsafe_allow_html=True,
                     )
+                    # The CSS above only covers the dropdown's CLOSED/selected
+                    # state — its OPEN option list is a react-aria popover
+                    # portaled straight to <body> (confirmed live: not a
+                    # descendant of this column's own DOM at all), so no
+                    # CSS selector scoped to this column can reach it. A
+                    # small MutationObserver on the parent document (same
+                    # "reach into window.parent.document" trick already used
+                    # for the session cookie above) swaps the image in for
+                    # real whenever a freshly-opened option list contains the
+                    # AP temple emoji — matched by its actual text, not by
+                    # position, so it can never mis-fire on an unrelated
+                    # dropdown's (e.g. Sort By's) own 3rd option.
+                    st.iframe(f"""
+                    <!-- nonce:{time.time()} -->
+                    <script>
+                    (function() {{
+                        if (window.parent.__apDropdownIconObserver) return;
+                        window.parent.__apDropdownIconObserver = true;
+                        const imgTag = '<img src="data:image/webp;base64,{_ap_icon_b64_dropdown}" ' +
+                            'style="width:16px;height:16px;vertical-align:middle;border-radius:2px;margin-right:4px;">';
+                        function swap(el) {{
+                            if (el.children.length === 0 && el.textContent.trim().startsWith('🛕')) {{
+                                const rest = el.textContent.trim().slice(1).trim();
+                                el.innerHTML = imgTag + rest;
+                            }}
+                        }}
+                        const observer = new MutationObserver((mutations) => {{
+                            for (const m of mutations) {{
+                                for (const node of m.addedNodes) {{
+                                    if (node.nodeType !== 1) continue;
+                                    if (node.matches && node.matches('[role="option"]')) {{
+                                        node.querySelectorAll('div').forEach(swap);
+                                    }}
+                                    if (node.querySelectorAll) {{
+                                        node.querySelectorAll('[role="option"] div').forEach(swap);
+                                    }}
+                                }}
+                            }}
+                        }});
+                        observer.observe(window.parent.document.body, {{childList: true, subtree: true}});
+                    }})();
+                    </script>
+                    """, height=1)
                 picked_portal_label = st.selectbox(
                     "Portal",
                     PORTAL_FILTER_OPTIONS,
