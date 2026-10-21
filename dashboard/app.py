@@ -3867,147 +3867,227 @@ else:
                 end = start + page_size
                 page_tenders = tenders[start:end]
 
-                # Table header — the header + all data rows live inside their
-                # own container so the horizontal-scroll CSS (mobile only) can
-                # scope overflow-x to just this box instead of the whole page;
-                # previously these were plain top-level elements, so scrolling
-                # the wide table on mobile dragged the entire page sideways too.
-                # Price only shows in the Relevant Tenders view — KPPP and
-                # AP tenders often carry a real estimated value (GeM's
-                # don't, at L1 it's just "See bid document"), so this
-                # column is only meaningfully useful on this one filtered
-                # view rather than cluttering every tender list with
-                # mostly-blank cells. The list is always filtered to one
-                # portal at a time (the portal pill above), so a GeM-
-                # filtered view has nothing to put in a Price column (GeM
-                # never exposes an amount at this stage), so the column is
-                # left out entirely rather than showing empty.
-                show_price = active == "relevant" and current_portal_filter in ("KPPP", "AP")
-                col_widths = [0.5, 1.5, 2.1, 1.3, 1.6, 1.2, 1.2]
-                if show_price:
-                    col_widths.append(1.1)
-                col_widths += [0.8, 0.8, 0.8]
+                # AP eProcurement's own site table has a different column
+                # set entirely (Department Name, Tender ID, Tender Notice
+                # Number, Category, Name of Work, Estimated Value, Start/
+                # Closing Date) — no Qty/Location column, no generic "Bid
+                # Number"/"Item Name" naming. Rendered as its own dedicated
+                # block below, matching the live portal's table exactly,
+                # rather than forcing it into the GeM/KPPP layout (the else
+                # branch), which has no Notice Number/Category columns at
+                # all and names things differently. The GeM/KPPP block is
+                # completely untouched.
+                is_ap_view = current_portal_filter == "AP"
 
-                with st.container():
-                    st.markdown('<div class="table-card-marker"></div>', unsafe_allow_html=True)
-                    header_cols = st.columns(col_widths)
-                    h1, h2, h3, h4, h5, h6, h7 = header_cols[:7]
-                    h_rest = header_cols[7:]
-                    if show_price:
-                        h_price, h8, h9, h10 = h_rest
-                    else:
-                        h8, h9, h10 = h_rest
-                    h1.markdown('<div class="tbl-header-row"></div><span class="th-cell">Sl No</span>', unsafe_allow_html=True)
-                    h2.markdown('<span class="th-cell">Bid Number</span>', unsafe_allow_html=True)
-                    h3.markdown('<span class="th-cell">Item Name</span>', unsafe_allow_html=True)
-                    h4.markdown('<span class="th-cell">Department</span>', unsafe_allow_html=True)
-                    qty_col_label = "Location" if current_portal_filter == "KPPP" else "Qty"
-                    h5.markdown(f'<span class="th-cell">{qty_col_label}</span>', unsafe_allow_html=True)
-                    h6.markdown('<span class="th-cell">Start Date</span>', unsafe_allow_html=True)
-                    h7.markdown('<span class="th-cell">End Date</span>', unsafe_allow_html=True)
-                    if show_price:
-                        h_price.markdown('<span class="th-cell">Price</span>', unsafe_allow_html=True)
-                    h8.markdown("")
-                    h9.markdown("")
-                    h10.markdown("")
-                    # st.markdown("---")
+                if is_ap_view:
+                    ap_col_widths = [1.3, 0.8, 1.2, 0.9, 2.1, 1.1, 1.1, 1.1, 0.6, 0.6, 0.6]
+                    with st.container():
+                        st.markdown('<div class="table-card-marker"></div>', unsafe_allow_html=True)
+                        header_cols = st.columns(ap_col_widths)
+                        ah1, ah2, ah3, ah4, ah5, ah6, ah7, ah8, ah9, ah10, ah11 = header_cols
+                        ah1.markdown('<div class="tbl-header-row"></div><span class="th-cell">Department Name</span>', unsafe_allow_html=True)
+                        ah2.markdown('<span class="th-cell">Tender ID</span>', unsafe_allow_html=True)
+                        ah3.markdown('<span class="th-cell">Tender Notice Number</span>', unsafe_allow_html=True)
+                        ah4.markdown('<span class="th-cell">Category</span>', unsafe_allow_html=True)
+                        ah5.markdown('<span class="th-cell">Name of Work</span>', unsafe_allow_html=True)
+                        ah6.markdown('<span class="th-cell">Estimated Value</span>', unsafe_allow_html=True)
+                        ah7.markdown('<span class="th-cell">Start Date</span>', unsafe_allow_html=True)
+                        ah8.markdown('<span class="th-cell">Closing Date</span>', unsafe_allow_html=True)
+                        ah9.markdown("")
+                        ah10.markdown("")
+                        ah11.markdown("")
 
-                    for idx, tender in enumerate(page_tenders):
-                        tid = tender["id"]
-                        sl_no = start + idx + 1
-                        bid_number = tender.get("tender_number", "N/A")
-                        title = tender.get("title", "Unknown")
-                        department = tender.get("department", "N/A")
-                        # KPPP tenders have no quantity field at all (never scraped —
-                        # the portal doesn't expose one); its own site shows Location
-                        # in that spot instead, which we do have real data for.
-                        if (tender.get("portal") or "").upper() == "KPPP":
-                            quantity = tender.get("location") or "N/A"
-                        else:
-                            quantity = tender.get("quantity", "N/A")
-                        start_date = tender.get("published_date", "N/A")
-                        end_date = tender.get("deadline", "N/A")
-                        portal = tender.get("portal", "")
-                        portal_chip_class = {"KPPP": "portal-chip-kppp", "AP": "portal-chip-ap"}.get(portal.upper(), "portal-chip-gem")
-                        # Price only ever shown for KPPP/AP rows — GeM doesn't
-                        # expose an amount at this stage (its "value" is
-                        # always just "See bid document"), so that's not
-                        # worth a column cell; KPPP and AP eProcurement both
-                        # carry a real estimated value, same as each other.
-                        # Prefers bid_value_numeric (the real estimated
-                        # value, read out of the tender's own document by
-                        # Get Full Analysis) over the raw "value" field —
-                        # that one's only ever the portal's own L1 search-
-                        # result figure, which is frequently blank/"Not
-                        # available" even when the document itself states a
-                        # number.
-                        if portal.upper() in ("KPPP", "AP"):
-                            bid_value_numeric = tender.get("bid_value_numeric")
-                            emd_numeric = tender.get("emd_numeric")
-                            if bid_value_numeric:
-                                price = _format_tender_price(bid_value_numeric)
-                            elif emd_numeric:
-                                # Some documents (rate-contract/AMC style
-                                # tenders especially) never state an overall
-                                # estimated value at all, only an EMD amount
-                                # — still real, useful data, so it's shown
-                                # rather than "Not available", just labelled
-                                # so it isn't mistaken for the tender's
-                                # actual value.
-                                price = f"EMD {_format_tender_price(emd_numeric)}"
-                            else:
-                                price = tender.get("value") or "Not available"
-                        else:
-                            price = ""
+                        for idx, tender in enumerate(page_tenders):
+                            tid = tender["id"]
+                            department = tender.get("department", "N/A")
+                            tender_id_val = tender.get("tender_number", "N/A")
+                            # The notice number is captured into the generic
+                            # tender_type field at search time (see
+                            # portals/ap_eproc.py) — same raw value the live
+                            # site's own "Tender Notice Number" column shows.
+                            notice_number = tender.get("tender_type") or "N/A"
+                            category = tender.get("category") or "N/A"
+                            title = tender.get("title", "Unknown")
+                            value_val = tender.get("value") or "Not available"
+                            start_date = tender.get("published_date", "N/A")
+                            end_date = tender.get("deadline", "N/A")
 
-                        row_cols = st.columns(col_widths)
-                        r1, r2, r3, r4, r5, r6, r7 = row_cols[:7]
-                        r_rest = row_cols[7:]
-                        if show_price:
-                            r_price, r8, r9, r10 = r_rest
-                        else:
-                            r8, r9, r10 = r_rest
-                        r1.markdown(f'<div class="tbl-data-row"></div><span class="td-slno">{sl_no}</span>', unsafe_allow_html=True)
-                        r2.markdown(
-                            f'<div class="mono td-bid">{bid_number}</div>'
-                            f'<span class="portal-chip {portal_chip_class}">{portal or "N/A"}</span>',
-                            unsafe_allow_html=True,
-                        )
-                        # Hover shows the full stored title (same idea as
-                        # GeM's own site) — the visible cell still shows
-                        # just the first 60 chars so the table stays
-                        # compact, but a long bundled item list (GeM bids
-                        # often pack many items into one title) is no
-                        # longer only visible by opening the tender.
-                        title_suffix = "..." if len(title) > 60 else ""
-                        r3.markdown(
-                            f'<span title="{html.escape(title)}">{html.escape(title[:60])}{title_suffix}</span>',
-                            unsafe_allow_html=True,
-                        )
-                        r4.markdown(f'<span class="td-dept">{department[:30] if department else "N/A"}</span>', unsafe_allow_html=True)
-                        r5.markdown(f'<span class="mono td-qty">{quantity}</span>', unsafe_allow_html=True)
-                        r6.markdown(f'<span class="mono td-date">{start_date}</span>', unsafe_allow_html=True)
-                        r7.markdown(f'<span class="mono enddate-chip">{end_date}</span>', unsafe_allow_html=True)
-                        if show_price:
-                            r_price.markdown(f'<span class="mono td-qty">{price or "—"}</span>', unsafe_allow_html=True)
-                        with r8:
-                            if st.button("View", key=f"view_{tid}_{section}"):
-                                st.session_state.viewing_tender_id = tid
-                                st.rerun()
-                        with r9:
-                            tender_status = tender.get("status", "new")
-                            if tender_status == "saved":
-                                if st.button("🔓", key=f"table_unsave_{tid}_{section}", help="Unsave this tender"):
-                                    update_tender_status(tid, "new")
+                            row_cols = st.columns(ap_col_widths)
+                            a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11 = row_cols
+                            a1.markdown(f'<div class="tbl-data-row"></div><span class="td-dept">{department[:30] if department else "N/A"}</span>', unsafe_allow_html=True)
+                            a2.markdown(
+                                f'<div class="mono td-bid">{tender_id_val}</div>'
+                                f'<span class="portal-chip portal-chip-ap">AP</span>',
+                                unsafe_allow_html=True,
+                            )
+                            a3.markdown(f'<span class="mono">{html.escape(str(notice_number))}</span>', unsafe_allow_html=True)
+                            a4.markdown(f'<span>{html.escape(str(category))}</span>', unsafe_allow_html=True)
+                            title_suffix = "..." if len(title) > 60 else ""
+                            a5.markdown(
+                                f'<span title="{html.escape(title)}">{html.escape(title[:60])}{title_suffix}</span>',
+                                unsafe_allow_html=True,
+                            )
+                            a6.markdown(f'<span class="mono td-qty">{html.escape(str(value_val))}</span>', unsafe_allow_html=True)
+                            a7.markdown(f'<span class="mono td-date">{start_date}</span>', unsafe_allow_html=True)
+                            a8.markdown(f'<span class="mono enddate-chip">{end_date}</span>', unsafe_allow_html=True)
+                            with a9:
+                                if st.button("View", key=f"ap_view_{tid}_{section}"):
+                                    st.session_state.viewing_tender_id = tid
                                     st.rerun()
-                            else:
-                                if st.button("💾", key=f"table_save_{tid}_{section}", help="Save this tender"):
-                                    update_tender_status(tid, "saved")
+                            with a10:
+                                tender_status = tender.get("status", "new")
+                                if tender_status == "saved":
+                                    if st.button("🔓", key=f"ap_table_unsave_{tid}_{section}", help="Unsave this tender"):
+                                        update_tender_status(tid, "new")
+                                        st.rerun()
+                                else:
+                                    if st.button("💾", key=f"ap_table_save_{tid}_{section}", help="Save this tender"):
+                                        update_tender_status(tid, "saved")
+                                        st.rerun()
+                            with a11:
+                                if st.button("🗑️", key=f"ap_table_delete_{tid}_{section}", help="Delete this tender"):
+                                    delete_tender(tid)
                                     st.rerun()
-                        with r10:
-                            if st.button("🗑️", key=f"table_delete_{tid}_{section}", help="Delete this tender"):
-                                delete_tender(tid)
-                                st.rerun()
+                else:
+                    # Table header — the header + all data rows live inside their
+                    # own container so the horizontal-scroll CSS (mobile only) can
+                    # scope overflow-x to just this box instead of the whole page;
+                    # previously these were plain top-level elements, so scrolling
+                    # the wide table on mobile dragged the entire page sideways too.
+                    # Price only shows in the Relevant Tenders view — KPPP
+                    # tenders often carry a real estimated value (GeM's
+                    # don't, at L1 it's just "See bid document"), so this
+                    # column is only meaningfully useful on this one filtered
+                    # view rather than cluttering every tender list with
+                    # mostly-blank cells. The list is always filtered to one
+                    # portal at a time (the portal pill above), so a GeM-
+                    # filtered view has nothing to put in a Price column (GeM
+                    # never exposes an amount at this stage), so the column is
+                    # left out entirely rather than showing empty.
+                    show_price = active == "relevant" and current_portal_filter == "KPPP"
+                    col_widths = [0.5, 1.5, 2.1, 1.3, 1.6, 1.2, 1.2]
+                    if show_price:
+                        col_widths.append(1.1)
+                    col_widths += [0.8, 0.8, 0.8]
+
+                    with st.container():
+                        st.markdown('<div class="table-card-marker"></div>', unsafe_allow_html=True)
+                        header_cols = st.columns(col_widths)
+                        h1, h2, h3, h4, h5, h6, h7 = header_cols[:7]
+                        h_rest = header_cols[7:]
+                        if show_price:
+                            h_price, h8, h9, h10 = h_rest
+                        else:
+                            h8, h9, h10 = h_rest
+                        h1.markdown('<div class="tbl-header-row"></div><span class="th-cell">Sl No</span>', unsafe_allow_html=True)
+                        h2.markdown('<span class="th-cell">Bid Number</span>', unsafe_allow_html=True)
+                        h3.markdown('<span class="th-cell">Item Name</span>', unsafe_allow_html=True)
+                        h4.markdown('<span class="th-cell">Department</span>', unsafe_allow_html=True)
+                        qty_col_label = "Location" if current_portal_filter == "KPPP" else "Qty"
+                        h5.markdown(f'<span class="th-cell">{qty_col_label}</span>', unsafe_allow_html=True)
+                        h6.markdown('<span class="th-cell">Start Date</span>', unsafe_allow_html=True)
+                        h7.markdown('<span class="th-cell">End Date</span>', unsafe_allow_html=True)
+                        if show_price:
+                            h_price.markdown('<span class="th-cell">Price</span>', unsafe_allow_html=True)
+                        h8.markdown("")
+                        h9.markdown("")
+                        h10.markdown("")
+                        # st.markdown("---")
+
+                        for idx, tender in enumerate(page_tenders):
+                            tid = tender["id"]
+                            sl_no = start + idx + 1
+                            bid_number = tender.get("tender_number", "N/A")
+                            title = tender.get("title", "Unknown")
+                            department = tender.get("department", "N/A")
+                            # KPPP tenders have no quantity field at all (never scraped —
+                            # the portal doesn't expose one); its own site shows Location
+                            # in that spot instead, which we do have real data for.
+                            if (tender.get("portal") or "").upper() == "KPPP":
+                                quantity = tender.get("location") or "N/A"
+                            else:
+                                quantity = tender.get("quantity", "N/A")
+                            start_date = tender.get("published_date", "N/A")
+                            end_date = tender.get("deadline", "N/A")
+                            portal = tender.get("portal", "")
+                            portal_chip_class = "portal-chip-kppp" if portal.upper() == "KPPP" else "portal-chip-gem"
+                            # Price only ever shown for KPPP rows — GeM doesn't
+                            # expose an amount at this stage (its "value" is
+                            # always just "See bid document"), so that's not
+                            # worth a column cell, only KPPP's real figure is.
+                            # Prefers bid_value_numeric (the real estimated
+                            # value, read out of the tender's own document by
+                            # Get Full Analysis) over the raw "value" field —
+                            # that one's only ever KPPP's own L1 search-result
+                            # figure, which is frequently blank/"Not available"
+                            # even when the document itself states a number.
+                            if portal.upper() == "KPPP":
+                                bid_value_numeric = tender.get("bid_value_numeric")
+                                emd_numeric = tender.get("emd_numeric")
+                                if bid_value_numeric:
+                                    price = _format_tender_price(bid_value_numeric)
+                                elif emd_numeric:
+                                    # Some documents (rate-contract/AMC style
+                                    # tenders especially) never state an overall
+                                    # estimated value at all, only an EMD amount
+                                    # — still real, useful data, so it's shown
+                                    # rather than "Not available", just labelled
+                                    # so it isn't mistaken for the tender's
+                                    # actual value.
+                                    price = f"EMD {_format_tender_price(emd_numeric)}"
+                                else:
+                                    price = tender.get("value") or "Not available"
+                            else:
+                                price = ""
+
+                            row_cols = st.columns(col_widths)
+                            r1, r2, r3, r4, r5, r6, r7 = row_cols[:7]
+                            r_rest = row_cols[7:]
+                            if show_price:
+                                r_price, r8, r9, r10 = r_rest
+                            else:
+                                r8, r9, r10 = r_rest
+                            r1.markdown(f'<div class="tbl-data-row"></div><span class="td-slno">{sl_no}</span>', unsafe_allow_html=True)
+                            r2.markdown(
+                                f'<div class="mono td-bid">{bid_number}</div>'
+                                f'<span class="portal-chip {portal_chip_class}">{portal or "N/A"}</span>',
+                                unsafe_allow_html=True,
+                            )
+                            # Hover shows the full stored title (same idea as
+                            # GeM's own site) — the visible cell still shows
+                            # just the first 60 chars so the table stays
+                            # compact, but a long bundled item list (GeM bids
+                            # often pack many items into one title) is no
+                            # longer only visible by opening the tender.
+                            title_suffix = "..." if len(title) > 60 else ""
+                            r3.markdown(
+                                f'<span title="{html.escape(title)}">{html.escape(title[:60])}{title_suffix}</span>',
+                                unsafe_allow_html=True,
+                            )
+                            r4.markdown(f'<span class="td-dept">{department[:30] if department else "N/A"}</span>', unsafe_allow_html=True)
+                            r5.markdown(f'<span class="mono td-qty">{quantity}</span>', unsafe_allow_html=True)
+                            r6.markdown(f'<span class="mono td-date">{start_date}</span>', unsafe_allow_html=True)
+                            r7.markdown(f'<span class="mono enddate-chip">{end_date}</span>', unsafe_allow_html=True)
+                            if show_price:
+                                r_price.markdown(f'<span class="mono td-qty">{price or "—"}</span>', unsafe_allow_html=True)
+                            with r8:
+                                if st.button("View", key=f"view_{tid}_{section}"):
+                                    st.session_state.viewing_tender_id = tid
+                                    st.rerun()
+                            with r9:
+                                tender_status = tender.get("status", "new")
+                                if tender_status == "saved":
+                                    if st.button("🔓", key=f"table_unsave_{tid}_{section}", help="Unsave this tender"):
+                                        update_tender_status(tid, "new")
+                                        st.rerun()
+                                else:
+                                    if st.button("💾", key=f"table_save_{tid}_{section}", help="Save this tender"):
+                                        update_tender_status(tid, "saved")
+                                        st.rerun()
+                            with r10:
+                                if st.button("🗑️", key=f"table_delete_{tid}_{section}", help="Delete this tender"):
+                                    delete_tender(tid)
+                                    st.rerun()
 
                 st.markdown("---")
                 _, col_prev2, col_page2, col_next2 = st.columns([5, 1, 1, 1])
