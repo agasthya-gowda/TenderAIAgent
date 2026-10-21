@@ -3925,7 +3925,12 @@ else:
                                 f'<span class="portal-chip portal-chip-ap">AP</span>',
                                 unsafe_allow_html=True,
                             )
-                            a3.markdown(f'<span class="mono">{html.escape(str(notice_number))}</span>', unsafe_allow_html=True)
+                            notice_number_str = str(notice_number)
+                            notice_number_suffix = "..." if len(notice_number_str) > 25 else ""
+                            a3.markdown(
+                                f'<span class="mono" title="{html.escape(notice_number_str)}">{html.escape(notice_number_str[:25])}{notice_number_suffix}</span>',
+                                unsafe_allow_html=True,
+                            )
                             a4.markdown(f'<span>{html.escape(str(category))}</span>', unsafe_allow_html=True)
                             title_suffix = "..." if len(title) > 60 else ""
                             a5.markdown(
