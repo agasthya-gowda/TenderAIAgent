@@ -649,11 +649,11 @@ from portals.data.kppp_options import (
     PROCURING_ENTITIES as KPPP_ENTITIES,
 )
 
-PORTAL_FILTER_OPTIONS = ["🟠 KPPP (KA)", "🔵 GeM", "🛕 AP eProcurement"]
-PORTAL_FILTER_DEFAULT = "🟠 KPPP (KA)"
+PORTAL_FILTER_OPTIONS = ["🏛️ KPPP (KA)", "🔵 GeM", "🛕 AP eProcurement"]
+PORTAL_FILTER_DEFAULT = "🏛️ KPPP (KA)"
 PORTAL_FILTER_MAP = {
     "🔵 GeM": "GeM",
-    "🟠 KPPP (KA)": "KPPP",
+    "🏛️ KPPP (KA)": "KPPP",
     "🛕 AP eProcurement": "AP",
 }
 
