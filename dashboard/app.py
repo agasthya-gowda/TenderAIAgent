@@ -3941,7 +3941,7 @@ else:
                             a7.markdown(f'<span class="mono td-date">{start_date}</span>', unsafe_allow_html=True)
                             a8.markdown(f'<span class="mono enddate-chip">{end_date}</span>', unsafe_allow_html=True)
                             with a9:
-                                if st.button("View", key=f"ap_view_{tid}_{section}"):
+                                if st.button("👁️", key=f"ap_view_{tid}_{section}", help="View tender details"):
                                     st.session_state.viewing_tender_id = tid
                                     st.rerun()
                             with a10:
