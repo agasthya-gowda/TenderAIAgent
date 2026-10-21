@@ -1877,6 +1877,12 @@ st.markdown("""
     div[data-testid="stColumn"]:has(.col-marker-sort) .react-aria-ComboBox input {
         font-size: 12.5px !important;
     }
+    /* The Portal dropdown's own text — bumped up from the 12.5px shared
+       with Sort above so the KPPP/AP state-symbol icons (🏛️/🛕) actually
+       read as icons instead of disappearing at that smaller size. */
+    div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox input {
+        font-size: 15px !important;
+    }
     div[data-testid="stColumn"]:has(.col-marker-sort) .react-aria-ComboBox:focus-within,
     div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox:focus-within {
         border-color: #6366F1 !important;
@@ -2162,9 +2168,13 @@ st.markdown("""
             height: 28px !important;
             min-height: 28px !important;
         }
-        div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox input,
         div[data-testid="stColumn"]:has(.col-marker-sort) .react-aria-ComboBox input {
             font-size: 12px !important;
+        }
+        /* Bigger than Sort's on mobile too, same reason as the desktop
+           rule above — the state-symbol icons need to stay legible. */
+        div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox input {
+            font-size: 14px !important;
         }
         div[data-testid="stColumn"]:has(.col-marker-search) div[data-testid="stTextInput"] input {
             height: 28px !important;
