@@ -1944,15 +1944,15 @@ st.markdown("""
     .portal-chip-gem { background: #EFF6FF; color: #1D4ED8; }
     .portal-chip-kppp { background: #FFFBEB; color: #92400E; }
     .portal-chip-ap { background: #ECFDF5; color: #047857; }
-    /* KPPP's own sidebar search box icon (building), enlarged on its own
-       via st.expander's dedicated icon= slot (stExpanderIcon), without
-       touching the "KPPP Search Filters" text next to it. AP's own icon
-       is handled separately further below (a real image, not an emoji). */
-    .st-key-kppp_search_filters_expander span[data-testid="stExpanderIcon"] {
-        font-size: 22px !important;
+    /* KPPP's and AP's own sidebar search box icons are real images now
+       (Hampi chariot / Tirupati idol), set further below alongside the
+       base64 data they need — this just reserves the icon slot's size so
+       there's no layout jump between the invisible emoji fallback and the
+       image loading in. */
+    .st-key-kppp_search_filters_expander span[data-testid="stExpanderIcon"],
+    .st-key-ap_search_filters_expander span[data-testid="stExpanderIcon"] {
         width: 22px !important;
         height: 22px !important;
-        line-height: 1 !important;
     }
     .enddate-chip {
         display: inline-block;
@@ -2588,6 +2588,46 @@ with st.sidebar:
                 st.success(f"Searching for '{keyword_input}'...")
             else:
                 st.warning("Please enter a keyword first")
+
+    # KPPP's own icon is the Hampi stone chariot image the CEO picked (same
+    # idea as AP's Tirupati image below — st.expander's icon= slot only
+    # accepts an emoji/material-icon name, not an arbitrary image, so
+    # icon="🏛️" below is kept only as an invisible fallback and this CSS
+    # paints the real image on top of that same icon slot instead).
+    _kppp_icon_path = os.path.join(os.path.dirname(__file__), "assets", "kppp_hampi_chariot.webp")
+    try:
+        with open(_kppp_icon_path, "rb") as _f:
+            _kppp_icon_b64 = _b64.b64encode(_f.read()).decode()
+    except Exception:
+        _kppp_icon_b64 = ""
+    if _kppp_icon_b64:
+        st.markdown(
+            f"""
+            <div class="kppp-icon-css-marker"></div>
+            <style>
+            /* display:none (not height:0) removes this element from the
+               sidebar's vertical stack entirely — a zero-height element is
+               still counted as its own child there and picks up the
+               stack's gap on both sides of itself, doubling the space
+               around it (the exact bug already hit and fixed for the AP
+               icon block below). */
+            div[data-testid="stElementContainer"]:has(.kppp-icon-css-marker) {{
+                display: none !important;
+            }}
+            .st-key-kppp_search_filters_expander span[data-testid="stExpanderIcon"] {{
+                font-size: 0 !important;
+                width: 22px !important;
+                height: 22px !important;
+                background-image: url('data:image/webp;base64,{_kppp_icon_b64}');
+                background-size: contain;
+                background-repeat: no-repeat;
+                background-position: center;
+                border-radius: 3px;
+            }}
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
 
     # KPPP has no keyword search of its own — its real search form takes
     # Category and Procuring Entity (Tender Number/dates/Tender Type
@@ -3740,15 +3780,16 @@ else:
             #
             # This dropdown's selected value is a native <input>'s plain
             # text ("🛕 AP eProcurement") — unlike st.expander's icon= slot
-            # (a separate element, used for the sidebar's own AP icon),
-            # there's no separate element here to swap for an image.
-            # Overlaying the real image on top of the emoji's own on-screen
-            # position is the only way to get the same look here:
-            # input[value^="🛕"] reliably matches once AP is selected
+            # (a separate element, used for the sidebar's own icons), there's
+            # no separate element here to swap for an image. Overlaying the
+            # real image on top of the emoji's own on-screen position is the
+            # only way to get the same look here: input[value^="🛕"] (or
+            # "🏛️" for KPPP) reliably matches once that portal is selected
             # (confirmed live that react-aria does update the real value
             # attribute, not just an internal prop), and the image sits at
-            # the same spot the emoji glyph would render, so the
-            # "AP eProcurement" text after it is untouched.
+            # the same spot the emoji glyph would render, so the text after
+            # it is untouched. Both portals share one CSS block + one
+            # MutationObserver below rather than two separate copies of each.
             try:
                 import base64 as _b64_dropdown
                 _ap_icon_path_dropdown = os.path.join(os.path.dirname(__file__), "assets", "ap_tirupati_icon.webp")
@@ -3756,13 +3797,17 @@ else:
                     _ap_icon_b64_dropdown = _b64_dropdown.b64encode(_f.read()).decode()
             except Exception:
                 _ap_icon_b64_dropdown = ""
-            if _ap_icon_b64_dropdown:
-                st.markdown(
-                    f"""
-                    <style>
-                    div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox {{
-                        position: relative;
-                    }}
+            try:
+                import base64 as _b64_dropdown
+                _kppp_icon_path_dropdown = os.path.join(os.path.dirname(__file__), "assets", "kppp_hampi_chariot.webp")
+                with open(_kppp_icon_path_dropdown, "rb") as _f:
+                    _kppp_icon_b64_dropdown = _b64_dropdown.b64encode(_f.read()).decode()
+            except Exception:
+                _kppp_icon_b64_dropdown = ""
+            if _ap_icon_b64_dropdown or _kppp_icon_b64_dropdown:
+                _portal_dropdown_icon_css = ['div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox { position: relative; }']
+                if _ap_icon_b64_dropdown:
+                    _portal_dropdown_icon_css.append(f"""
                     div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox:has(input[value^="🛕"])::before {{
                         content: "";
                         position: absolute;
@@ -3778,9 +3823,27 @@ else:
                         border-radius: 9px 0 0 9px;
                         z-index: 2;
                         pointer-events: none;
-                    }}
-                    </style>
-                    """,
+                    }}""")
+                if _kppp_icon_b64_dropdown:
+                    _portal_dropdown_icon_css.append(f"""
+                    div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox:has(input[value^="🏛️"])::before {{
+                        content: "";
+                        position: absolute;
+                        left: 1px;
+                        top: 1px;
+                        bottom: 1px;
+                        width: 30px;
+                        background-color: #FFFFFF;
+                        background-image: url('data:image/webp;base64,{_kppp_icon_b64_dropdown}');
+                        background-size: 17px 17px;
+                        background-repeat: no-repeat;
+                        background-position: 8px center;
+                        border-radius: 9px 0 0 9px;
+                        z-index: 2;
+                        pointer-events: none;
+                    }}""")
+                st.markdown(
+                    "<style>\n" + "\n".join(_portal_dropdown_icon_css) + "\n</style>",
                     unsafe_allow_html=True,
                 )
                 # The CSS above only covers the dropdown's CLOSED/selected
@@ -3794,21 +3857,22 @@ else:
                 #
                 # Re-scans on EVERY mutation batch, rather than only
                 # reacting to a brand-new [role="option"] node appearing —
-                # confirmed live that once AP is the selected value, React
-                # re-renders that SAME already-mounted option in place (its
-                # aria-selected flips) and overwrites the swapped-in <img>
-                # back to plain "🛕 AP" text; a listener that only inspected
-                # m.addedNodes never saw that happen, since no option-level
-                # node was added or removed, only that node's own children
-                # changed. A full re-scan after any mutation catches that
-                # too — cheap and safe to call repeatedly, since swap() is a
-                # no-op once an option already has the image.
+                # confirmed live that once a portal is the selected value,
+                # React re-renders that SAME already-mounted option in place
+                # (its aria-selected flips) and overwrites the swapped-in
+                # <img> back to plain emoji text; a listener that only
+                # inspected m.addedNodes never saw that happen, since no
+                # option-level node was added or removed, only that node's
+                # own children changed. A full re-scan after any mutation
+                # catches that too — cheap and safe to call repeatedly,
+                # since swap() is a no-op once an option already has the
+                # image.
                 st.iframe(f"""
                 <!-- nonce:{time.time()} -->
                 <script>
                 (function() {{
                     // st.iframe re-renders (new nonce) on every Streamlit
-                    // rerun — including the one selecting AP itself
+                    // rerun — including the one selecting a portal itself
                     // triggers — and Streamlit tears down the PREVIOUS
                     // iframe element when that happens, which kills that
                     // iframe's own JS realm and, with it, whatever
@@ -3825,19 +3889,29 @@ else:
                     if (window.parent.__apDropdownIconObserver) {{
                         window.parent.__apDropdownIconObserver.disconnect();
                     }}
-                    const imgTag = '<img src="data:image/webp;base64,{_ap_icon_b64_dropdown}" ' +
-                        'style="width:16px;height:16px;vertical-align:middle;border-radius:2px;margin-right:4px;">';
+                    const ICONS = [
+                        ['🛕', 'data:image/webp;base64,{_ap_icon_b64_dropdown}'],
+                        ['🏛️', 'data:image/webp;base64,{_kppp_icon_b64_dropdown}'],
+                    ];
                     function swap(el) {{
-                        if (el.children.length === 0 && el.textContent.trim().startsWith('🛕')) {{
-                            // .slice(1) cut the temple emoji's own surrogate
-                            // pair in half (it's outside the Basic
-                            // Multilingual Plane, so it's 2 UTF-16 units,
-                            // not 1) — leaving a broken "�" character
-                            // behind. A regex strip of the whole leading
-                            // non-space run removes the complete emoji
-                            // regardless of how many code units it occupies.
-                            const rest = el.textContent.trim().replace(/^\\S+\\s*/, '');
-                            el.innerHTML = imgTag + rest;
+                        if (el.children.length !== 0) return;
+                        const text = el.textContent.trim();
+                        for (const [emoji, src] of ICONS) {{
+                            if (!src || src.endsWith('base64,')) continue;
+                            if (text.startsWith(emoji)) {{
+                                // .slice(1) cut a surrogate-pair emoji (one
+                                // outside the Basic Multilingual Plane, like
+                                // the temple) in half, leaving a broken "�"
+                                // character behind. A regex strip of the
+                                // whole leading non-space run removes the
+                                // complete emoji regardless of how many
+                                // UTF-16 code units it occupies.
+                                const rest = text.replace(/^\\S+\\s*/, '');
+                                const imgTag = '<img src="' + src + '" ' +
+                                    'style="width:16px;height:16px;vertical-align:middle;border-radius:2px;margin-right:4px;">';
+                                el.innerHTML = imgTag + rest;
+                                return;
+                            }}
                         }}
                     }}
                     function rescan() {{
