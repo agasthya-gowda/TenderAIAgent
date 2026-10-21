@@ -411,6 +411,91 @@ def _search_portal(portal: str, keywords: list, category: str, max_pages: int = 
     except Exception as e:
         log(f"❌ [{portal}] Fatal error: {e}")
 
+def on_ap_search(keyword: str):
+    """
+    CEO searched AP eProcurement's own keyword box (Tender ID/ IFB No/ Name
+    of Work — the portal's own single free-text search, same idea as GeM's
+    keyword box). Saved the same way GeM's keyword is (ceo_searches +
+    learned_patterns, portal='AP') so Search History / Patterns Learned
+    show it too, and every future agent cycle (Start Agent, 2 AM) re-runs
+    it automatically alongside every other saved AP keyword. Kept as its
+    own function rather than reusing on_ceo_search/_search_portal — those
+    are GeM-specific (AI keyword expansion, GeM's own relevance filtering),
+    none of which applies here: an AP search just re-confirms exactly what
+    the live portal's own search returns for the term, nothing more.
+    """
+    log(f"👀 CEO searched: '{keyword}' on AP eProcurement")
+
+    save_ceo_search(keyword, "AP")
+    save_learned_patterns(
+        category=keyword.title(),
+        keywords=json.dumps([keyword]),
+        weight=1.0,
+        portal="AP"
+    )
+
+    threading.Thread(
+        target=_run_ap_search_then_check_relevant,
+        args=(keyword,),
+        daemon=True
+    ).start()
+
+def _run_ap_search_then_check_relevant(keyword: str):
+    """Wraps _search_ap_portal for a manual AP search (on_ap_search only —
+    Start Agent/2AM already call run_relevant_keyword_matching themselves
+    after their own AP pass) so the CEO doesn't have to click Start Agent
+    afterward just to see this search's own results checked against the
+    saved Relevant Tenders keywords."""
+    if _state.get("status") in ("searching", "expanding"):
+        log(f"⏳ Search already in progress, skipping duplicate AP trigger for '{keyword}'")
+        return
+    with _lock:
+        _state["status"] = "searching"
+    try:
+        _search_ap_portal([keyword])
+        run_relevant_keyword_matching(scope="incremental")
+        with _lock:
+            _state["last_search"] = datetime.now().isoformat()
+        log(f"✅ AP search complete for '{keyword}'")
+    except Exception as e:
+        log(f"❌ Error searching AP for '{keyword}': {e}")
+    finally:
+        with _lock:
+            _state["status"] = "watching"
+
+def _search_ap_portal(keywords: list, respect_stop_flag: bool = False):
+    """AP eProcurement's counterpart to _search_portal (which only ever
+    handles GeM — see its own docstring). Kept as a fully separate function
+    rather than extending that one, so GeM's logic there (AI relevance
+    filtering, full-vs-incremental pagination decisions) stays completely
+    untouched. AP has no CAPTCHA and needs no AI expansion step: every
+    result search_ap_sync returns for a keyword is exactly what the live
+    portal's own search shows for that term, so every result is kept as-is
+    — no relevance filtering on top, same guarantee the CEO's own literal
+    GeM keyword gets."""
+    should_stop = (lambda: not _state["running"]) if respect_stop_flag else None
+    from portals.ap_eproc import search_ap_sync
+
+    found_count = 0
+    for keyword in keywords:
+        if should_stop and should_stop():
+            log("🛑 [AP] Stop requested — ending search early")
+            break
+        try:
+            log(f"🔎 [AP] Searching: '{keyword}'")
+            tenders = search_ap_sync(keyword)
+            for tender in tenders:
+                tender_id = save_tender(tender)
+                if tender_id:
+                    found_count += 1
+                    log(f"📄 [AP] Found: {tender['title'][:60]}...")
+        except Exception as e:
+            log(f"⚠️ [AP] Error searching '{keyword}': {e}")
+
+    with _lock:
+        _state["tenders_found_today"] += found_count
+    log(f"✅ [AP] Done. Found {found_count} new tenders")
+
 def on_kppp_search(criteria: dict):
     """
     CEO submitted the KPPP-specific search form (category, procuring entity,
@@ -672,6 +757,16 @@ def _scheduled_search():
                 if n_backfilled:
                     log(f"🔧 [KPPP] Backfilled nit_id for {n_backfilled} older tender(s)")
 
+            if searches:
+                # Same idea as the GeM block above — every saved AP keyword,
+                # re-run fresh on every nightly cycle.
+                ap_keywords = sorted({
+                    s["keyword"] for s in searches if s["portal"] == "AP"
+                })
+                if ap_keywords:
+                    log(f"🚀 Running {len(ap_keywords)} scheduled AP eProcurement searches...")
+                    _search_ap_portal(ap_keywords, respect_stop_flag=True)
+
             # Nightly-only: download + analyze every new tender (not just
             # Relevant Tenders matches), capped at 100 — see
             # analyze_new_tenders_batch's docstring. Runs BEFORE the
@@ -757,6 +852,16 @@ def _run_full_catalog_search():
             n_backfilled = backfill_kppp_nit_ids_sync()
             if n_backfilled:
                 log(f"🔧 [KPPP] Backfilled nit_id for {n_backfilled} older tender(s)")
+
+        if searches:
+            # Same idea as the GeM block above — every saved AP keyword,
+            # re-run fresh on every Start Agent click.
+            ap_keywords = sorted({
+                s["keyword"] for s in searches if s["portal"] == "AP"
+            })
+            if ap_keywords:
+                log(f"🚀 Running {len(ap_keywords)} AP eProcurement searches...")
+                _search_ap_portal(ap_keywords, respect_stop_flag=True)
 
         log("🎯 Checking Relevant Tenders keywords against today's new tenders...")
         run_relevant_keyword_matching(scope="incremental")

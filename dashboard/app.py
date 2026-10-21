@@ -468,7 +468,7 @@ def render_admin_page():
             st.caption("Every saved keyword/filter combination the agent replays on each auto-search cycle.")
         with dropdown_col:
             db_table_portal = st.selectbox(
-                "Portal", ["KPPP (KA)", "GeM"], key="admin_db_table_portal",
+                "Portal", ["KPPP (KA)", "GeM", "AP eProcurement"], key="admin_db_table_portal",
                 label_visibility="collapsed",
             )
 
@@ -487,6 +487,23 @@ def render_admin_page():
                     "To Date": r.get("to_date") or "",
                     "Last Searched At": r.get("last_searched_at") or "Never",
                 } for r in kppp_rows])
+                st.dataframe(df, use_container_width=True, hide_index=True)
+        elif db_table_portal == "AP eProcurement":
+            # AP has no incremental "last searched" log table the way GeM
+            # does (see portals/ap_eproc.py's search_ap docstring for why —
+            # every run just re-confirms the keyword's full current result
+            # list, so there's no separate cutoff to track) — ceo_searches'
+            # own searched_at/frequency, already updated on every run via
+            # save_ceo_search, is the real "last searched" answer here.
+            ap_rows = [s for s in get_all_ceo_searches() if s.get("portal") == "AP"]
+            if not ap_rows:
+                st.info("No saved AP eProcurement keyword searches yet.")
+            else:
+                df = pd.DataFrame([{
+                    "Keyword": r.get("keyword") or "",
+                    "Times Searched": r.get("frequency"),
+                    "Last Searched At": r.get("searched_at") or "Never",
+                } for r in ap_rows])
                 st.dataframe(df, use_container_width=True, hide_index=True)
         else:
             gem_rows = [p for p in get_learned_patterns() if (p.get("portal") or "GeM") == "GeM"]
@@ -577,7 +594,7 @@ def render_patterns_learned_page():
             except Exception:
                 kws = []
             pattern_portal = p['portal'] if p['portal'] else "GeM"
-            portal_badge = "🔵 GeM" if pattern_portal == "GeM" else "🟠 KPPP (KA)"
+            portal_badge = _PORTAL_VALUE_TO_LABEL.get(pattern_portal, "🔵 GeM")
             col_p, col_d = st.columns([4, 1])
             with col_p:
                 st.markdown(f"""
@@ -632,11 +649,12 @@ from portals.data.kppp_options import (
     PROCURING_ENTITIES as KPPP_ENTITIES,
 )
 
-PORTAL_FILTER_OPTIONS = ["🟠 KPPP (KA)", "🔵 GeM"]
+PORTAL_FILTER_OPTIONS = ["🟠 KPPP (KA)", "🔵 GeM", "🟢 AP eProcurement"]
 PORTAL_FILTER_DEFAULT = "🟠 KPPP (KA)"
 PORTAL_FILTER_MAP = {
     "🔵 GeM": "GeM",
     "🟠 KPPP (KA)": "KPPP",
+    "🟢 AP eProcurement": "AP",
 }
 
 
@@ -1920,6 +1938,7 @@ st.markdown("""
     }
     .portal-chip-gem { background: #EFF6FF; color: #1D4ED8; }
     .portal-chip-kppp { background: #FFFBEB; color: #92400E; }
+    .portal-chip-ap { background: #ECFDF5; color: #047857; }
     .enddate-chip {
         display: inline-block;
         font-size: 11px;
@@ -2602,6 +2621,20 @@ with st.sidebar:
                 log_activity(st.session_state.username, "KEYWORD_SEARCH_ADDED", f"Added KPPP search filter: {', '.join(_kppp_log_bits)}")
                 st.success("Searching KPPP — this filter will keep running automatically from now on.")
 
+    # AP eProcurement (Andhra Pradesh) has its own single free-text search —
+    # "For Tender: Tender ID/ IFB No/ Name of Work" on its own site — so
+    # this mirrors GeM's keyword box above, not KPPP's multi-field form.
+    with st.expander("🟢 AP eProcurement Search", expanded=False):
+        ap_keyword_input = st.text_input("Search Tenders", placeholder="Enter keyword e.g. cctv", key="ap_keyword_input")
+        if st.button("Search", icon=":material/search:", use_container_width=True, type="primary", key="ap_search_btn"):
+            if ap_keyword_input.strip():
+                from agent.orchestrator import on_ap_search
+                on_ap_search(ap_keyword_input.strip())
+                log_activity(st.session_state.username, "KEYWORD_SEARCH_ADDED", f"Added AP eProcurement keyword search: '{ap_keyword_input.strip()}'")
+                st.success(f"Searching for '{ap_keyword_input}'...")
+            else:
+                st.warning("Please enter a keyword first")
+
     if st.session_state.user_role == "admin":
         if st.button("🛠️ Admin", use_container_width=True, key="btn_open_admin"):
             _open_sidebar_panel("show_admin")
@@ -2892,10 +2925,14 @@ def _chart_portal_toggle(key: str) -> str:
     # KPPP first so it's the default (st.selectbox defaults to its first
     # option).
     label = st.selectbox(
-        "Portal", ["KPPP (KA)", "GeM"],
+        "Portal", ["KPPP (KA)", "GeM", "AP eProcurement"],
         key=key, label_visibility="collapsed",
     )
-    return "KPPP" if label and "KPPP" in label else "GeM"
+    if label and "KPPP" in label:
+        return "KPPP"
+    if label and "AP" in label:
+        return "AP"
+    return "GeM"
 
 
 chart_col1, chart_col2 = st.columns(2)
@@ -3237,7 +3274,7 @@ if section == "patterns":
             except:
                 kws = []
             pattern_portal = p['portal'] if p['portal'] else "GeM"
-            portal_badge = "🔵 GeM" if pattern_portal == "GeM" else "🟠 KPPP (KA)"
+            portal_badge = _PORTAL_VALUE_TO_LABEL.get(pattern_portal, "🔵 GeM")
             col_p, col_d = st.columns([4, 1])
             with col_p:
                 st.markdown(f"""
@@ -3438,7 +3475,7 @@ else:
                             if fresh_files:
                                 downloaded_files = fresh_files
 
-                    if not downloaded_files and portal == "KPPP":
+                    if not downloaded_files and portal in ("KPPP", "AP"):
                         st.caption("📄 Documents will appear after analysis")
 
                     if downloaded_files:
@@ -3780,6 +3817,17 @@ else:
                                         delete_department_filter("KPPP", picked)
                                         st.session_state["kppp_dept_selected"] = "All Departments"
                                         st.rerun()
+                    elif current_portal == "AP":
+                        # Same data-driven approach as GeM's dropdown below,
+                        # just scoped to AP's own tenders/department names
+                        # and its own session key, so picking a department
+                        # here can never collide with GeM's selection.
+                        ap_counts = [
+                            d for d in get_department_counts("AP", top_n=10)
+                            if d[0] != "Others"
+                        ]
+                        dept_options = ["All Departments"] + [d[0] for d in ap_counts]
+                        st.selectbox("Department", dept_options, key="department_filter_ap")
                     else:
                         # GeM's dropdown is data-driven, not a saved list —
                         # the busiest departments right now, recomputed each
@@ -3793,10 +3841,12 @@ else:
                         ]
                         dept_options = ["All Departments"] + [d[0] for d in gem_counts]
                         st.selectbox("Department", dept_options, key="department_filter_gem")
-            department_filter_value = (
-                st.session_state.get("kppp_dept_selected", "All Departments") if current_portal == "KPPP"
-                else st.session_state.get("department_filter_gem", "All Departments")
-            )
+            if current_portal == "KPPP":
+                department_filter_value = st.session_state.get("kppp_dept_selected", "All Departments")
+            elif current_portal == "AP":
+                department_filter_value = st.session_state.get("department_filter_ap", "All Departments")
+            else:
+                department_filter_value = st.session_state.get("department_filter_gem", "All Departments")
             tenders = fuzzy_filter_tenders(tenders, search_query)
             tenders = _apply_quantity_filter(tenders, st.session_state.get("quantity_filter_bucket", "All Quantities"))
             tenders = _apply_department_filter(tenders, current_portal, department_filter_value)
@@ -3822,17 +3872,17 @@ else:
                 # scope overflow-x to just this box instead of the whole page;
                 # previously these were plain top-level elements, so scrolling
                 # the wide table on mobile dragged the entire page sideways too.
-                # Price only shows in the Relevant Tenders view — KPPP
-                # tenders often carry a real estimated value (GeM's don't,
-                # at L1 it's just "See bid document"), so this column is
-                # only meaningfully useful on this one filtered view rather
-                # than cluttering every tender list with mostly-blank cells.
-                # The list is always filtered to one portal at a time (the
-                # GeM/KPPP pill above), so this only needs the KPPP case —
-                # a GeM-filtered view has nothing to put in a Price column
-                # (GeM never exposes an amount at this stage), so the
-                # column is left out entirely rather than showing empty.
-                show_price = active == "relevant" and current_portal_filter == "KPPP"
+                # Price only shows in the Relevant Tenders view — KPPP and
+                # AP tenders often carry a real estimated value (GeM's
+                # don't, at L1 it's just "See bid document"), so this
+                # column is only meaningfully useful on this one filtered
+                # view rather than cluttering every tender list with
+                # mostly-blank cells. The list is always filtered to one
+                # portal at a time (the portal pill above), so a GeM-
+                # filtered view has nothing to put in a Price column (GeM
+                # never exposes an amount at this stage), so the column is
+                # left out entirely rather than showing empty.
+                show_price = active == "relevant" and current_portal_filter in ("KPPP", "AP")
                 col_widths = [0.5, 1.5, 2.1, 1.3, 1.6, 1.2, 1.2]
                 if show_price:
                     col_widths.append(1.1)
@@ -3878,18 +3928,20 @@ else:
                         start_date = tender.get("published_date", "N/A")
                         end_date = tender.get("deadline", "N/A")
                         portal = tender.get("portal", "")
-                        portal_chip_class = "portal-chip-kppp" if portal.upper() == "KPPP" else "portal-chip-gem"
-                        # Price only ever shown for KPPP rows — GeM doesn't
+                        portal_chip_class = {"KPPP": "portal-chip-kppp", "AP": "portal-chip-ap"}.get(portal.upper(), "portal-chip-gem")
+                        # Price only ever shown for KPPP/AP rows — GeM doesn't
                         # expose an amount at this stage (its "value" is
                         # always just "See bid document"), so that's not
-                        # worth a column cell, only KPPP's real figure is.
+                        # worth a column cell; KPPP and AP eProcurement both
+                        # carry a real estimated value, same as each other.
                         # Prefers bid_value_numeric (the real estimated
                         # value, read out of the tender's own document by
                         # Get Full Analysis) over the raw "value" field —
-                        # that one's only ever KPPP's own L1 search-result
-                        # figure, which is frequently blank/"Not available"
-                        # even when the document itself states a number.
-                        if portal.upper() == "KPPP":
+                        # that one's only ever the portal's own L1 search-
+                        # result figure, which is frequently blank/"Not
+                        # available" even when the document itself states a
+                        # number.
+                        if portal.upper() in ("KPPP", "AP"):
                             bid_value_numeric = tender.get("bid_value_numeric")
                             emd_numeric = tender.get("emd_numeric")
                             if bid_value_numeric:

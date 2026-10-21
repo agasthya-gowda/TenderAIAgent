@@ -213,6 +213,13 @@ def init_db():
     # portals/kppp.py. Tenders saved before this existed just have NULL
     # here, so their documents can't be fetched this way (same as today).
     c.execute("ALTER TABLE tenders ADD COLUMN IF NOT EXISTS nit_id INTEGER")
+    # AP eProcurement only (NULL for GeM/KPPP tenders) — the two ids AP's
+    # own document-view/download endpoints need (ViewTenderDocuments.html /
+    # DownLoadFile1.html); see where these get captured in
+    # portals/ap_eproc.py. Same idea as nit_id above, just two fields
+    # instead of one since AP's API needs both together.
+    c.execute("ALTER TABLE tenders ADD COLUMN IF NOT EXISTS ap_procurement_id TEXT")
+    c.execute("ALTER TABLE tenders ADD COLUMN IF NOT EXISTS ap_indent_id TEXT")
     # found_at's column default used to run on Postgres's own session
     # timezone (UTC), while every "is this today's tender" check elsewhere
     # compares against the app server's local date (Asia/Kolkata) — a
@@ -937,15 +944,19 @@ def get_learned_patterns():
 
 # ── Typed-column parsing helpers (L1: dates/quantity/tags, L2: money) ──
 def _parse_tender_datetime(text):
-    """Parses either portal's own date/time formats — GeM's 12-hour
-    'DD-MM-YYYY H:MM AM/PM' or KPPP's 24-hour 'DD-MM-YYYY HH:MM:SS' (also
-    accepts a bare date) — into a real datetime for the typed columns.
+    """Parses any portal's own date/time formats — GeM's 12-hour
+    'DD-MM-YYYY H:MM AM/PM', KPPP's 24-hour 'DD-MM-YYYY HH:MM:SS' (also
+    accepts a bare date), or AP eProcurement's slash-separated 12-hour
+    'DD/MM/YYYY HH:MM AM/PM' — into a real datetime for the typed columns.
     None (never raises) if the text doesn't match, since a scrape can
     legitimately produce an unparseable or missing value."""
     if not text:
         return None
     text = str(text).strip()
-    for fmt in ("%d-%m-%Y %H:%M:%S", "%d-%m-%Y %I:%M %p", "%d-%m-%Y %H:%M", "%d-%m-%Y"):
+    for fmt in (
+        "%d-%m-%Y %H:%M:%S", "%d-%m-%Y %I:%M %p", "%d-%m-%Y %H:%M", "%d-%m-%Y",
+        "%d/%m/%Y %I:%M %p", "%d/%m/%Y %H:%M", "%d/%m/%Y",
+    ):
         try:
             return datetime.strptime(text, fmt)
         except ValueError:
@@ -1053,9 +1064,9 @@ def save_tender(tender: dict):
                 relevance_score, url, description,
                 found_via, downloaded_files, quantity,
                 start_date_parsed, end_date_parsed, quantity_count, item_tags,
-                nit_id
+                nit_id, ap_procurement_id, ap_indent_id
             )
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             RETURNING id
         """, (
             tender.get("title"),
@@ -1080,6 +1091,8 @@ def save_tender(tender: dict):
             _parse_tender_int(quantity_raw),
             _parse_item_tags(tender.get("title")),
             tender.get("nit_id"),
+            tender.get("ap_procurement_id"),
+            tender.get("ap_indent_id"),
         ))
         row_id = c.fetchone()["id"]
         conn.commit()
