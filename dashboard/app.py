@@ -3709,6 +3709,139 @@ else:
                         st.session_state.dept_chart_reset_counter += 1
                         st.rerun()
 
+            # Rendered here, OUTSIDE any of the row's own columns below —
+            # this used to sit inside col_portal, but st.markdown/st.iframe
+            # still allocate a (near-zero but non-zero) element box each,
+            # and with the row's vertical_alignment="center", that extra
+            # height in just one column made the WHOLE row taller (flexbox
+            # centers every column within the tallest one), which pushed
+            # the entire search/filter row down and opened a visibly bigger
+            # gap above it than before — confirmed live by comparing against
+            # a version with this block removed. Neither the CSS nor the
+            # iframe's script actually need to be inside col_portal at all:
+            # the CSS selectors already scope themselves via
+            # div[data-testid="stColumn"]:has(.col-marker-portal), so they
+            # work identically wherever the <style>/<script> tag physically
+            # sits on the page.
+            #
+            # This dropdown's selected value is a native <input>'s plain
+            # text ("🛕 AP eProcurement") — unlike st.expander's icon= slot
+            # (a separate element, used for the sidebar's own AP icon),
+            # there's no separate element here to swap for an image.
+            # Overlaying the real image on top of the emoji's own on-screen
+            # position is the only way to get the same look here:
+            # input[value^="🛕"] reliably matches once AP is selected
+            # (confirmed live that react-aria does update the real value
+            # attribute, not just an internal prop), and the image sits at
+            # the same spot the emoji glyph would render, so the
+            # "AP eProcurement" text after it is untouched.
+            try:
+                import base64 as _b64_dropdown
+                _ap_icon_path_dropdown = os.path.join(os.path.dirname(__file__), "assets", "ap_tirupati_icon.webp")
+                with open(_ap_icon_path_dropdown, "rb") as _f:
+                    _ap_icon_b64_dropdown = _b64_dropdown.b64encode(_f.read()).decode()
+            except Exception:
+                _ap_icon_b64_dropdown = ""
+            if _ap_icon_b64_dropdown:
+                st.markdown(
+                    f"""
+                    <style>
+                    div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox {{
+                        position: relative;
+                    }}
+                    div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox:has(input[value^="🛕"])::before {{
+                        content: "";
+                        position: absolute;
+                        left: 1px;
+                        top: 1px;
+                        bottom: 1px;
+                        width: 30px;
+                        background-color: #FFFFFF;
+                        background-image: url('data:image/webp;base64,{_ap_icon_b64_dropdown}');
+                        background-size: 17px 17px;
+                        background-repeat: no-repeat;
+                        background-position: 8px center;
+                        border-radius: 9px 0 0 9px;
+                        z-index: 2;
+                        pointer-events: none;
+                    }}
+                    </style>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                # The CSS above only covers the dropdown's CLOSED/selected
+                # state — its OPEN option list is a react-aria popover
+                # portaled straight to <body> (confirmed live: not a
+                # descendant of this column's own DOM at all), so no CSS
+                # selector scoped to this column can reach it. A small
+                # MutationObserver on the parent document (same "reach into
+                # window.parent.document" trick already used for the
+                # session cookie above) swaps the image in.
+                #
+                # Re-scans on EVERY mutation batch, rather than only
+                # reacting to a brand-new [role="option"] node appearing —
+                # confirmed live that once AP is the selected value, React
+                # re-renders that SAME already-mounted option in place (its
+                # aria-selected flips) and overwrites the swapped-in <img>
+                # back to plain "🛕 AP" text; a listener that only inspected
+                # m.addedNodes never saw that happen, since no option-level
+                # node was added or removed, only that node's own children
+                # changed. A full re-scan after any mutation catches that
+                # too — cheap and safe to call repeatedly, since swap() is a
+                # no-op once an option already has the image.
+                st.iframe(f"""
+                <!-- nonce:{time.time()} -->
+                <script>
+                (function() {{
+                    // st.iframe re-renders (new nonce) on every Streamlit
+                    // rerun — including the one selecting AP itself
+                    // triggers — and Streamlit tears down the PREVIOUS
+                    // iframe element when that happens, which kills that
+                    // iframe's own JS realm and, with it, whatever
+                    // MutationObserver this script had set up. A guard
+                    // that only ever installed once (checked here, then
+                    // never updated) left the very first rerun's replacement
+                    // iframe see "already installed" and skip creating a
+                    // new one — so there was really no observer running at
+                    // all from that point on. Disconnecting whatever the
+                    // previous iframe's observer left behind and always
+                    // installing a fresh one here instead means there's
+                    // exactly one live observer after every single rerun,
+                    // not just the first page load.
+                    if (window.parent.__apDropdownIconObserver) {{
+                        window.parent.__apDropdownIconObserver.disconnect();
+                    }}
+                    const imgTag = '<img src="data:image/webp;base64,{_ap_icon_b64_dropdown}" ' +
+                        'style="width:16px;height:16px;vertical-align:middle;border-radius:2px;margin-right:4px;">';
+                    function swap(el) {{
+                        if (el.children.length === 0 && el.textContent.trim().startsWith('🛕')) {{
+                            // .slice(1) cut the temple emoji's own surrogate
+                            // pair in half (it's outside the Basic
+                            // Multilingual Plane, so it's 2 UTF-16 units,
+                            // not 1) — leaving a broken "�" character
+                            // behind. A regex strip of the whole leading
+                            // non-space run removes the complete emoji
+                            // regardless of how many code units it occupies.
+                            const rest = el.textContent.trim().replace(/^\\S+\\s*/, '');
+                            el.innerHTML = imgTag + rest;
+                        }}
+                    }}
+                    function rescan() {{
+                        window.parent.document.querySelectorAll('[role="option"]').forEach((opt) => {{
+                            swap(opt);
+                            opt.querySelectorAll('div').forEach(swap);
+                        }});
+                    }}
+                    const observer = new MutationObserver(rescan);
+                    observer.observe(window.parent.document.body, {{
+                        childList: true, subtree: true, characterData: true,
+                    }});
+                    window.parent.__apDropdownIconObserver = observer;
+                    rescan();
+                }})();
+                </script>
+                """, height=1)
+
             col_portal, col_search, col_search_btn, col_sort, col_filter_btn = st.columns(
                 [0.15, 0.5, 0.08, 0.17, 0.08], vertical_alignment="center"
             )
@@ -3736,125 +3869,6 @@ else:
                 current_portal_label = _PORTAL_VALUE_TO_LABEL.get(
                     st.session_state.get("portal_filter_value", "KPPP"), PORTAL_FILTER_DEFAULT
                 )
-                # This dropdown's selected value is a native <input>'s plain
-                # text ("🛕 AP eProcurement") — unlike st.expander's icon=
-                # slot (a separate element, used for the sidebar's own AP
-                # icon), there's no separate element here to swap for an
-                # image. Overlaying the real image on top of the emoji's own
-                # on-screen position is the only way to get the same look
-                # here: input[value^="🛕"] reliably matches once AP is
-                # selected (confirmed live that react-aria does update the
-                # real value attribute, not just an internal prop), and the
-                # image sits at the same spot the emoji glyph would render,
-                # so the "AP eProcurement" text after it is untouched.
-                try:
-                    import base64 as _b64_dropdown
-                    _ap_icon_path_dropdown = os.path.join(os.path.dirname(__file__), "assets", "ap_tirupati_icon.webp")
-                    with open(_ap_icon_path_dropdown, "rb") as _f:
-                        _ap_icon_b64_dropdown = _b64_dropdown.b64encode(_f.read()).decode()
-                except Exception:
-                    _ap_icon_b64_dropdown = ""
-                if _ap_icon_b64_dropdown:
-                    st.markdown(
-                        f"""
-                        <style>
-                        div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox {{
-                            position: relative;
-                        }}
-                        div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox:has(input[value^="🛕"])::before {{
-                            content: "";
-                            position: absolute;
-                            left: 1px;
-                            top: 1px;
-                            bottom: 1px;
-                            width: 30px;
-                            background-color: #FFFFFF;
-                            background-image: url('data:image/webp;base64,{_ap_icon_b64_dropdown}');
-                            background-size: 17px 17px;
-                            background-repeat: no-repeat;
-                            background-position: 8px center;
-                            border-radius: 9px 0 0 9px;
-                            z-index: 2;
-                            pointer-events: none;
-                        }}
-                        </style>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-                    # The CSS above only covers the dropdown's CLOSED/selected
-                    # state — its OPEN option list is a react-aria popover
-                    # portaled straight to <body> (confirmed live: not a
-                    # descendant of this column's own DOM at all), so no
-                    # CSS selector scoped to this column can reach it. A
-                    # small MutationObserver on the parent document (same
-                    # "reach into window.parent.document" trick already used
-                    # for the session cookie above) swaps the image in.
-                    #
-                    # Re-scans on EVERY mutation batch, rather than only
-                    # reacting to a brand-new [role="option"] node appearing
-                    # — confirmed live that once AP is the selected value,
-                    # React re-renders that SAME already-mounted option in
-                    # place (its aria-selected flips) and overwrites the
-                    # swapped-in <img> back to plain "🛕 AP" text; a listener
-                    # that only inspected m.addedNodes never saw that happen,
-                    # since no option-level node was added or removed, only
-                    # that node's own children changed. A full re-scan after
-                    # any mutation catches that too — cheap and safe to call
-                    # repeatedly, since swap() is a no-op once an option
-                    # already has the image.
-                    st.iframe(f"""
-                    <!-- nonce:{time.time()} -->
-                    <script>
-                    (function() {{
-                        // st.iframe re-renders (new nonce) on every Streamlit
-                        // rerun — including the one selecting AP itself
-                        // triggers — and Streamlit tears down the PREVIOUS
-                        // iframe element when that happens, which kills that
-                        // iframe's own JS realm and, with it, whatever
-                        // MutationObserver this script had set up. A guard
-                        // that only ever installed once (checked here, then
-                        // never updated) left the very first rerun's replacement
-                        // iframe see "already installed" and skip creating a
-                        // new one — so there was really no observer running
-                        // at all from that point on. Disconnecting whatever
-                        // the previous iframe's observer left behind and
-                        // always installing a fresh one here instead means
-                        // there's exactly one live observer after every
-                        // single rerun, not just the first page load.
-                        if (window.parent.__apDropdownIconObserver) {{
-                            window.parent.__apDropdownIconObserver.disconnect();
-                        }}
-                        const imgTag = '<img src="data:image/webp;base64,{_ap_icon_b64_dropdown}" ' +
-                            'style="width:16px;height:16px;vertical-align:middle;border-radius:2px;margin-right:4px;">';
-                        function swap(el) {{
-                            if (el.children.length === 0 && el.textContent.trim().startsWith('🛕')) {{
-                                // .slice(1) cut the temple emoji's own
-                                // surrogate pair in half (it's outside the
-                                // Basic Multilingual Plane, so it's 2 UTF-16
-                                // units, not 1) — leaving a broken "�"
-                                // character behind. A regex strip of the
-                                // whole leading non-space run removes the
-                                // complete emoji regardless of how many
-                                // code units it occupies.
-                                const rest = el.textContent.trim().replace(/^\\S+\\s*/, '');
-                                el.innerHTML = imgTag + rest;
-                            }}
-                        }}
-                        function rescan() {{
-                            window.parent.document.querySelectorAll('[role="option"]').forEach((opt) => {{
-                                swap(opt);
-                                opt.querySelectorAll('div').forEach(swap);
-                            }});
-                        }}
-                        const observer = new MutationObserver(rescan);
-                        observer.observe(window.parent.document.body, {{
-                            childList: true, subtree: true, characterData: true,
-                        }});
-                        window.parent.__apDropdownIconObserver = observer;
-                        rescan();
-                    }})();
-                    </script>
-                    """, height=1)
                 picked_portal_label = st.selectbox(
                     "Portal",
                     PORTAL_FILTER_OPTIONS,
