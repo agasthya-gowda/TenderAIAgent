@@ -657,6 +657,19 @@ PORTAL_FILTER_MAP = {
     "🛕 AP": "AP",
 }
 
+# Each portal's own real-photo icon (Red Fort / Hampi chariot / Tirupati
+# idol), swapped in over that portal's plain emoji wherever it appears —
+# the Portal filter dropdown (both its closed/selected state and its open
+# option list, see where this is used further below) and, separately, each
+# portal's own sidebar search-box icon (see each one's own st.expander
+# call). One shared list so adding a 4th portal's icon later is just one
+# more entry here, not another copy of the whole CSS/JS block.
+_PORTAL_DROPDOWN_ICONS = [
+    ("🔵", "gem_red_fort.webp"),
+    ("🏛️", "kppp_hampi_chariot.webp"),
+    ("🛕", "ap_tirupati_icon.webp"),
+]
+
 
 _PORTAL_VALUE_TO_LABEL = {v: k for k, v in PORTAL_FILTER_MAP.items()}
 
@@ -1944,11 +1957,12 @@ st.markdown("""
     .portal-chip-gem { background: #EFF6FF; color: #1D4ED8; }
     .portal-chip-kppp { background: #FFFBEB; color: #92400E; }
     .portal-chip-ap { background: #ECFDF5; color: #047857; }
-    /* KPPP's and AP's own sidebar search box icons are real images now
-       (Hampi chariot / Tirupati idol), set further below alongside the
-       base64 data they need — this just reserves the icon slot's size so
-       there's no layout jump between the invisible emoji fallback and the
-       image loading in. */
+    /* GeM's/KPPP's/AP's own sidebar search box icons are real images now
+       (Red Fort / Hampi chariot / Tirupati idol), set further below
+       alongside the base64 data they need — this just reserves the icon
+       slot's size so there's no layout jump between the invisible emoji
+       fallback and the image loading in. */
+    .st-key-gem_search_filters_expander span[data-testid="stExpanderIcon"],
     .st-key-kppp_search_filters_expander span[data-testid="stExpanderIcon"],
     .st-key-ap_search_filters_expander span[data-testid="stExpanderIcon"] {
         width: 22px !important;
@@ -2578,7 +2592,48 @@ with st.sidebar:
             st.session_state.agent_started = False
             st.rerun()
 
-    with st.expander("🔍 GeM Search Filters", expanded=False):
+    # GeM's own icon is the Red Fort image the CEO picked (same idea as
+    # KPPP's Hampi chariot / AP's Tirupati image below — st.expander's
+    # icon= slot only accepts an emoji/material-icon name, not an
+    # arbitrary image, so icon="🔍" below is kept only as an invisible
+    # fallback and this CSS paints the real image on top of that same
+    # icon slot instead).
+    _gem_icon_path = os.path.join(os.path.dirname(__file__), "assets", "gem_red_fort.webp")
+    try:
+        with open(_gem_icon_path, "rb") as _f:
+            _gem_icon_b64 = _b64.b64encode(_f.read()).decode()
+    except Exception:
+        _gem_icon_b64 = ""
+    if _gem_icon_b64:
+        st.markdown(
+            f"""
+            <div class="gem-icon-css-marker"></div>
+            <style>
+            /* display:none (not height:0) removes this element from the
+               sidebar's vertical stack entirely — a zero-height element is
+               still counted as its own child there and picks up the
+               stack's gap on both sides of itself, doubling the space
+               around it (the exact bug already hit and fixed for the AP
+               icon block below). */
+            div[data-testid="stElementContainer"]:has(.gem-icon-css-marker) {{
+                display: none !important;
+            }}
+            .st-key-gem_search_filters_expander span[data-testid="stExpanderIcon"] {{
+                font-size: 0 !important;
+                width: 22px !important;
+                height: 22px !important;
+                background-image: url('data:image/webp;base64,{_gem_icon_b64}');
+                background-size: contain;
+                background-repeat: no-repeat;
+                background-position: center;
+                border-radius: 3px;
+            }}
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with st.expander("GeM Search Filters", expanded=False, icon="🔍", key="gem_search_filters_expander"):
         keyword_input = st.text_input("Search Tenders", placeholder="Enter keyword e.g. cctv")
         if st.button("Search", icon=":material/search:", use_container_width=True, type="primary", key="gem_search_btn"):
             if keyword_input.strip():
@@ -3783,32 +3838,29 @@ else:
             # (a separate element, used for the sidebar's own icons), there's
             # no separate element here to swap for an image. Overlaying the
             # real image on top of the emoji's own on-screen position is the
-            # only way to get the same look here: input[value^="🛕"] (or
-            # "🏛️" for KPPP) reliably matches once that portal is selected
-            # (confirmed live that react-aria does update the real value
-            # attribute, not just an internal prop), and the image sits at
-            # the same spot the emoji glyph would render, so the text after
-            # it is untouched. Both portals share one CSS block + one
-            # MutationObserver below rather than two separate copies of each.
-            try:
-                import base64 as _b64_dropdown
-                _ap_icon_path_dropdown = os.path.join(os.path.dirname(__file__), "assets", "ap_tirupati_icon.webp")
-                with open(_ap_icon_path_dropdown, "rb") as _f:
-                    _ap_icon_b64_dropdown = _b64_dropdown.b64encode(_f.read()).decode()
-            except Exception:
-                _ap_icon_b64_dropdown = ""
-            try:
-                import base64 as _b64_dropdown
-                _kppp_icon_path_dropdown = os.path.join(os.path.dirname(__file__), "assets", "kppp_hampi_chariot.webp")
-                with open(_kppp_icon_path_dropdown, "rb") as _f:
-                    _kppp_icon_b64_dropdown = _b64_dropdown.b64encode(_f.read()).decode()
-            except Exception:
-                _kppp_icon_b64_dropdown = ""
-            if _ap_icon_b64_dropdown or _kppp_icon_b64_dropdown:
+            # only way to get the same look here: input[value^="<emoji>"]
+            # reliably matches once that portal is selected (confirmed live
+            # that react-aria does update the real value attribute, not
+            # just an internal prop), and the image sits at the same spot
+            # the emoji glyph would render, so the text after it is
+            # untouched. Every portal shares one CSS block + one
+            # MutationObserver below (built off _PORTAL_DROPDOWN_ICONS)
+            # rather than a separate copy per portal.
+            _portal_dropdown_icon_data = []
+            for _emoji, _filename in _PORTAL_DROPDOWN_ICONS:
+                try:
+                    import base64 as _b64_dropdown
+                    _icon_path_dropdown = os.path.join(os.path.dirname(__file__), "assets", _filename)
+                    with open(_icon_path_dropdown, "rb") as _f:
+                        _icon_b64_dropdown = _b64_dropdown.b64encode(_f.read()).decode()
+                    _portal_dropdown_icon_data.append((_emoji, _icon_b64_dropdown))
+                except Exception:
+                    pass
+            if _portal_dropdown_icon_data:
                 _portal_dropdown_icon_css = ['div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox { position: relative; }']
-                if _ap_icon_b64_dropdown:
+                for _emoji, _icon_b64 in _portal_dropdown_icon_data:
                     _portal_dropdown_icon_css.append(f"""
-                    div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox:has(input[value^="🛕"])::before {{
+                    div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox:has(input[value^="{_emoji}"])::before {{
                         content: "";
                         position: absolute;
                         left: 1px;
@@ -3816,25 +3868,7 @@ else:
                         bottom: 1px;
                         width: 30px;
                         background-color: #FFFFFF;
-                        background-image: url('data:image/webp;base64,{_ap_icon_b64_dropdown}');
-                        background-size: 17px 17px;
-                        background-repeat: no-repeat;
-                        background-position: 8px center;
-                        border-radius: 9px 0 0 9px;
-                        z-index: 2;
-                        pointer-events: none;
-                    }}""")
-                if _kppp_icon_b64_dropdown:
-                    _portal_dropdown_icon_css.append(f"""
-                    div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox:has(input[value^="🏛️"])::before {{
-                        content: "";
-                        position: absolute;
-                        left: 1px;
-                        top: 1px;
-                        bottom: 1px;
-                        width: 30px;
-                        background-color: #FFFFFF;
-                        background-image: url('data:image/webp;base64,{_kppp_icon_b64_dropdown}');
+                        background-image: url('data:image/webp;base64,{_icon_b64}');
                         background-size: 17px 17px;
                         background-repeat: no-repeat;
                         background-position: 8px center;
@@ -3867,6 +3901,10 @@ else:
                 # catches that too — cheap and safe to call repeatedly,
                 # since swap() is a no-op once an option already has the
                 # image.
+                _portal_dropdown_icons_js = ",\n                        ".join(
+                    f"['{_emoji}', 'data:image/webp;base64,{_icon_b64}']"
+                    for _emoji, _icon_b64 in _portal_dropdown_icon_data
+                )
                 st.iframe(f"""
                 <!-- nonce:{time.time()} -->
                 <script>
@@ -3886,12 +3924,11 @@ else:
                     // installing a fresh one here instead means there's
                     // exactly one live observer after every single rerun,
                     // not just the first page load.
-                    if (window.parent.__apDropdownIconObserver) {{
-                        window.parent.__apDropdownIconObserver.disconnect();
+                    if (window.parent.__portalDropdownIconObserver) {{
+                        window.parent.__portalDropdownIconObserver.disconnect();
                     }}
                     const ICONS = [
-                        ['🛕', 'data:image/webp;base64,{_ap_icon_b64_dropdown}'],
-                        ['🏛️', 'data:image/webp;base64,{_kppp_icon_b64_dropdown}'],
+                        {_portal_dropdown_icons_js}
                     ];
                     function swap(el) {{
                         if (el.children.length !== 0) return;
@@ -3924,7 +3961,7 @@ else:
                     observer.observe(window.parent.document.body, {{
                         childList: true, subtree: true, characterData: true,
                     }});
-                    window.parent.__apDropdownIconObserver = observer;
+                    window.parent.__portalDropdownIconObserver = observer;
                     rescan();
                 }})();
                 </script>
