@@ -1992,12 +1992,24 @@ st.markdown("""
     /* Sidebar buttons default to centered content (Streamlit's own base
        button style) — left-aligned here to match the GeM/KPPP/AP
        expanders right above them, whose icon+label always start from the
-       left edge. */
+       left edge. The actual centering happens on an inner wrapper <div>
+       Streamlit renders inside the button (justify-content/text-align:
+       center there), not on the <button> element itself — confirmed live
+       that setting justify-content on just the <button> had no visible
+       effect, since that inner div already fills the button's full width
+       and does its own centering independently. Both need the override. */
     div[class*="st-key-btn_open_admin"] button,
     div[class*="st-key-btn_open_relevant_keywords"] button,
     div[class*="st-key-btn_open_patterns"] button,
     div[class*="st-key-btn_open_search_history"] button {
         justify-content: flex-start !important;
+    }
+    div[class*="st-key-btn_open_admin"] button > div,
+    div[class*="st-key-btn_open_relevant_keywords"] button > div,
+    div[class*="st-key-btn_open_patterns"] button > div,
+    div[class*="st-key-btn_open_search_history"] button > div {
+        justify-content: flex-start !important;
+        text-align: left !important;
     }
     .enddate-chip {
         display: inline-block;
