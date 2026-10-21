@@ -33,6 +33,7 @@ from database.db import (
     verify_user_login, create_user, update_user_password,
     update_last_active, update_last_active_if_stale, get_all_users, update_user, delete_user, count_admins,
     get_user_by_username,
+    log_activity, get_activity_log,
 )
 
 
@@ -365,6 +366,15 @@ def render_admin_page():
                     if not ok:
                         st.warning(f"Username \"{edit_username.strip()}\" is already taken.")
                     else:
+                        if edit_role.lower() != u["role"]:
+                            log_activity(st.session_state.username, "ROLE_CHANGED", f"Changed role of '{u['username']}' from '{u['role']}' to '{edit_role.lower()}'")
+                        _edit_changes = []
+                        if edit_username.strip() != u["username"]:
+                            _edit_changes.append("username")
+                        if edit_new_password:
+                            _edit_changes.append("password")
+                        if _edit_changes:
+                            log_activity(st.session_state.username, "USER_EDITED", f"Edited user '{u['username']}': updated {', '.join(_edit_changes)}")
                         if u["username"] == st.session_state.username:
                             st.session_state.username = edit_username.strip()
                             st.session_state.user_role = edit_role.lower()
@@ -376,16 +386,56 @@ def render_admin_page():
                     st.warning("Can't delete the last remaining admin.")
                 else:
                     delete_user(u["id"])
+                    log_activity(st.session_state.username, "USER_REMOVED", f"Deleted user '{u['username']}'")
                     st.rerun()
+
+        @st.dialog("🕐 Activity Log")
+        def _user_activity_log_dialog(u):
+            st.caption(f"{u['username']} ({u['role'].capitalize()})")
+            logs = get_activity_log(u["username"])
+            if not logs:
+                st.info("No activity recorded yet for this user.")
+            else:
+                _badge_colors = {
+                    "LOGIN_SUCCESS": ("#166534", "#DCFCE7"),
+                    "LOGOUT": ("#166534", "#DCFCE7"),
+                    "START_AGENT": ("#1D4ED8", "#DBEAFE"),
+                    "STOP_AGENT": ("#B91C1C", "#FEE2E2"),
+                    "KEYWORD_SEARCH_ADDED": ("#7C3AED", "#EDE9FE"),
+                    "PDF_ANALYZED": ("#C2410C", "#FFEDD5"),
+                    "USER_CREATED": ("#166534", "#DCFCE7"),
+                    "USER_EDITED": ("#166534", "#DCFCE7"),
+                    "USER_REMOVED": ("#991B1B", "#FEE2E2"),
+                    "ROLE_CHANGED": ("#166534", "#DCFCE7"),
+                }
+                for entry in logs:
+                    text_color, bg_color = _badge_colors.get(entry["action_type"], ("#374151", "#F3F4F6"))
+                    st.markdown(
+                        f"""
+                        <div style="padding:10px 0;border-bottom:1px solid #E5E7EB;">
+                            <span style="display:inline-block;padding:3px 10px;border-radius:12px;
+                                font-size:11px;font-weight:700;color:{text_color};background:{bg_color};">
+                                {html.escape(entry['action_type'])}
+                            </span>
+                            <div style="margin-top:6px;font-size:14px;color:#111827;">
+                                {html.escape(entry['description'] or '')}
+                            </div>
+                            <div style="font-size:12px;color:#9CA3AF;margin-top:2px;">
+                                {entry['created_at']}
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
 
         if not users:
             st.info("No users found.")
         else:
             st.markdown('<div class="admin-table-card-marker"></div>', unsafe_allow_html=True)
-            col_widths = [2, 2, 2, 2, 1]
+            col_widths = [2, 2, 2, 2, 1, 1]
             header_cols = st.columns(col_widths)
             header_cols[0].markdown('<div class="admin-tbl-header-row"></div><strong>Username</strong>', unsafe_allow_html=True)
-            for col, label in zip(header_cols[1:], ["Role", "Last Active", "Created At", "Action"]):
+            for col, label in zip(header_cols[1:], ["Role", "Last Active", "Created At", "Edit", "Logs"]):
                 col.markdown(f"**{label}**")
             st.markdown("<hr style='margin:2px 0 8px 0;'>", unsafe_allow_html=True)
 
@@ -400,6 +450,8 @@ def render_admin_page():
                 row_cols[3].write(u["created_at"])
                 if row_cols[4].button("✏️", key=f"user_modify_{u['id']}", help=f"Edit {u['username']}"):
                     _edit_user_dialog(u)
+                if row_cols[5].button("🕐", key=f"user_logs_{u['id']}", help=f"View {u['username']}'s activity log"):
+                    _user_activity_log_dialog(u)
 
     with tab_db_table:
         # Read-only view of exactly what the agent auto-searches with on
@@ -963,6 +1015,7 @@ if not st.session_state.authenticated:
                     st.session_state.username = user["username"]
                     st.session_state.user_role = user["role"]
                     update_last_active(user["username"])
+                    log_activity(user["username"], "LOGIN_SUCCESS", f"User {user['username']} logged in successfully")
                     _set_session_cookie(_make_session_token(user["username"]))
                     # The iframe above needs a moment to actually mount and
                     # run its script in the browser before st.rerun() tears
@@ -1270,6 +1323,7 @@ def render_create_user_page():
                     if new_id is None:
                         st.error(f"Username \"{new_username.strip()}\" already exists.")
                     else:
+                        log_activity(st.session_state.username, "USER_CREATED", f"Created user '{new_username.strip()}' with role '{role.lower()}'")
                         st.session_state.user_create_success = f"User \"{new_username.strip()}\" ({role}) created successfully."
                         st.session_state.show_create_user = False
                         st.session_state.show_admin = True
@@ -2479,12 +2533,14 @@ with st.sidebar:
     if not st.session_state.agent_started:
         if st.button("▶️ Start Agent", use_container_width=True, type="primary", key="start_agent_btn"):
             start_agent()
+            log_activity(st.session_state.username, "START_AGENT", "Started the agent")
             st.session_state.agent_started = True
             st.success("Agent started!")
             st.rerun()
     else:
         if st.button("⏹️ Stop Agent", use_container_width=True, key="stop_agent_btn"):
             stop_agent()
+            log_activity(st.session_state.username, "STOP_AGENT", "Stopped the agent")
             st.session_state.agent_started = False
             st.rerun()
 
@@ -2494,6 +2550,7 @@ with st.sidebar:
             if keyword_input.strip():
                 from agent.orchestrator import on_ceo_search
                 on_ceo_search(keyword_input.strip(), "GeM")
+                log_activity(st.session_state.username, "KEYWORD_SEARCH_ADDED", f"Added GeM keyword search: '{keyword_input.strip()}'")
                 st.success(f"Searching for '{keyword_input}'...")
             else:
                 st.warning("Please enter a keyword first")
@@ -2537,6 +2594,12 @@ with st.sidebar:
                 if tender_name_entered:
                     criteria["tender_name"] = kppp_tender_name.strip()
                 on_kppp_search(criteria)
+                _kppp_log_bits = [f"category={kppp_category}"]
+                if entity_selected:
+                    _kppp_log_bits.append(f"entity={kppp_entity}")
+                if tender_name_entered:
+                    _kppp_log_bits.append(f"tender_name='{kppp_tender_name.strip()}'")
+                log_activity(st.session_state.username, "KEYWORD_SEARCH_ADDED", f"Added KPPP search filter: {', '.join(_kppp_log_bits)}")
                 st.success("Searching KPPP — this filter will keep running automatically from now on.")
 
     if st.session_state.user_role == "admin":
@@ -2573,6 +2636,7 @@ with st.sidebar:
             st.rerun()
 
         if st.button("🚪 Log out", use_container_width=True, key="btn_logout"):
+            log_activity(st.session_state.username, "LOGOUT", f"User {st.session_state.username} logged out")
             st.session_state.authenticated = False
             # See the cookie-restore block near the top of the file for why
             # this flag is needed — without it, that block reads the
@@ -3458,6 +3522,7 @@ else:
                                 path = analyze_tender(fresh_tender)
                             if path and os.path.exists(path):
                                 update_tender_pdfs(tid, analysis_path=path)
+                                log_activity(st.session_state.username, "PDF_ANALYZED", f"Re-analyzed tender {tender.get('tender_number') or tid} ({tender.get('title') or ''})")
                                 st.session_state.analyzing[tid] = False
                                 st.success("✅ Re-analysis ready!")
                                 st.rerun()
@@ -3478,6 +3543,7 @@ else:
                                     path = analyze_tender(tender)
                                 if path and os.path.exists(path):
                                     update_tender_pdfs(tid, analysis_path=path)
+                                    log_activity(st.session_state.username, "PDF_ANALYZED", f"Analyzed tender {tender.get('tender_number') or tid} ({tender.get('title') or ''})")
                                     st.session_state.analyzing[tid] = False
                                     st.success("✅ Analysis ready!")
                                     st.rerun()

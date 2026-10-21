@@ -396,6 +396,24 @@ def init_db():
                 (seed_user, _hash_password(seed_pass))
             )
 
+    # Per-user activity log — what each account actually did in the app
+    # (login/logout, Start/Stop Agent, new keyword searches, PDF analysis,
+    # admin user-management actions), shown in the admin Users tab's "Logs"
+    # view. username is the actor, not necessarily the account affected —
+    # e.g. an admin editing someone else's role logs under the admin's own
+    # name, since this is "what did this user do", not "what happened to
+    # this account".
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS activity_log (
+            id SERIAL PRIMARY KEY,
+            username TEXT NOT NULL,
+            action_type TEXT NOT NULL,
+            description TEXT,
+            created_at TEXT DEFAULT to_char(now() AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI:SS')
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_activity_log_username ON activity_log (username)")
+
     # Chatbot history — one row per conversation, per user, plus its messages.
     c.execute("""
         CREATE TABLE IF NOT EXISTS chat_sessions (
@@ -659,6 +677,36 @@ def delete_user(user_id: int):
     conn.execute("DELETE FROM app_users WHERE id=?", (user_id,))
     conn.commit()
     conn.close()
+
+
+def log_activity(username: str, action_type: str, description: str = ""):
+    """Records one activity_log row for the admin Users tab's "Logs" view.
+    Best-effort — a logging failure should never break the action it's
+    describing, so this swallows its own errors rather than raising."""
+    username = (username or "").strip()
+    if not username:
+        return
+    try:
+        conn = get_conn()
+        conn.execute(
+            "INSERT INTO activity_log (username, action_type, description) VALUES (?, ?, ?)",
+            (username, action_type, description or "")
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+def get_activity_log(username: str, limit: int = 200):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT action_type, description, created_at FROM activity_log "
+        "WHERE LOWER(username)=LOWER(?) ORDER BY id DESC LIMIT ?",
+        ((username or "").strip(), limit)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def has_had_full_gem_search(keyword: str) -> bool:
