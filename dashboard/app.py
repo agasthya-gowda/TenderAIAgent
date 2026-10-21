@@ -1944,12 +1944,11 @@ st.markdown("""
     .portal-chip-gem { background: #EFF6FF; color: #1D4ED8; }
     .portal-chip-kppp { background: #FFFBEB; color: #92400E; }
     .portal-chip-ap { background: #ECFDF5; color: #047857; }
-    /* KPPP/AP sidebar search boxes — their own state-symbol icon (building/
-       temple), enlarged on its own via st.expander's dedicated icon= slot
-       (stExpanderIcon), without touching the "KPPP/AP Search Filters" text
-       next to it, which stays whatever size it already was. */
-    .st-key-kppp_search_filters_expander span[data-testid="stExpanderIcon"],
-    .st-key-ap_search_filters_expander span[data-testid="stExpanderIcon"] {
+    /* KPPP's own sidebar search box icon (building), enlarged on its own
+       via st.expander's dedicated icon= slot (stExpanderIcon), without
+       touching the "KPPP Search Filters" text next to it. AP's own icon
+       is handled separately further below (a real image, not an emoji). */
+    .st-key-kppp_search_filters_expander span[data-testid="stExpanderIcon"] {
         font-size: 22px !important;
         width: 22px !important;
         height: 22px !important;
@@ -2636,6 +2635,37 @@ with st.sidebar:
                     _kppp_log_bits.append(f"tender_name='{kppp_tender_name.strip()}'")
                 log_activity(st.session_state.username, "KEYWORD_SEARCH_ADDED", f"Added KPPP search filter: {', '.join(_kppp_log_bits)}")
                 st.success("Searching KPPP — this filter will keep running automatically from now on.")
+
+    # AP's own icon is the Tirupati Venkateswara idol image the CEO picked
+    # (st.expander's icon= slot only accepts an emoji/material-icon name,
+    # not an arbitrary image, so icon="🛕" below is kept only as an
+    # invisible fallback — the CSS rule hides it and paints this image on
+    # top of that same icon slot instead, same pattern already used for the
+    # sidebar/login logos elsewhere in this file).
+    _ap_icon_path = os.path.join(os.path.dirname(__file__), "assets", "ap_tirupati_icon.webp")
+    try:
+        with open(_ap_icon_path, "rb") as _f:
+            _ap_icon_b64 = _b64.b64encode(_f.read()).decode()
+    except Exception:
+        _ap_icon_b64 = ""
+    if _ap_icon_b64:
+        st.markdown(
+            f"""
+            <style>
+            .st-key-ap_search_filters_expander span[data-testid="stExpanderIcon"] {{
+                font-size: 0 !important;
+                width: 22px !important;
+                height: 22px !important;
+                background-image: url('data:image/webp;base64,{_ap_icon_b64}');
+                background-size: contain;
+                background-repeat: no-repeat;
+                background-position: center;
+                border-radius: 3px;
+            }}
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
 
     # AP eProcurement (Andhra Pradesh) has its own single free-text search —
     # "For Tender: Tender ID/ IFB No/ Name of Work" on its own site — so
