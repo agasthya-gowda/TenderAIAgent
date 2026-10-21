@@ -1924,6 +1924,11 @@ st.markdown("""
     .td-slno { color: #94A3B8; font-weight: 500; }
     .td-bid { font-size: 12.5px; font-weight: 700; color: #0F172A; }
     .td-dept { font-weight: 600; color: #1E293B; }
+    /* AP eProcurement's own table only — its department names run much
+       longer than GeM/KPPP's, so this cell needs a smaller size to stay
+       readable without blowing out the row height; .td-dept itself (used
+       by the GeM/KPPP table) is untouched. */
+    .td-dept-ap { font-weight: 600; color: #1E293B; font-size: 12px; line-height: 1.3; }
     .td-qty { font-weight: 700; color: #0F172A; }
     .td-date { font-size: 11.5px; color: #475569; }
     .portal-chip {
@@ -3914,7 +3919,7 @@ else:
 
                             row_cols = st.columns(ap_col_widths)
                             a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11 = row_cols
-                            a1.markdown(f'<div class="tbl-data-row"></div><span class="td-dept">{department[:30] if department else "N/A"}</span>', unsafe_allow_html=True)
+                            a1.markdown(f'<div class="tbl-data-row"></div><span class="td-dept-ap">{department[:40] if department else "N/A"}</span>', unsafe_allow_html=True)
                             a2.markdown(
                                 f'<div class="mono td-bid">{tender_id_val}</div>'
                                 f'<span class="portal-chip portal-chip-ap">AP</span>',
