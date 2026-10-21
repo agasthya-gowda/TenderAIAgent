@@ -1979,6 +1979,15 @@ st.markdown("""
     .st-key-ap_search_filters_expander span[data-testid="stExpanderIcon"] {
         width: 22px !important;
         height: 22px !important;
+        /* Without this, the icon is a flex item competing for room with
+           the "KPPP/GeM/AP Search Filters" text next to it in a fairly
+           narrow sidebar row — confirmed live it was actually rendering
+           at 16px wide despite the 22px set above, flex-shrunk down to
+           let the longer labels fit. flex-shrink: 0 keeps it at its real
+           22px so the Portal dropdown's own icon (also 22px) genuinely
+           matches it, not just the CSS source matching while the
+           rendered sizes quietly differed. */
+        flex-shrink: 0 !important;
     }
     .enddate-chip {
         display: inline-block;
@@ -3887,15 +3896,20 @@ else:
             if _portal_dropdown_icon_data:
                 _portal_dropdown_icon_css = [
                     'div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox { position: relative; }',
-                    'div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox input { padding-left: 34px !important; }',
+                    # 22px to match the sidebar's own icon size for these
+                    # same three portals (.st-key-*_search_filters_expander
+                    # span[data-testid="stExpanderIcon"]) — padding-left
+                    # grown to match (8px left offset + 22px icon + 8px gap
+                    # before the text, same ratio the 18px version used).
+                    'div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox input { padding-left: 38px !important; }',
                     """div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox::before {
                         content: "";
                         position: absolute;
                         left: 8px;
                         top: 50%;
                         transform: translateY(-50%);
-                        width: 18px;
-                        height: 18px;
+                        width: 22px;
+                        height: 22px;
                         background-size: cover;
                         background-repeat: no-repeat;
                         background-position: center;
@@ -3972,7 +3986,7 @@ else:
                             if (!src || src.endsWith('base64,')) continue;
                             if (text.startsWith(name)) {{
                                 const imgTag = '<img src="' + src + '" ' +
-                                    'style="width:16px;height:16px;vertical-align:middle;border-radius:2px;margin-right:4px;object-fit:cover;">';
+                                    'style="width:22px;height:22px;vertical-align:middle;border-radius:3px;margin-right:6px;object-fit:cover;">';
                                 el.innerHTML = imgTag + text;
                                 return;
                             }}
