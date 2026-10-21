@@ -809,7 +809,18 @@ if "user_role" not in st.session_state:
 # above — before falling through to the login form, check for a still-valid
 # "stay logged in" cookie from a previous login and silently restore the
 # session from it instead.
-if not st.session_state.authenticated:
+#
+# st.context.cookies reflects the Cookie header the browser sent with the
+# page's *original* HTTP request — it does NOT update on st.rerun() (which
+# only replays the script over the existing websocket, no new HTTP
+# request). So right after Log out clears the browser's cookie via JS and
+# calls st.rerun(), this block would still see the OLD (pre-clear) cookie
+# value and silently log the user straight back in, which is exactly why
+# logout looked like it needed a manual page reload to take effect. The
+# "just logged out" flag skips this block for the rest of this browser
+# session; it's irrelevant again after a real reload, since that starts a
+# brand-new session with a fresh (by-then-actually-cleared) cookie.
+if not st.session_state.get("_just_logged_out") and not st.session_state.authenticated:
     _cookie_username = _verify_session_token(st.context.cookies.get(_SESSION_COOKIE_NAME, ""))
     if _cookie_username:
         _cookie_user = get_user_by_username(_cookie_username)
@@ -2395,6 +2406,45 @@ st.iframe("""
 """, height=1)
 _is_mobile_view = st.context.cookies.get("chipscape_mobile", "0") == "1"
 
+# The status badge + "search complete" toast need to refresh every few
+# seconds while a search is running (see the call site below for why), but
+# that refresh must NOT rerun the whole page — doing the autorefresh at
+# top level reran every widget on every tick, including the Filters
+# popover's Sort/Quantity/Department dropdowns elsewhere on the page, and a
+# click landing in the same instant as one of those ticks could get
+# silently dropped, making the dropdown look unresponsive until retried.
+# st.fragment confines this block's reruns to just itself.
+@st.fragment
+def _render_sidebar_status_fragment():
+    state = get_state()
+    status = state.get("status", "idle")
+
+    last_completed = state.get("last_search_completed_at")
+    if "last_seen_search_completion" not in st.session_state:
+        st.session_state.last_seen_search_completion = None
+    if last_completed and last_completed != st.session_state.last_seen_search_completion:
+        if st.session_state.last_seen_search_completion is not None:
+            st.toast("✅ Search complete — check New Tenders!", icon="✅")
+        st.session_state.last_seen_search_completion = last_completed
+
+    status_colors = {
+        "watching": "status-watching",
+        "searching": "status-searching",
+        "learning": "status-learning",
+        "expanding": "status-expanding",
+        "idle": "status-idle"
+    }
+    css_class = status_colors.get(status, "status-idle")
+    st.markdown(f"""
+    <div style='margin-top:10px;'>
+        <span class='status-badge {css_class}'>● {status}</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if state.get("search_in_progress"):
+        st_autorefresh(interval=5000, key="search_progress_autorefresh")
+
+
 # ── SIDEBAR ───────────────────────────────────────────────
 with st.sidebar:
     import base64 as _b64
@@ -2509,51 +2559,11 @@ with st.sidebar:
     state = get_state()
     status = state.get("status", "idle")
 
-    # Lets a search that finished while nobody was watching still get
-    # noticed: compares the orchestrator's own completion timestamp against
-    # the last one this browser session has already shown a toast for, so
-    # each completion is announced exactly once per session, not on every
-    # rerun. Auto-refreshing below is what makes that timestamp change
-    # visible without the user having to click anything themselves.
-    last_completed = state.get("last_search_completed_at")
-    if "last_seen_search_completion" not in st.session_state:
-        st.session_state.last_seen_search_completion = None
-    if last_completed and last_completed != st.session_state.last_seen_search_completion:
-        if st.session_state.last_seen_search_completion is not None:
-            st.toast("✅ Search complete — check New Tenders!", icon="✅")
-        st.session_state.last_seen_search_completion = last_completed
-
-    status_colors = {
-        "watching": "status-watching",
-        "searching": "status-searching",
-        "learning": "status-learning",
-        "expanding": "status-expanding",
-        "idle": "status-idle"
-    }
-    css_class = status_colors.get(status, "status-idle")
-    st.markdown(f"""
-    <div style='margin-top:10px;'>
-        <span class='status-badge {css_class}'>● {status}</span>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # While a search is actively running, quietly re-run this page every
-    # few seconds so the status badge and the toast above actually update
-    # without the user having to click anything — otherwise Streamlit only
-    # refreshes on the next manual interaction, and a search that finishes
-    # while the user is just sitting there watching would go unnoticed
-    # until they happened to click something. Keyed off search_in_progress
-    # rather than "status" — status flickers between "searching"/"watching"
-    # from one keyword to the next, so gating on it directly could land on
-    # a "watching" render mid-search and then never refresh again.
-    # Stops on its own once the search truly ends, so it isn't polling
-    # forever — search_in_progress is guaranteed to flip back to False even
-    # if the search hits an error. Uses streamlit_autorefresh (a soft
-    # rerun over Streamlit's own websocket) rather than a <meta refresh>
-    # tag — a meta refresh is a real browser navigation, which drops the
-    # session (and logs the user straight back out) on every tick.
-    if state.get("search_in_progress"):
-        st_autorefresh(interval=5000, key="search_progress_autorefresh")
+    # Renders the status badge + "search complete" toast and (only while a
+    # search is running) the periodic autorefresh that keeps them live —
+    # moved into its own fragment so that autorefresh no longer reruns the
+    # entire page (see the fragment's definition above for why).
+    _render_sidebar_status_fragment()
 
     with st.container(key="sidebar_bottom_actions"):
         st.markdown("---")
@@ -2564,6 +2574,11 @@ with st.sidebar:
 
         if st.button("🚪 Log out", use_container_width=True, key="btn_logout"):
             st.session_state.authenticated = False
+            # See the cookie-restore block near the top of the file for why
+            # this flag is needed — without it, that block reads the
+            # browser's not-yet-actually-cleared cookie on this very rerun
+            # and logs the user straight back in.
+            st.session_state._just_logged_out = True
             # Chat history is per-user and loaded from the DB — clear the
             # in-memory copy so the next login never sees this user's chat.
             for _k in ("chatbot_open", "chatbot_messages", "chatbot_pending",
