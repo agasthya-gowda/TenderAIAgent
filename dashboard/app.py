@@ -3788,17 +3788,42 @@ else:
                     # CSS selector scoped to this column can reach it. A
                     # small MutationObserver on the parent document (same
                     # "reach into window.parent.document" trick already used
-                    # for the session cookie above) swaps the image in for
-                    # real whenever a freshly-opened option list contains the
-                    # AP temple emoji — matched by its actual text, not by
-                    # position, so it can never mis-fire on an unrelated
-                    # dropdown's (e.g. Sort By's) own 3rd option.
+                    # for the session cookie above) swaps the image in.
+                    #
+                    # Re-scans on EVERY mutation batch, rather than only
+                    # reacting to a brand-new [role="option"] node appearing
+                    # — confirmed live that once AP is the selected value,
+                    # React re-renders that SAME already-mounted option in
+                    # place (its aria-selected flips) and overwrites the
+                    # swapped-in <img> back to plain "🛕 AP" text; a listener
+                    # that only inspected m.addedNodes never saw that happen,
+                    # since no option-level node was added or removed, only
+                    # that node's own children changed. A full re-scan after
+                    # any mutation catches that too — cheap and safe to call
+                    # repeatedly, since swap() is a no-op once an option
+                    # already has the image.
                     st.iframe(f"""
                     <!-- nonce:{time.time()} -->
                     <script>
                     (function() {{
-                        if (window.parent.__apDropdownIconObserver) return;
-                        window.parent.__apDropdownIconObserver = true;
+                        // st.iframe re-renders (new nonce) on every Streamlit
+                        // rerun — including the one selecting AP itself
+                        // triggers — and Streamlit tears down the PREVIOUS
+                        // iframe element when that happens, which kills that
+                        // iframe's own JS realm and, with it, whatever
+                        // MutationObserver this script had set up. A guard
+                        // that only ever installed once (checked here, then
+                        // never updated) left the very first rerun's replacement
+                        // iframe see "already installed" and skip creating a
+                        // new one — so there was really no observer running
+                        // at all from that point on. Disconnecting whatever
+                        // the previous iframe's observer left behind and
+                        // always installing a fresh one here instead means
+                        // there's exactly one live observer after every
+                        // single rerun, not just the first page load.
+                        if (window.parent.__apDropdownIconObserver) {{
+                            window.parent.__apDropdownIconObserver.disconnect();
+                        }}
                         const imgTag = '<img src="data:image/webp;base64,{_ap_icon_b64_dropdown}" ' +
                             'style="width:16px;height:16px;vertical-align:middle;border-radius:2px;margin-right:4px;">';
                         function swap(el) {{
@@ -3815,20 +3840,18 @@ else:
                                 el.innerHTML = imgTag + rest;
                             }}
                         }}
-                        const observer = new MutationObserver((mutations) => {{
-                            for (const m of mutations) {{
-                                for (const node of m.addedNodes) {{
-                                    if (node.nodeType !== 1) continue;
-                                    if (node.matches && node.matches('[role="option"]')) {{
-                                        node.querySelectorAll('div').forEach(swap);
-                                    }}
-                                    if (node.querySelectorAll) {{
-                                        node.querySelectorAll('[role="option"] div').forEach(swap);
-                                    }}
-                                }}
-                            }}
+                        function rescan() {{
+                            window.parent.document.querySelectorAll('[role="option"]').forEach((opt) => {{
+                                swap(opt);
+                                opt.querySelectorAll('div').forEach(swap);
+                            }});
+                        }}
+                        const observer = new MutationObserver(rescan);
+                        observer.observe(window.parent.document.body, {{
+                            childList: true, subtree: true, characterData: true,
                         }});
-                        observer.observe(window.parent.document.body, {{childList: true, subtree: true}});
+                        window.parent.__apDropdownIconObserver = observer;
+                        rescan();
                     }})();
                     </script>
                     """, height=1)
