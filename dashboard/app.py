@@ -2629,7 +2629,7 @@ with st.sidebar:
     # AP eProcurement (Andhra Pradesh) has its own single free-text search —
     # "For Tender: Tender ID/ IFB No/ Name of Work" on its own site — so
     # this mirrors GeM's keyword box above, not KPPP's multi-field form.
-    with st.expander("🟢 AP eProcurement Search", expanded=False):
+    with st.expander("🟢 AP Search Filter", expanded=False):
         ap_keyword_input = st.text_input("Search Tenders", placeholder="Enter keyword e.g. cctv", key="ap_keyword_input")
         if st.button("Search", icon=":material/search:", use_container_width=True, type="primary", key="ap_search_btn"):
             if ap_keyword_input.strip():
