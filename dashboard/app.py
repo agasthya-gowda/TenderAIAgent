@@ -1989,6 +1989,16 @@ st.markdown("""
            rendered sizes quietly differed. */
         flex-shrink: 0 !important;
     }
+    /* Sidebar buttons default to centered content (Streamlit's own base
+       button style) — left-aligned here to match the GeM/KPPP/AP
+       expanders right above them, whose icon+label always start from the
+       left edge. */
+    div[class*="st-key-btn_open_admin"] button,
+    div[class*="st-key-btn_open_relevant_keywords"] button,
+    div[class*="st-key-btn_open_patterns"] button,
+    div[class*="st-key-btn_open_search_history"] button {
+        justify-content: flex-start !important;
+    }
     .enddate-chip {
         display: inline-block;
         font-size: 11px;
