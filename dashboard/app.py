@@ -3764,15 +3764,16 @@ else:
                         div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox:has(input[value^="🛕"])::before {{
                             content: "";
                             position: absolute;
-                            left: 8px;
-                            top: 50%;
-                            transform: translateY(-50%);
-                            width: 17px;
-                            height: 17px;
+                            left: 1px;
+                            top: 1px;
+                            bottom: 1px;
+                            width: 30px;
+                            background-color: #FFFFFF;
                             background-image: url('data:image/webp;base64,{_ap_icon_b64_dropdown}');
-                            background-size: contain;
+                            background-size: 17px 17px;
                             background-repeat: no-repeat;
-                            border-radius: 2px;
+                            background-position: 8px center;
+                            border-radius: 9px 0 0 9px;
                             z-index: 2;
                             pointer-events: none;
                         }}
@@ -3802,7 +3803,15 @@ else:
                             'style="width:16px;height:16px;vertical-align:middle;border-radius:2px;margin-right:4px;">';
                         function swap(el) {{
                             if (el.children.length === 0 && el.textContent.trim().startsWith('🛕')) {{
-                                const rest = el.textContent.trim().slice(1).trim();
+                                // .slice(1) cut the temple emoji's own
+                                // surrogate pair in half (it's outside the
+                                // Basic Multilingual Plane, so it's 2 UTF-16
+                                // units, not 1) — leaving a broken "�"
+                                // character behind. A regex strip of the
+                                // whole leading non-space run removes the
+                                // complete emoji regardless of how many
+                                // code units it occupies.
+                                const rest = el.textContent.trim().replace(/^\\S+\\s*/, '');
                                 el.innerHTML = imgTag + rest;
                             }}
                         }}
