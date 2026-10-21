@@ -2623,7 +2623,13 @@ with st.sidebar:
                 width: 22px !important;
                 height: 22px !important;
                 background-image: url('data:image/webp;base64,{_gem_icon_b64}');
-                background-size: contain;
+                /* cover (not contain) — the Red Fort photo is a wide
+                   landscape shot, so "contain" left it a thin sliver
+                   inside the square icon box instead of filling it the
+                   same way AP's taller, more square Tirupati photo does.
+                   Cropping to fill the box reads as the "same size" the
+                   CEO asked for. */
+                background-size: cover;
                 background-repeat: no-repeat;
                 background-position: center;
                 border-radius: 3px;
@@ -2674,7 +2680,13 @@ with st.sidebar:
                 width: 22px !important;
                 height: 22px !important;
                 background-image: url('data:image/webp;base64,{_kppp_icon_b64}');
-                background-size: contain;
+                /* cover (not contain) — the Hampi chariot photo is a wide
+                   landscape shot, so "contain" left it a thin sliver
+                   inside the square icon box instead of filling it the
+                   same way AP's taller, more square Tirupati photo does.
+                   Cropping to fill the box reads as the "same size" the
+                   CEO asked for. */
+                background-size: cover;
                 background-repeat: no-repeat;
                 background-position: center;
                 border-radius: 3px;
