@@ -594,7 +594,7 @@ def render_patterns_learned_page():
             except Exception:
                 kws = []
             pattern_portal = p['portal'] if p['portal'] else "GeM"
-            portal_badge = _PORTAL_VALUE_TO_LABEL.get(pattern_portal, "🔵 GeM")
+            portal_badge = _PORTAL_VALUE_TO_LABEL.get(pattern_portal, "GeM")
             col_p, col_d = st.columns([4, 1])
             with col_p:
                 st.markdown(f"""
@@ -649,25 +649,37 @@ from portals.data.kppp_options import (
     PROCURING_ENTITIES as KPPP_ENTITIES,
 )
 
-PORTAL_FILTER_OPTIONS = ["🏛️ KPPP (KA)", "🔵 GeM", "🛕 AP"]
-PORTAL_FILTER_DEFAULT = "🏛️ KPPP (KA)"
+# Each of the Portal filter dropdown's own option labels used to be
+# "🔵 GeM"/"🏛️ KPPP (KA)"/"🛕 AP" — the emoji was dropped once each portal
+# got a real photo icon instead (see _PORTAL_DROPDOWN_ICONS below). Keeping
+# an emoji there too meant the overlay image had to actively MASK that
+# emoji glyph underneath it with an opaque patch, which only lined up at
+# exactly 100% browser zoom — at any other zoom level (confirmed live,
+# including the CEO's own report of it misbehaving above 150%) the overlay
+# and the native emoji glyph drift apart just enough that both become
+# visible at once. Plain text has nothing to mask, so there's no longer
+# anything to misalign.
+PORTAL_FILTER_OPTIONS = ["KPPP (KA)", "GeM", "AP"]
+PORTAL_FILTER_DEFAULT = "KPPP (KA)"
 PORTAL_FILTER_MAP = {
-    "🔵 GeM": "GeM",
-    "🏛️ KPPP (KA)": "KPPP",
-    "🛕 AP": "AP",
+    "GeM": "GeM",
+    "KPPP (KA)": "KPPP",
+    "AP": "AP",
 }
 
 # Each portal's own real-photo icon (Red Fort / Hampi chariot / Tirupati
-# idol), swapped in over that portal's plain emoji wherever it appears —
-# the Portal filter dropdown (both its closed/selected state and its open
-# option list, see where this is used further below) and, separately, each
-# portal's own sidebar search-box icon (see each one's own st.expander
-# call). One shared list so adding a 4th portal's icon later is just one
-# more entry here, not another copy of the whole CSS/JS block.
+# idol), shown next to that portal's name in the Portal filter dropdown
+# (both its closed/selected state and its open option list, see where this
+# is used further below) and, separately, each portal's own sidebar
+# search-box icon (see each one's own st.expander call). One shared list so
+# adding a 4th portal's icon later is just one more entry here, not another
+# copy of the whole CSS/JS block. Matched by the start of the option's own
+# plain-text label (no emoji involved here any more — see the comment on
+# PORTAL_FILTER_OPTIONS above).
 _PORTAL_DROPDOWN_ICONS = [
-    ("🔵", "gem_red_fort.webp"),
-    ("🏛️", "kppp_hampi_chariot.webp"),
-    ("🛕", "ap_tirupati_icon.webp"),
+    ("GeM", "gem_red_fort.webp"),
+    ("KPPP", "kppp_hampi_chariot.webp"),
+    ("AP", "ap_tirupati_icon.webp"),
 ]
 
 
@@ -3441,7 +3453,7 @@ if section == "patterns":
             except:
                 kws = []
             pattern_portal = p['portal'] if p['portal'] else "GeM"
-            portal_badge = _PORTAL_VALUE_TO_LABEL.get(pattern_portal, "🔵 GeM")
+            portal_badge = _PORTAL_VALUE_TO_LABEL.get(pattern_portal, "GeM")
             col_p, col_d = st.columns([4, 1])
             with col_p:
                 st.markdown(f"""
@@ -3846,47 +3858,56 @@ else:
             # sits on the page.
             #
             # This dropdown's selected value is a native <input>'s plain
-            # text ("🛕 AP eProcurement") — unlike st.expander's icon= slot
-            # (a separate element, used for the sidebar's own icons), there's
-            # no separate element here to swap for an image. Overlaying the
-            # real image on top of the emoji's own on-screen position is the
-            # only way to get the same look here: input[value^="<emoji>"]
+            # text (just "KPPP (KA)"/"GeM"/"AP" now — see the comment on
+            # PORTAL_FILTER_OPTIONS for why there's no emoji in it any
+            # more) — unlike st.expander's icon= slot (a separate element,
+            # used for the sidebar's own icons), there's no separate
+            # element here to hold an image. A decorative ::before on the
+            # wrapper, with padding-left on the input making room for it so
+            # the real text is never covered, does the same job without
+            # needing to mask anything: input[value^="KPPP"] (etc.)
             # reliably matches once that portal is selected (confirmed live
             # that react-aria does update the real value attribute, not
-            # just an internal prop), and the image sits at the same spot
-            # the emoji glyph would render, so the text after it is
-            # untouched. Every portal shares one CSS block + one
-            # MutationObserver below (built off _PORTAL_DROPDOWN_ICONS)
-            # rather than a separate copy per portal.
+            # just an internal prop). Every portal shares one CSS block +
+            # one MutationObserver below (built off _PORTAL_DROPDOWN_ICONS)
+            # rather than a separate copy per portal. The dropdown box
+            # itself is already wide enough that this padding just uses up
+            # existing slack space rather than needing the column any
+            # wider.
             _portal_dropdown_icon_data = []
-            for _emoji, _filename in _PORTAL_DROPDOWN_ICONS:
+            for _name, _filename in _PORTAL_DROPDOWN_ICONS:
                 try:
                     import base64 as _b64_dropdown
                     _icon_path_dropdown = os.path.join(os.path.dirname(__file__), "assets", _filename)
                     with open(_icon_path_dropdown, "rb") as _f:
                         _icon_b64_dropdown = _b64_dropdown.b64encode(_f.read()).decode()
-                    _portal_dropdown_icon_data.append((_emoji, _icon_b64_dropdown))
+                    _portal_dropdown_icon_data.append((_name, _icon_b64_dropdown))
                 except Exception:
                     pass
             if _portal_dropdown_icon_data:
-                _portal_dropdown_icon_css = ['div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox { position: relative; }']
-                for _emoji, _icon_b64 in _portal_dropdown_icon_data:
-                    _portal_dropdown_icon_css.append(f"""
-                    div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox:has(input[value^="{_emoji}"])::before {{
+                _portal_dropdown_icon_css = [
+                    'div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox { position: relative; }',
+                    'div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox input { padding-left: 34px !important; }',
+                    """div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox::before {
                         content: "";
                         position: absolute;
-                        left: 1px;
-                        top: 1px;
-                        bottom: 1px;
-                        width: 30px;
-                        background-color: #FFFFFF;
-                        background-image: url('data:image/webp;base64,{_icon_b64}');
-                        background-size: 17px 17px;
+                        left: 8px;
+                        top: 50%;
+                        transform: translateY(-50%);
+                        width: 18px;
+                        height: 18px;
+                        background-size: cover;
                         background-repeat: no-repeat;
-                        background-position: 8px center;
-                        border-radius: 9px 0 0 9px;
+                        background-position: center;
+                        border-radius: 3px;
                         z-index: 2;
                         pointer-events: none;
+                    }""",
+                ]
+                for _name, _icon_b64 in _portal_dropdown_icon_data:
+                    _portal_dropdown_icon_css.append(f"""
+                    div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox:has(input[value^="{_name}"])::before {{
+                        background-image: url('data:image/webp;base64,{_icon_b64}');
                     }}""")
                 st.markdown(
                     "<style>\n" + "\n".join(_portal_dropdown_icon_css) + "\n</style>",
@@ -3899,23 +3920,25 @@ else:
                 # selector scoped to this column can reach it. A small
                 # MutationObserver on the parent document (same "reach into
                 # window.parent.document" trick already used for the
-                # session cookie above) swaps the image in.
+                # session cookie above) prepends the image in front of the
+                # plain text there instead (there's no emoji to mask in the
+                # option list either — these are real <div> elements that
+                # can hold an <img>, unlike the closed state's <input>).
                 #
                 # Re-scans on EVERY mutation batch, rather than only
                 # reacting to a brand-new [role="option"] node appearing —
                 # confirmed live that once a portal is the selected value,
                 # React re-renders that SAME already-mounted option in place
-                # (its aria-selected flips) and overwrites the swapped-in
-                # <img> back to plain emoji text; a listener that only
-                # inspected m.addedNodes never saw that happen, since no
-                # option-level node was added or removed, only that node's
-                # own children changed. A full re-scan after any mutation
-                # catches that too — cheap and safe to call repeatedly,
-                # since swap() is a no-op once an option already has the
-                # image.
+                # (its aria-selected flips) and overwrites the prepended
+                # <img> back to plain text; a listener that only inspected
+                # m.addedNodes never saw that happen, since no option-level
+                # node was added or removed, only that node's own children
+                # changed. A full re-scan after any mutation catches that
+                # too — cheap and safe to call repeatedly, since swap() is a
+                # no-op once an option already has the image.
                 _portal_dropdown_icons_js = ",\n                        ".join(
-                    f"['{_emoji}', 'data:image/webp;base64,{_icon_b64}']"
-                    for _emoji, _icon_b64 in _portal_dropdown_icon_data
+                    f"['{_name}', 'data:image/webp;base64,{_icon_b64}']"
+                    for _name, _icon_b64 in _portal_dropdown_icon_data
                 )
                 st.iframe(f"""
                 <!-- nonce:{time.time()} -->
@@ -3945,20 +3968,12 @@ else:
                     function swap(el) {{
                         if (el.children.length !== 0) return;
                         const text = el.textContent.trim();
-                        for (const [emoji, src] of ICONS) {{
+                        for (const [name, src] of ICONS) {{
                             if (!src || src.endsWith('base64,')) continue;
-                            if (text.startsWith(emoji)) {{
-                                // .slice(1) cut a surrogate-pair emoji (one
-                                // outside the Basic Multilingual Plane, like
-                                // the temple) in half, leaving a broken "�"
-                                // character behind. A regex strip of the
-                                // whole leading non-space run removes the
-                                // complete emoji regardless of how many
-                                // UTF-16 code units it occupies.
-                                const rest = text.replace(/^\\S+\\s*/, '');
+                            if (text.startsWith(name)) {{
                                 const imgTag = '<img src="' + src + '" ' +
-                                    'style="width:16px;height:16px;vertical-align:middle;border-radius:2px;margin-right:4px;">';
-                                el.innerHTML = imgTag + rest;
+                                    'style="width:16px;height:16px;vertical-align:middle;border-radius:2px;margin-right:4px;object-fit:cover;">';
+                                el.innerHTML = imgTag + text;
                                 return;
                             }}
                         }}
