@@ -1877,12 +1877,6 @@ st.markdown("""
     div[data-testid="stColumn"]:has(.col-marker-sort) .react-aria-ComboBox input {
         font-size: 12.5px !important;
     }
-    /* The Portal dropdown's own text — bumped up from the 12.5px shared
-       with Sort above so the KPPP/AP state-symbol icons (🏛️/🛕) actually
-       read as icons instead of disappearing at that smaller size. */
-    div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox input {
-        font-size: 15px !important;
-    }
     div[data-testid="stColumn"]:has(.col-marker-sort) .react-aria-ComboBox:focus-within,
     div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox:focus-within {
         border-color: #6366F1 !important;
@@ -1950,6 +1944,17 @@ st.markdown("""
     .portal-chip-gem { background: #EFF6FF; color: #1D4ED8; }
     .portal-chip-kppp { background: #FFFBEB; color: #92400E; }
     .portal-chip-ap { background: #ECFDF5; color: #047857; }
+    /* KPPP/AP sidebar search boxes — their own state-symbol icon (building/
+       temple), enlarged on its own via st.expander's dedicated icon= slot
+       (stExpanderIcon), without touching the "KPPP/AP Search Filters" text
+       next to it, which stays whatever size it already was. */
+    .st-key-kppp_search_filters_expander span[data-testid="stExpanderIcon"],
+    .st-key-ap_search_filters_expander span[data-testid="stExpanderIcon"] {
+        font-size: 22px !important;
+        width: 22px !important;
+        height: 22px !important;
+        line-height: 1 !important;
+    }
     .enddate-chip {
         display: inline-block;
         font-size: 11px;
@@ -2168,13 +2173,9 @@ st.markdown("""
             height: 28px !important;
             min-height: 28px !important;
         }
+        div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox input,
         div[data-testid="stColumn"]:has(.col-marker-sort) .react-aria-ComboBox input {
             font-size: 12px !important;
-        }
-        /* Bigger than Sort's on mobile too, same reason as the desktop
-           rule above — the state-symbol icons need to stay legible. */
-        div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox input {
-            font-size: 14px !important;
         }
         div[data-testid="stColumn"]:has(.col-marker-search) div[data-testid="stTextInput"] input {
             height: 28px !important;
@@ -2597,7 +2598,7 @@ with st.sidebar:
     # one field and searching is enough, same as on KPPP's own site.
     # Saved filters are re-applied automatically on every future search
     # cycle, same as GeM keywords.
-    with st.expander("🏛️ KPPP Search Filters", expanded=False):
+    with st.expander("KPPP Search Filters", expanded=False, icon="🏛️", key="kppp_search_filters_expander"):
         kppp_category = st.selectbox(
             "Category", KPPP_CATEGORIES, key="kppp_category"
         )
@@ -2639,7 +2640,7 @@ with st.sidebar:
     # AP eProcurement (Andhra Pradesh) has its own single free-text search —
     # "For Tender: Tender ID/ IFB No/ Name of Work" on its own site — so
     # this mirrors GeM's keyword box above, not KPPP's multi-field form.
-    with st.expander("🛕 AP Search Filters", expanded=False):
+    with st.expander("AP Search Filters", expanded=False, icon="🛕", key="ap_search_filters_expander"):
         ap_keyword_input = st.text_input("Search Tenders", placeholder="Enter keyword e.g. cctv", key="ap_keyword_input")
         if st.button("Search", icon=":material/search:", use_container_width=True, type="primary", key="ap_search_btn"):
             if ap_keyword_input.strip():
