@@ -2651,7 +2651,21 @@ with st.sidebar:
     if _ap_icon_b64:
         st.markdown(
             f"""
+            <div class="ap-icon-css-marker"></div>
             <style>
+            /* This block's own element container has no visible content
+               (just a <style> tag), but the sidebar's own vertical stack
+               puts its standard gap on BOTH sides of every child — a
+               height:0 container still counts as a child there, so it was
+               still adding two gaps' worth of space (confirmed live: 32px
+               between KPPP/AP vs. the normal 16px every other adjacent
+               pair of sidebar buttons/expanders has). display:none removes
+               it from that layout entirely instead, scoped narrowly via
+               the marker div above so it can't affect any other markdown
+               block's own spacing elsewhere on the page. */
+            div[data-testid="stElementContainer"]:has(.ap-icon-css-marker) {{
+                display: none !important;
+            }}
             .st-key-ap_search_filters_expander span[data-testid="stExpanderIcon"] {{
                 font-size: 0 !important;
                 width: 22px !important;
