@@ -3736,6 +3736,50 @@ else:
                 current_portal_label = _PORTAL_VALUE_TO_LABEL.get(
                     st.session_state.get("portal_filter_value", "KPPP"), PORTAL_FILTER_DEFAULT
                 )
+                # This dropdown's selected value is a native <input>'s plain
+                # text ("🛕 AP eProcurement") — unlike st.expander's icon=
+                # slot (a separate element, used for the sidebar's own AP
+                # icon), there's no separate element here to swap for an
+                # image. Overlaying the real image on top of the emoji's own
+                # on-screen position is the only way to get the same look
+                # here: input[value^="🛕"] reliably matches once AP is
+                # selected (confirmed live that react-aria does update the
+                # real value attribute, not just an internal prop), and the
+                # image sits at the same spot the emoji glyph would render,
+                # so the "AP eProcurement" text after it is untouched.
+                try:
+                    import base64 as _b64_dropdown
+                    _ap_icon_path_dropdown = os.path.join(os.path.dirname(__file__), "assets", "ap_tirupati_icon.webp")
+                    with open(_ap_icon_path_dropdown, "rb") as _f:
+                        _ap_icon_b64_dropdown = _b64_dropdown.b64encode(_f.read()).decode()
+                except Exception:
+                    _ap_icon_b64_dropdown = ""
+                if _ap_icon_b64_dropdown:
+                    st.markdown(
+                        f"""
+                        <style>
+                        div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox {{
+                            position: relative;
+                        }}
+                        div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox:has(input[value^="🛕"])::before {{
+                            content: "";
+                            position: absolute;
+                            left: 8px;
+                            top: 50%;
+                            transform: translateY(-50%);
+                            width: 17px;
+                            height: 17px;
+                            background-image: url('data:image/webp;base64,{_ap_icon_b64_dropdown}');
+                            background-size: contain;
+                            background-repeat: no-repeat;
+                            border-radius: 2px;
+                            z-index: 2;
+                            pointer-events: none;
+                        }}
+                        </style>
+                        """,
+                        unsafe_allow_html=True,
+                    )
                 picked_portal_label = st.selectbox(
                     "Portal",
                     PORTAL_FILTER_OPTIONS,
