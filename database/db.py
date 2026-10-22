@@ -243,6 +243,12 @@ def init_db():
     # instead of one since AP's API needs both together.
     c.execute("ALTER TABLE tenders ADD COLUMN IF NOT EXISTS ap_procurement_id TEXT")
     c.execute("ALTER TABLE tenders ADD COLUMN IF NOT EXISTS ap_indent_id TEXT")
+    # Telangana eProcurement only (NULL for every other portal's tenders)
+    # — same idea as the AP pair just above, two ids its own
+    # ViewTenderDocuments.html/DownLoadFile.html endpoints need; see where
+    # these get captured in portals/telangana.py.
+    c.execute("ALTER TABLE tenders ADD COLUMN IF NOT EXISTS telangana_procurement_id TEXT")
+    c.execute("ALTER TABLE tenders ADD COLUMN IF NOT EXISTS telangana_indent_id TEXT")
     # found_at's column default used to run on Postgres's own session
     # timezone (UTC), while every "is this today's tender" check elsewhere
     # compares against the app server's local date (Asia/Kolkata) — a
@@ -1136,9 +1142,10 @@ def save_tender(tender: dict):
                 relevance_score, url, description,
                 found_via, downloaded_files, quantity,
                 start_date_parsed, end_date_parsed, quantity_count, item_tags,
-                nit_id, ap_procurement_id, ap_indent_id
+                nit_id, ap_procurement_id, ap_indent_id,
+                telangana_procurement_id, telangana_indent_id
             )
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             RETURNING id
         """, (
             tender.get("title"),
@@ -1165,6 +1172,8 @@ def save_tender(tender: dict):
             tender.get("nit_id"),
             tender.get("ap_procurement_id"),
             tender.get("ap_indent_id"),
+            tender.get("telangana_procurement_id"),
+            tender.get("telangana_indent_id"),
         ))
         row_id = c.fetchone()["id"]
         conn.commit()

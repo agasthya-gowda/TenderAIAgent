@@ -511,7 +511,7 @@ def render_admin_page():
             st.caption("Every saved keyword/filter combination the agent replays on each auto-search cycle.")
         with dropdown_col:
             db_table_portal = st.selectbox(
-                "Portal", ["KPPP (KA)", "GeM", "Andhra Pradesh"], key="admin_db_table_portal",
+                "Portal", ["KPPP (KA)", "GeM", "Andhra Pradesh", "Telangana"], key="admin_db_table_portal",
                 label_visibility="collapsed",
             )
 
@@ -590,6 +590,45 @@ def render_admin_page():
                     "Last Searched At": r.get("searched_at") or "Never",
                     "Time Period": _ap_time_period(r),
                 } for r in ap_rows])
+                st.dataframe(df, use_container_width=True, hide_index=True)
+        elif db_table_portal == "Telangana":
+            # Telangana has the exact same shape as AP — no CAPTCHA, no
+            # login, a keyword search that just re-confirms the portal's
+            # own current match list every run (see
+            # portals/telangana.py's search_telangana docstring) — so it
+            # reuses ceo_searches the same way AP does, and the same
+            # "reuse KPPP's own shared from" fallback for Time Period,
+            # since _search_telangana_portal doesn't stamp its own
+            # from/to window any more than _search_ap_portal does.
+            telangana_rows = [s for s in get_all_ceo_searches() if s.get("portal") == "Telangana"]
+            if not telangana_rows:
+                st.info("No saved Telangana keyword searches yet.")
+            else:
+                _kppp_rows_for_telangana = get_kppp_criteria_list()
+                _kppp_most_recent_t = max(
+                    (r for r in _kppp_rows_for_telangana if r.get("last_searched_at")),
+                    key=lambda r: r["last_searched_at"],
+                    default=None,
+                )
+                if _kppp_most_recent_t:
+                    _kppp_raw_from_t = _kppp_most_recent_t.get("last_search_from")
+                    _telangana_shared_from = (
+                        _shift_back_one_day(_kppp_raw_from_t) if _kppp_raw_from_t
+                        else _kppp_most_recent_t.get("created_at")
+                    )
+                else:
+                    _telangana_shared_from = None
+
+                def _telangana_time_period(r):
+                    last = r.get("searched_at")
+                    first = _telangana_shared_from or last
+                    return _format_time_period(first, last)
+                df = pd.DataFrame([{
+                    "Keyword": r.get("keyword") or "",
+                    "Times Searched": r.get("frequency"),
+                    "Last Searched At": r.get("searched_at") or "Never",
+                    "Time Period": _telangana_time_period(r),
+                } for r in telangana_rows])
                 st.dataframe(df, use_container_width=True, hide_index=True)
         else:
             gem_rows = [p for p in get_learned_patterns() if (p.get("portal") or "GeM") == "GeM"]
@@ -761,12 +800,13 @@ from portals.data.kppp_options import (
 # and the native emoji glyph drift apart just enough that both become
 # visible at once. Plain text has nothing to mask, so there's no longer
 # anything to misalign.
-PORTAL_FILTER_OPTIONS = ["KPPP (KA)", "GeM", "Andhra Pradesh"]
+PORTAL_FILTER_OPTIONS = ["KPPP (KA)", "GeM", "Andhra Pradesh", "Telangana"]
 PORTAL_FILTER_DEFAULT = "KPPP (KA)"
 PORTAL_FILTER_MAP = {
     "GeM": "GeM",
     "KPPP (KA)": "KPPP",
     "Andhra Pradesh": "AP",
+    "Telangana": "Telangana",
 }
 
 # Each portal's own real-photo icon (Red Fort / Hampi chariot / Tirupati
@@ -782,6 +822,7 @@ _PORTAL_DROPDOWN_ICONS = [
     ("GeM", "gem_red_fort.webp"),
     ("KPPP", "kppp_hampi_chariot.webp"),
     ("Andhra Pradesh", "ap_tirupati_icon.webp"),
+    ("Telangana", "telangana_ramoji_gate.webp"),
 ]
 
 
@@ -2071,6 +2112,7 @@ st.markdown("""
     .portal-chip-gem { background: #EFF6FF; color: #1D4ED8; }
     .portal-chip-kppp { background: #FFFBEB; color: #92400E; }
     .portal-chip-ap { background: #ECFDF5; color: #047857; }
+    .portal-chip-telangana { background: #FEF2F2; color: #B91C1C; }
     /* GeM's/KPPP's/AP's own sidebar search box icons are real images now
        (Red Fort / Hampi chariot / Tirupati idol), set further below
        alongside the base64 data they need — this just reserves the icon
@@ -2078,7 +2120,8 @@ st.markdown("""
        fallback and the image loading in. */
     .st-key-gem_search_filters_expander span[data-testid="stExpanderIcon"],
     .st-key-kppp_search_filters_expander span[data-testid="stExpanderIcon"],
-    .st-key-ap_search_filters_expander span[data-testid="stExpanderIcon"] {
+    .st-key-ap_search_filters_expander span[data-testid="stExpanderIcon"],
+    .st-key-telangana_search_filters_expander span[data-testid="stExpanderIcon"] {
         width: 22px !important;
         height: 22px !important;
         /* Without this, the icon is a flex item competing for room with
@@ -2947,6 +2990,55 @@ with st.sidebar:
             else:
                 st.warning("Please enter a keyword first")
 
+    # Telangana's own icon is the Ramoji Film City gate image the CEO
+    # picked — same pattern as AP's icon block just above (st.expander's
+    # icon= slot only accepts an emoji/material-icon name, not an arbitrary
+    # image, so icon="🎬" below is kept only as an invisible fallback).
+    _telangana_icon_path = os.path.join(os.path.dirname(__file__), "assets", "telangana_ramoji_gate.webp")
+    try:
+        with open(_telangana_icon_path, "rb") as _f:
+            _telangana_icon_b64 = _b64.b64encode(_f.read()).decode()
+    except Exception:
+        _telangana_icon_b64 = ""
+    if _telangana_icon_b64:
+        st.markdown(
+            f"""
+            <div class="telangana-icon-css-marker"></div>
+            <style>
+            /* Same display:none layout fix as the AP icon block above —
+               see its own comment for why. */
+            div[data-testid="stElementContainer"]:has(.telangana-icon-css-marker) {{
+                display: none !important;
+            }}
+            .st-key-telangana_search_filters_expander span[data-testid="stExpanderIcon"] {{
+                font-size: 0 !important;
+                width: 22px !important;
+                height: 22px !important;
+                background-image: url('data:image/webp;base64,{_telangana_icon_b64}');
+                background-size: cover;
+                background-repeat: no-repeat;
+                background-position: center;
+                border-radius: 3px;
+            }}
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    # Telangana eProcurement has its own single free-text search — "Tender
+    # Search: Tender ID/ IFB No/ Name of Work" on its own site — same shape
+    # as AP's keyword box just above.
+    with st.expander("Telangana Search Filters", expanded=False, icon="🎬", key="telangana_search_filters_expander"):
+        telangana_keyword_input = st.text_input("Search Tenders", placeholder="Enter keyword e.g. cctv", key="telangana_keyword_input")
+        if st.button("Search", icon=":material/search:", use_container_width=True, type="primary", key="telangana_search_btn"):
+            if telangana_keyword_input.strip():
+                from agent.orchestrator import on_telangana_search
+                on_telangana_search(telangana_keyword_input.strip())
+                log_activity(st.session_state.username, "KEYWORD_SEARCH_ADDED", f"Added Telangana eProcurement keyword search: '{telangana_keyword_input.strip()}'")
+                st.success(f"Searching for '{telangana_keyword_input}'...")
+            else:
+                st.warning("Please enter a keyword first")
+
     if st.session_state.user_role == "admin":
         if st.button("🛠️ Admin", use_container_width=True, key="btn_open_admin"):
             _open_sidebar_panel("show_admin")
@@ -3237,13 +3329,15 @@ def _chart_portal_toggle(key: str) -> str:
     # KPPP first so it's the default (st.selectbox defaults to its first
     # option).
     label = st.selectbox(
-        "Portal", ["KPPP (KA)", "GeM", "Andhra Pradesh"],
+        "Portal", ["KPPP (KA)", "GeM", "Andhra Pradesh", "Telangana"],
         key=key, label_visibility="collapsed",
     )
     if label and "KPPP" in label:
         return "KPPP"
     if label and "Andhra" in label:
         return "AP"
+    if label and "Telangana" in label:
+        return "Telangana"
     return "GeM"
 
 
@@ -3787,7 +3881,7 @@ else:
                             if fresh_files:
                                 downloaded_files = fresh_files
 
-                    if not downloaded_files and portal in ("KPPP", "AP"):
+                    if not downloaded_files and portal in ("KPPP", "AP", "Telangana"):
                         st.caption("📄 Documents will appear after analysis")
 
                     if downloaded_files:
@@ -4297,6 +4391,16 @@ else:
                         ]
                         dept_options = ["All Departments"] + [d[0] for d in ap_counts]
                         st.selectbox("Department", dept_options, key="department_filter_ap")
+                    elif current_portal == "Telangana":
+                        # Same data-driven approach as AP's dropdown just
+                        # above, scoped to Telangana's own tenders/
+                        # department names and its own session key.
+                        telangana_counts = [
+                            d for d in get_department_counts("Telangana", top_n=10)
+                            if d[0] != "Others"
+                        ]
+                        dept_options = ["All Departments"] + [d[0] for d in telangana_counts]
+                        st.selectbox("Department", dept_options, key="department_filter_telangana")
                     else:
                         # GeM's dropdown is data-driven, not a saved list —
                         # the busiest departments right now, recomputed each
@@ -4314,6 +4418,8 @@ else:
                 department_filter_value = st.session_state.get("kppp_dept_selected", "All Departments")
             elif current_portal == "AP":
                 department_filter_value = st.session_state.get("department_filter_ap", "All Departments")
+            elif current_portal == "Telangana":
+                department_filter_value = st.session_state.get("department_filter_telangana", "All Departments")
             else:
                 department_filter_value = st.session_state.get("department_filter_gem", "All Departments")
             tenders = fuzzy_filter_tenders(tenders, search_query)
@@ -4336,17 +4442,23 @@ else:
                 end = start + page_size
                 page_tenders = tenders[start:end]
 
-                # AP eProcurement's own site table has a different column
-                # set entirely (Department Name, Tender ID, Tender Notice
-                # Number, Category, Name of Work, Estimated Value, Start/
-                # Closing Date) — no Qty/Location column, no generic "Bid
-                # Number"/"Item Name" naming. Rendered as its own dedicated
-                # block below, matching the live portal's table exactly,
-                # rather than forcing it into the GeM/KPPP layout (the else
-                # branch), which has no Notice Number/Category columns at
-                # all and names things differently. The GeM/KPPP block is
-                # completely untouched.
-                is_ap_view = current_portal_filter == "AP"
+                # AP eProcurement's and Telangana's own site tables share
+                # the same different column set (Department Name, Tender
+                # ID, Tender Notice Number, Category, Name of Work,
+                # Estimated Value, Start/Closing Date) — no Qty/Location
+                # column, no generic "Bid Number"/"Item Name" naming.
+                # Rendered as one shared dedicated block below, matching
+                # both live portals' tables exactly, rather than forcing
+                # them into the GeM/KPPP layout (the else branch), which
+                # has no Notice Number/Category columns at all and names
+                # things differently. The GeM/KPPP block is completely
+                # untouched.
+                is_ap_view = current_portal_filter in ("AP", "Telangana")
+                # Portal-specific chip text/color and widget-key prefix so
+                # this one shared block never collides between the two
+                # portals it serves.
+                _plain_portal_chip_class = "portal-chip-ap" if current_portal_filter == "AP" else "portal-chip-telangana"
+                _plain_portal_key_prefix = current_portal_filter.lower()
 
                 if is_ap_view:
                     ap_col_widths = [1.3, 0.8, 1.2, 0.9, 2.1, 1.1, 1.1, 1.1, 0.6, 0.6, 0.6]
@@ -4386,7 +4498,7 @@ else:
                             a1.markdown(f'<div class="tbl-data-row"></div><span class="td-dept-ap">{department[:40] if department else "N/A"}</span>', unsafe_allow_html=True)
                             a2.markdown(
                                 f'<div class="mono td-bid">{tender_id_val}</div>'
-                                f'<span class="portal-chip portal-chip-ap">AP</span>',
+                                f'<span class="portal-chip {_plain_portal_chip_class}">{current_portal_filter}</span>',
                                 unsafe_allow_html=True,
                             )
                             notice_number_str = str(notice_number)
@@ -4405,21 +4517,21 @@ else:
                             a7.markdown(f'<span class="mono td-date">{start_date}</span>', unsafe_allow_html=True)
                             a8.markdown(f'<span class="mono enddate-chip">{end_date}</span>', unsafe_allow_html=True)
                             with a9:
-                                if st.button("👁️", key=f"ap_view_{tid}_{section}", help="View tender details"):
+                                if st.button("👁️", key=f"{_plain_portal_key_prefix}_view_{tid}_{section}", help="View tender details"):
                                     st.session_state.viewing_tender_id = tid
                                     st.rerun()
                             with a10:
                                 tender_status = tender.get("status", "new")
                                 if tender_status == "saved":
-                                    if st.button("🔓", key=f"ap_table_unsave_{tid}_{section}", help="Unsave this tender"):
+                                    if st.button("🔓", key=f"{_plain_portal_key_prefix}_table_unsave_{tid}_{section}", help="Unsave this tender"):
                                         update_tender_status(tid, "new")
                                         st.rerun()
                                 else:
-                                    if st.button("💾", key=f"ap_table_save_{tid}_{section}", help="Save this tender"):
+                                    if st.button("💾", key=f"{_plain_portal_key_prefix}_table_save_{tid}_{section}", help="Save this tender"):
                                         update_tender_status(tid, "saved")
                                         st.rerun()
                             with a11:
-                                if st.button("🗑️", key=f"ap_table_delete_{tid}_{section}", help="Delete this tender"):
+                                if st.button("🗑️", key=f"{_plain_portal_key_prefix}_table_delete_{tid}_{section}", help="Delete this tender"):
                                     delete_tender(tid)
                                     st.rerun()
                 else:
