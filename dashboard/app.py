@@ -511,7 +511,7 @@ def render_admin_page():
             st.caption("Every saved keyword/filter combination the agent replays on each auto-search cycle.")
         with dropdown_col:
             db_table_portal = st.selectbox(
-                "Portal", ["KPPP (KA)", "GeM", "AP eProcurement"], key="admin_db_table_portal",
+                "Portal", ["KPPP (KA)", "GeM", "AP"], key="admin_db_table_portal",
                 label_visibility="collapsed",
             )
 
@@ -545,7 +545,7 @@ def render_admin_page():
                     "Time Period": _kppp_time_period(r),
                 } for r in kppp_rows])
                 st.dataframe(df, use_container_width=True, hide_index=True)
-        elif db_table_portal == "AP eProcurement":
+        elif db_table_portal == "AP":
             # AP has no incremental "last searched" log table the way GeM
             # does (see portals/ap_eproc.py's search_ap docstring for why —
             # every run just re-confirms the keyword's full current result
@@ -3237,7 +3237,7 @@ def _chart_portal_toggle(key: str) -> str:
     # KPPP first so it's the default (st.selectbox defaults to its first
     # option).
     label = st.selectbox(
-        "Portal", ["KPPP (KA)", "GeM", "AP eProcurement"],
+        "Portal", ["KPPP (KA)", "GeM", "AP"],
         key=key, label_visibility="collapsed",
     )
     if label and "KPPP" in label:
