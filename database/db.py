@@ -93,6 +93,15 @@ def init_db():
             frequency INTEGER DEFAULT 1
         )
     """)
+    # searched_at gets overwritten on every repeat search (it's "last
+    # searched"), so it alone can't answer "since when has this been
+    # searched" — needed for the Admin DB Table's "Time Period" column
+    # (AP's own saved keywords use this table; GeM's own equivalent lives
+    # in gem_keyword_full_search_log, which already tracks both ends).
+    # Backfilled from each row's own existing searched_at for rows that
+    # predate this column, rather than left NULL.
+    c.execute("ALTER TABLE ceo_searches ADD COLUMN IF NOT EXISTS first_searched_at TEXT")
+    c.execute("UPDATE ceo_searches SET first_searched_at = searched_at WHERE first_searched_at IS NULL")
 
     # Table 2 - stores what agent learned from CEO
     c.execute("""
@@ -787,13 +796,15 @@ def save_ceo_search(keyword: str, portal: str):
         (keyword.lower().strip(), portal)
     ).fetchone()
     if existing:
+        # first_searched_at is deliberately left untouched here — it's the
+        # ORIGINAL first-searched time, not the most recent one.
         c.execute(
             "UPDATE ceo_searches SET frequency=?, searched_at=? WHERE id=?",
             (existing["frequency"] + 1, datetime.now().isoformat(), existing["id"])
         )
     else:
         c.execute(
-            "INSERT INTO ceo_searches (keyword, portal) VALUES (?, ?)",
+            "INSERT INTO ceo_searches (keyword, portal, first_searched_at) VALUES (?, ?, to_char(now() AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI:SS'))",
             (keyword.lower().strip(), portal)
         )
     conn.commit()

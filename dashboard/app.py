@@ -477,6 +477,16 @@ def render_admin_page():
             if not kppp_rows:
                 st.info("No saved KPPP search filters yet.")
             else:
+                def _kppp_time_period(r):
+                    # created_at is stamped once, when the filter was first
+                    # saved (and so first searched) — never touched again —
+                    # paired here with last_searched_at for the span the
+                    # agent has actually been searching this filter over.
+                    first = r.get("created_at")
+                    last = r.get("last_searched_at")
+                    if not first:
+                        return "Never searched"
+                    return f"{first} to {last or first}"
                 df = pd.DataFrame([{
                     "Category": r.get("category") or "",
                     "Procuring Entity": r.get("procuring_entity") or "",
@@ -486,6 +496,7 @@ def render_admin_page():
                     "From Date": r.get("from_date") or "",
                     "To Date": r.get("to_date") or "",
                     "Last Searched At": r.get("last_searched_at") or "Never",
+                    "Time Period": _kppp_time_period(r),
                 } for r in kppp_rows])
                 st.dataframe(df, use_container_width=True, hide_index=True)
         elif db_table_portal == "AP eProcurement":
@@ -499,10 +510,22 @@ def render_admin_page():
             if not ap_rows:
                 st.info("No saved AP eProcurement keyword searches yet.")
             else:
+                def _ap_time_period(r):
+                    # first_searched_at is stamped once, the very first time
+                    # this keyword was searched — never touched again after
+                    # that (see save_ceo_search) — paired with searched_at
+                    # (the most recent run) for the span the agent has
+                    # actually been searching this keyword over.
+                    first = r.get("first_searched_at")
+                    last = r.get("searched_at")
+                    if not first:
+                        return "Never searched"
+                    return f"{first} to {last or first}"
                 df = pd.DataFrame([{
                     "Keyword": r.get("keyword") or "",
                     "Times Searched": r.get("frequency"),
                     "Last Searched At": r.get("searched_at") or "Never",
+                    "Time Period": _ap_time_period(r),
                 } for r in ap_rows])
                 st.dataframe(df, use_container_width=True, hide_index=True)
         else:
@@ -538,9 +561,9 @@ def render_admin_page():
                     return f"{first} to {last or first}"
                 df = pd.DataFrame([{
                     "Category": r.get("category") or "",
-                    "Time Period": _time_period(r),
                     "Keywords": _kw_list(r),
                     "Last Searched At": _last_searched(r),
+                    "Time Period": _time_period(r),
                 } for r in gem_rows])
                 st.dataframe(df, use_container_width=True, hide_index=True)
 
