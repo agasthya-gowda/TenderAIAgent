@@ -553,19 +553,33 @@ def render_admin_page():
             if not ap_rows:
                 st.info("No saved AP eProcurement keyword searches yet.")
             else:
+                # AP's own last_search_from is currently unreliable as a
+                # "from" reference — _search_ap_portal (what Start Agent and
+                # the 2 AM scheduler actually call) never stamps it, only a
+                # manual search-box submission does (see on_ap_search), so
+                # it goes stale after the first search. All three portals
+                # run one after another in the very same agent cycle
+                # anyway, so KPPP's own most-recently-run filter's "from" is
+                # reused here as AP's "from" too, rather than showing AP's
+                # own stale value.
+                _kppp_rows_for_ap = get_kppp_criteria_list()
+                _kppp_most_recent = max(
+                    (r for r in _kppp_rows_for_ap if r.get("last_searched_at")),
+                    key=lambda r: r["last_searched_at"],
+                    default=None,
+                )
+                if _kppp_most_recent:
+                    _kppp_raw_from = _kppp_most_recent.get("last_search_from")
+                    _ap_shared_from = (
+                        _shift_back_one_day(_kppp_raw_from) if _kppp_raw_from
+                        else _kppp_most_recent.get("created_at")
+                    )
+                else:
+                    _ap_shared_from = None
+
                 def _ap_time_period(r):
-                    # AP itself has no date-cutoff search window — every run
-                    # re-fetches a full current snapshot regardless (see
-                    # portals/ap_eproc.py's search_ap docstring) — but the
-                    # same 1-day shift is applied to last_search_from here
-                    # anyway, for the same consistent "from" reading as
-                    # GeM/KPPP's column rather than the raw unshifted
-                    # timestamp. Falls back to first_searched_at (no shift)
-                    # for a keyword that's only ever had its first-ever
-                    # search (last_search_from is still NULL at that point).
-                    raw_first = r.get("last_search_from")
-                    first = _shift_back_one_day(raw_first) if raw_first else r.get("first_searched_at")
                     last = r.get("searched_at")
+                    first = _ap_shared_from or last
                     return _format_time_period(first, last)
                 df = pd.DataFrame([{
                     "Keyword": r.get("keyword") or "",
