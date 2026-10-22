@@ -654,11 +654,18 @@ def _run_kppp_criteria_search(criteria_list: list, respect_stop_flag: bool = Fal
                 # one search above (it now checks all 3 categories), so all
                 # of them - not just the one actually searched - advance
                 # their own last_searched_at, keeping the Admin DB Table
-                # accurate for each saved row.
+                # accurate for each saved row. They all searched from the
+                # SAME shared cutoff (the oldest sibling's prior
+                # last_searched_at, picked above) - not each row's own
+                # individual prior value - so stamp that one shared value
+                # as last_search_from for every sibling too, or the Admin
+                # DB Table's "Time Period" column shows a different (and
+                # wrong) window per sibling.
+                shared_search_from = criteria.get("last_searched_at")
                 for sibling in sibling_rows:
                     sibling_id = sibling.get("id")
                     if sibling_id is not None:
-                        update_kppp_last_searched(sibling_id)
+                        update_kppp_last_searched(sibling_id, search_from=shared_search_from)
             except Exception as e:
                 log(f"⚠️ [KPPP] Error searching with filter {criteria}: {e}")
 

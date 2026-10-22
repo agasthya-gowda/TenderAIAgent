@@ -611,14 +611,15 @@ def render_admin_page():
                     # the REAL cutoff the agent used (_search_portal feeds
                     # this same raw value through _parse_db_timestamp's
                     # 1-day shift before using it to filter results). No
-                    # shift when falling back to last_searched_at itself
-                    # (a row that predates this column, or a keyword that's
-                    # only ever had its first-ever/full-pagination run —
-                    # neither case used a real date cutoff).
+                    # raw_first yet (a row that predates this column, or a
+                    # keyword that's only ever had its first-ever/
+                    # full-pagination run — neither case used a real date
+                    # cutoff) falls back to when this keyword was added,
+                    # same idea as KPPP's created_at fallback below.
                     kw = _kw_list(r).strip()
                     last = get_gem_last_searched_at(kw)
                     raw_first = get_gem_last_search_from(kw)
-                    first = _shift_back_one_day(raw_first) if raw_first and raw_first != last else last
+                    first = _shift_back_one_day(raw_first) if raw_first and raw_first != last else (r.get("last_updated") or last)
                     return _format_time_period(first, last)
                 df = pd.DataFrame([{
                     "Category": r.get("category") or "",

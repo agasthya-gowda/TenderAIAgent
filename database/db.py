@@ -945,7 +945,7 @@ def get_kppp_criteria_list():
     conn.close()
     return [dict(r) for r in rows]
 
-def update_kppp_last_searched(criteria_id: int):
+def update_kppp_last_searched(criteria_id: int, search_from: str = None):
     """Stamps 'now' as this saved KPPP filter's last search time — run
     after every search of it (first-time or date-limited). KPPP's own form
     has no Start-Date filter field (its date-range inputs filter by tender
@@ -953,18 +953,31 @@ def update_kppp_last_searched(criteria_id: int):
     results client-side after fetching rather than to shape the request
     itself — see _run_kppp_criteria_search in orchestrator.py.
 
-    Also stamps last_search_from with whatever last_searched_at WAS right
-    before this call overwrites it — i.e. the start of the window THIS run
-    just searched — purely for the Admin DB Table's "Time Period" display;
-    nothing in the actual search logic reads it back."""
+    Also stamps last_search_from — by default with whatever last_searched_at
+    WAS right before this call overwrites it (i.e. the start of the window
+    THIS row's own last run searched), purely for the Admin DB Table's "Time
+    Period" display; nothing in the actual search logic reads it back.
+    Sibling rows (same filter, different saved category) are searched
+    together in one pass using the GROUP's shared cutoff rather than each
+    row's own prior value — pass that shared value as search_from so every
+    sibling's displayed window matches what was actually searched."""
     conn = get_conn()
-    conn.execute(
-        """UPDATE kppp_search_criteria SET
-               last_search_from = last_searched_at,
-               last_searched_at = to_char(now() AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI:SS')
-           WHERE id=?""",
-        (criteria_id,)
-    )
+    if search_from is not None:
+        conn.execute(
+            """UPDATE kppp_search_criteria SET
+                   last_search_from = ?,
+                   last_searched_at = to_char(now() AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI:SS')
+               WHERE id=?""",
+            (search_from, criteria_id)
+        )
+    else:
+        conn.execute(
+            """UPDATE kppp_search_criteria SET
+                   last_search_from = last_searched_at,
+                   last_searched_at = to_char(now() AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI:SS')
+               WHERE id=?""",
+            (criteria_id,)
+        )
     conn.commit()
     conn.close()
 
