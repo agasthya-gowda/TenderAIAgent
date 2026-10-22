@@ -4579,7 +4579,81 @@ else:
                 _plain_portal_chip_class = _plain_portal_chip_classes.get(current_portal_filter, "portal-chip-ap")
                 _plain_portal_key_prefix = current_portal_filter.lower()
 
-                if is_ap_view:
+                if is_ap_view and current_portal_filter == "Kerala":
+                    # Kerala's own site has no Category/Estimated Value
+                    # columns at all (confirmed live), and shows a
+                    # tender's two id numbers — its own internal Tender ID
+                    # and its Tender Number/Reference No — together as one
+                    # unit rather than in separate columns the way AP/
+                    # Telangana's two id fields are. A dedicated layout
+                    # here, rather than reusing the AP/Telangana one below
+                    # with blank cells, so Kerala's table matches its own
+                    # site exactly; that AP/Telangana branch is completely
+                    # untouched.
+                    kerala_col_widths = [1.3, 1.5, 2.6, 1.1, 1.1, 0.6, 0.6, 0.6]
+                    with st.container():
+                        st.markdown('<div class="table-card-marker"></div>', unsafe_allow_html=True)
+                        header_cols = st.columns(kerala_col_widths)
+                        kh1, kh2, kh3, kh4, kh5, kh6, kh7, kh8 = header_cols
+                        kh1.markdown('<div class="tbl-header-row"></div><span class="th-cell">Department Name</span>', unsafe_allow_html=True)
+                        kh2.markdown('<span class="th-cell">Tender ID</span>', unsafe_allow_html=True)
+                        kh3.markdown('<span class="th-cell">Name of Work</span>', unsafe_allow_html=True)
+                        kh4.markdown('<span class="th-cell">Start Date</span>', unsafe_allow_html=True)
+                        kh5.markdown('<span class="th-cell">Closing Date</span>', unsafe_allow_html=True)
+                        kh6.markdown("")
+                        kh7.markdown("")
+                        kh8.markdown("")
+
+                        for idx, tender in enumerate(page_tenders):
+                            tid = tender["id"]
+                            department = tender.get("department", "N/A")
+                            tender_id_val = tender.get("tender_number", "N/A")
+                            # Kerala's own Reference No (captured into the
+                            # generic tender_type field at search time —
+                            # see portals/kerala.py) shown alongside the
+                            # Tender ID in the same cell, same as the live
+                            # site's own combined "[Title] [Ref.No][Tender
+                            # ID]" cell.
+                            ref_no = tender.get("tender_type") or "N/A"
+                            title = tender.get("title", "Unknown")
+                            start_date = tender.get("published_date", "N/A")
+                            end_date = tender.get("deadline", "N/A")
+
+                            row_cols = st.columns(kerala_col_widths)
+                            k1, k2, k3, k4, k5, k6, k7, k8 = row_cols
+                            k1.markdown(f'<div class="tbl-data-row"></div><span class="td-dept-ap">{department[:40] if department else "N/A"}</span>', unsafe_allow_html=True)
+                            k2.markdown(
+                                f'<div class="mono td-bid">{html.escape(str(tender_id_val))}</div>'
+                                f'<div class="mono" style="font-size:11px;color:#64748B;">{html.escape(str(ref_no))}</div>'
+                                f'<span class="portal-chip {_plain_portal_chip_class}">{current_portal_filter}</span>',
+                                unsafe_allow_html=True,
+                            )
+                            title_suffix = "..." if len(title) > 60 else ""
+                            k3.markdown(
+                                f'<span title="{html.escape(title)}">{html.escape(title[:60])}{title_suffix}</span>',
+                                unsafe_allow_html=True,
+                            )
+                            k4.markdown(f'<span class="mono td-date">{start_date}</span>', unsafe_allow_html=True)
+                            k5.markdown(f'<span class="mono enddate-chip">{end_date}</span>', unsafe_allow_html=True)
+                            with k6:
+                                if st.button("👁️", key=f"{_plain_portal_key_prefix}_view_{tid}_{section}", help="View tender details"):
+                                    st.session_state.viewing_tender_id = tid
+                                    st.rerun()
+                            with k7:
+                                tender_status = tender.get("status", "new")
+                                if tender_status == "saved":
+                                    if st.button("🔓", key=f"{_plain_portal_key_prefix}_table_unsave_{tid}_{section}", help="Unsave this tender"):
+                                        update_tender_status(tid, "new")
+                                        st.rerun()
+                                else:
+                                    if st.button("💾", key=f"{_plain_portal_key_prefix}_table_save_{tid}_{section}", help="Save this tender"):
+                                        update_tender_status(tid, "saved")
+                                        st.rerun()
+                            with k8:
+                                if st.button("🗑️", key=f"{_plain_portal_key_prefix}_table_delete_{tid}_{section}", help="Delete this tender"):
+                                    delete_tender(tid)
+                                    st.rerun()
+                elif is_ap_view:
                     ap_col_widths = [1.3, 0.8, 1.2, 0.9, 2.1, 1.1, 1.1, 1.1, 0.6, 0.6, 0.6]
                     with st.container():
                         st.markdown('<div class="table-card-marker"></div>', unsafe_allow_html=True)
