@@ -912,6 +912,15 @@ def analyze_tender(tender: dict) -> str:
         if new_files:
             update_downloaded_files(tender.get("id"), new_files)
             file_text = read_all_files(new_files)
+    elif tender.get("portal") == "Kerala" and tender.get("tender_number"):
+        # For Kerala eTenders tenders — download documents now (on-demand)
+        print("[Analyzer] Downloading Kerala eTenders documents for analysis...")
+        from portals.kerala import download_kerala_docs
+        from database.db import update_downloaded_files
+        new_files = download_kerala_docs(tender)
+        if new_files:
+            update_downloaded_files(tender.get("id"), new_files)
+            file_text = read_all_files(new_files)
 
     # Step 2 — Extract details using AI
     print("[Analyzer] Extracting details with AI...")
