@@ -554,12 +554,17 @@ def render_admin_page():
                 st.info("No saved AP eProcurement keyword searches yet.")
             else:
                 def _ap_time_period(r):
-                    # last_search_from is the window THIS keyword's most
-                    # recent run actually searched from (see
-                    # save_ceo_search) — falls back to first_searched_at for
-                    # a keyword that's only ever had its first-ever search
-                    # (last_search_from is still NULL at that point).
-                    first = r.get("last_search_from") or r.get("first_searched_at")
+                    # AP itself has no date-cutoff search window — every run
+                    # re-fetches a full current snapshot regardless (see
+                    # portals/ap_eproc.py's search_ap docstring) — but the
+                    # same 1-day shift is applied to last_search_from here
+                    # anyway, for the same consistent "from" reading as
+                    # GeM/KPPP's column rather than the raw unshifted
+                    # timestamp. Falls back to first_searched_at (no shift)
+                    # for a keyword that's only ever had its first-ever
+                    # search (last_search_from is still NULL at that point).
+                    raw_first = r.get("last_search_from")
+                    first = _shift_back_one_day(raw_first) if raw_first else r.get("first_searched_at")
                     last = r.get("searched_at")
                     return _format_time_period(first, last)
                 df = pd.DataFrame([{
