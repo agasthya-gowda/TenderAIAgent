@@ -511,7 +511,7 @@ def render_admin_page():
             st.caption("Every saved keyword/filter combination the agent replays on each auto-search cycle.")
         with dropdown_col:
             db_table_portal = st.selectbox(
-                "Portal", ["KPPP (KA)", "GeM", "AP"], key="admin_db_table_portal",
+                "Portal", ["KPPP (KA)", "GeM", "Andhra Pradesh"], key="admin_db_table_portal",
                 label_visibility="collapsed",
             )
 
@@ -545,7 +545,7 @@ def render_admin_page():
                     "Time Period": _kppp_time_period(r),
                 } for r in kppp_rows])
                 st.dataframe(df, use_container_width=True, hide_index=True)
-        elif db_table_portal == "AP":
+        elif db_table_portal == "Andhra Pradesh":
             # AP has no incremental "last searched" log table the way GeM
             # does (see portals/ap_eproc.py's search_ap docstring for why —
             # every run just re-confirms the keyword's full current result
@@ -554,7 +554,7 @@ def render_admin_page():
             # save_ceo_search, is the real "last searched" answer here.
             ap_rows = [s for s in get_all_ceo_searches() if s.get("portal") == "AP"]
             if not ap_rows:
-                st.info("No saved AP eProcurement keyword searches yet.")
+                st.info("No saved Andhra Pradesh keyword searches yet.")
             else:
                 # AP's own last_search_from is currently unreliable as a
                 # "from" reference — _search_ap_portal (what Start Agent and
@@ -761,12 +761,12 @@ from portals.data.kppp_options import (
 # and the native emoji glyph drift apart just enough that both become
 # visible at once. Plain text has nothing to mask, so there's no longer
 # anything to misalign.
-PORTAL_FILTER_OPTIONS = ["KPPP (KA)", "GeM", "AP"]
+PORTAL_FILTER_OPTIONS = ["KPPP (KA)", "GeM", "Andhra Pradesh"]
 PORTAL_FILTER_DEFAULT = "KPPP (KA)"
 PORTAL_FILTER_MAP = {
     "GeM": "GeM",
     "KPPP (KA)": "KPPP",
-    "AP": "AP",
+    "Andhra Pradesh": "AP",
 }
 
 # Each portal's own real-photo icon (Red Fort / Hampi chariot / Tirupati
@@ -781,7 +781,7 @@ PORTAL_FILTER_MAP = {
 _PORTAL_DROPDOWN_ICONS = [
     ("GeM", "gem_red_fort.webp"),
     ("KPPP", "kppp_hampi_chariot.webp"),
-    ("AP", "ap_tirupati_icon.webp"),
+    ("Andhra Pradesh", "ap_tirupati_icon.webp"),
 ]
 
 
@@ -3237,12 +3237,12 @@ def _chart_portal_toggle(key: str) -> str:
     # KPPP first so it's the default (st.selectbox defaults to its first
     # option).
     label = st.selectbox(
-        "Portal", ["KPPP (KA)", "GeM", "AP"],
+        "Portal", ["KPPP (KA)", "GeM", "Andhra Pradesh"],
         key=key, label_visibility="collapsed",
     )
     if label and "KPPP" in label:
         return "KPPP"
-    if label and "AP" in label:
+    if label and "Andhra" in label:
         return "AP"
     return "GeM"
 
@@ -3991,7 +3991,7 @@ else:
             # sits on the page.
             #
             # This dropdown's selected value is a native <input>'s plain
-            # text (just "KPPP (KA)"/"GeM"/"AP" now — see the comment on
+            # text (just "KPPP (KA)"/"GeM"/"Andhra Pradesh" now — see the comment on
             # PORTAL_FILTER_OPTIONS for why there's no emoji in it any
             # more) — unlike st.expander's icon= slot (a separate element,
             # used for the sidebar's own icons), there's no separate
