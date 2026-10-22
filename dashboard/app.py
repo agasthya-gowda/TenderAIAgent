@@ -155,6 +155,24 @@ def _admin_field_input(f, default, key):
     return st.text_input(label, value=default or "", key=key, placeholder=f.get("placeholder", ""))
 
 
+def _shift_back_one_day(raw):
+    """The agent's own incremental search cutoff is never the raw previous
+    last-searched timestamp as-is — agent/orchestrator.py's
+    _parse_db_timestamp() always shifts it back 1 day first (a deliberate
+    overlap so a repeat search can never miss a tender due to clock/
+    timezone drift), and THAT shifted value is what the agent actually
+    searches from. Applying the same shift here means "Time Period" shows
+    the real cutoff the agent used, not just the raw stored timestamp.
+    Never raises — returns raw unchanged if it doesn't parse."""
+    from datetime import datetime as _dt, timedelta as _td
+    if not raw:
+        return raw
+    try:
+        return (_dt.strptime(raw.strip(), "%Y-%m-%d %H:%M:%S") - _td(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return raw
+
+
 def _format_time_period(from_raw, to_raw):
     """Renders the Admin DB Table's "Time Period" cell — the date range the
     agent's MOST RECENT search run actually covered for that keyword/filter
@@ -500,12 +518,16 @@ def render_admin_page():
                 st.info("No saved KPPP search filters yet.")
             else:
                 def _kppp_time_period(r):
-                    # last_search_from is the window THIS filter's most
-                    # recent run actually searched from (see
-                    # update_kppp_last_searched) — falls back to created_at
-                    # for a filter that's only ever had its first-ever run
-                    # (last_search_from is still NULL at that point).
-                    first = r.get("last_search_from") or r.get("created_at")
+                    # last_search_from is the raw previous last_searched_at
+                    # — shifted back 1 day here to match the REAL cutoff the
+                    # agent used (_run_kppp_criteria_search feeds this same
+                    # raw value through _parse_db_timestamp's 1-day shift
+                    # before using it to filter results). No shift for the
+                    # created_at fallback (a filter that's only ever had its
+                    # first-ever run has no real cutoff — that run paged
+                    # through everything, unfiltered by date).
+                    raw_first = r.get("last_search_from")
+                    first = _shift_back_one_day(raw_first) if raw_first else r.get("created_at")
                     last = r.get("last_searched_at")
                     return _format_time_period(first, last)
                 df = pd.DataFrame([{
@@ -565,17 +587,19 @@ def render_admin_page():
                     kw = _kw_list(r).strip()
                     return get_gem_last_searched_at(kw) or "Never"
                 def _time_period(r):
-                    # The window THIS keyword's most recent run actually
-                    # searched — get_gem_last_search_from is what
-                    # last_searched_at WAS right before that run overwrote
-                    # it (see update_gem_last_searched). Falls back to
-                    # last_searched_at itself for a row that predates this
-                    # column (last_search_from still NULL there until its
-                    # next run) — otherwise an already-searched keyword
-                    # would misleadingly show "Never searched".
+                    # get_gem_last_search_from is the raw previous
+                    # last_searched_at — shifted back 1 day here to match
+                    # the REAL cutoff the agent used (_search_portal feeds
+                    # this same raw value through _parse_db_timestamp's
+                    # 1-day shift before using it to filter results). No
+                    # shift when falling back to last_searched_at itself
+                    # (a row that predates this column, or a keyword that's
+                    # only ever had its first-ever/full-pagination run —
+                    # neither case used a real date cutoff).
                     kw = _kw_list(r).strip()
                     last = get_gem_last_searched_at(kw)
-                    first = get_gem_last_search_from(kw) or last
+                    raw_first = get_gem_last_search_from(kw)
+                    first = _shift_back_one_day(raw_first) if raw_first and raw_first != last else last
                     return _format_time_period(first, last)
                 df = pd.DataFrame([{
                     "Category": r.get("category") or "",
