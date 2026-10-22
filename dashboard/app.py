@@ -186,10 +186,13 @@ def _format_time_period(from_raw, to_raw):
     def _fmt(raw):
         if not raw:
             return None
-        try:
-            return _dt.strptime(raw.strip(), "%Y-%m-%d %H:%M:%S").strftime("%d-%m-%Y %I:%M %p")
-        except Exception:
-            return raw
+        raw = raw.strip()
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S"):
+            try:
+                return _dt.strptime(raw, fmt).strftime("%d-%m-%Y %I:%M %p")
+            except Exception:
+                continue
+        return raw
     if not from_raw:
         return "Never searched"
     return f"{_fmt(from_raw)} to {_fmt(to_raw) or _fmt(from_raw)}"
