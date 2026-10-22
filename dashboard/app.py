@@ -4590,7 +4590,7 @@ else:
                     # with blank cells, so Kerala's table matches its own
                     # site exactly; that AP/Telangana branch is completely
                     # untouched.
-                    kerala_col_widths = [1.3, 1.5, 2.6, 1.1, 1.1, 0.6, 0.6, 0.6]
+                    kerala_col_widths = [1.5, 1.8, 2.8, 1.2, 1.2, 0.8, 0.8, 0.8]
                     with st.container():
                         st.markdown('<div class="table-card-marker"></div>', unsafe_allow_html=True)
                         header_cols = st.columns(kerala_col_widths)
@@ -4636,7 +4636,7 @@ else:
                             k4.markdown(f'<span class="mono td-date">{start_date}</span>', unsafe_allow_html=True)
                             k5.markdown(f'<span class="mono enddate-chip">{end_date}</span>', unsafe_allow_html=True)
                             with k6:
-                                if st.button("👁️", key=f"{_plain_portal_key_prefix}_view_{tid}_{section}", help="View tender details"):
+                                if st.button("View", key=f"{_plain_portal_key_prefix}_view_{tid}_{section}"):
                                     st.session_state.viewing_tender_id = tid
                                     st.rerun()
                             with k7:
