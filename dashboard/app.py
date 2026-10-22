@@ -4696,12 +4696,13 @@ else:
                     # reusing the AP/Telangana one below with blank cells,
                     # so this table matches the live site exactly; that
                     # AP/Telangana branch is completely untouched.
-                    kerala_col_widths = [1.5, 1.8, 2.8, 1.2, 1.2, 0.8, 0.8, 0.8]
+                    kerala_col_widths = [0.5, 1.5, 1.8, 2.8, 1.2, 1.2, 0.8, 0.8, 0.8]
                     with st.container():
                         st.markdown('<div class="table-card-marker"></div>', unsafe_allow_html=True)
                         header_cols = st.columns(kerala_col_widths)
-                        kh1, kh2, kh3, kh4, kh5, kh6, kh7, kh8 = header_cols
-                        kh1.markdown('<div class="tbl-header-row"></div><span class="th-cell">Department Name</span>', unsafe_allow_html=True)
+                        kh0, kh1, kh2, kh3, kh4, kh5, kh6, kh7, kh8 = header_cols
+                        kh0.markdown('<div class="tbl-header-row"></div><span class="th-cell">Sl No</span>', unsafe_allow_html=True)
+                        kh1.markdown('<span class="th-cell">Department Name</span>', unsafe_allow_html=True)
                         kh2.markdown('<span class="th-cell">Tender ID</span>', unsafe_allow_html=True)
                         kh3.markdown('<span class="th-cell">Name of Work</span>', unsafe_allow_html=True)
                         kh4.markdown('<span class="th-cell">Start Date</span>', unsafe_allow_html=True)
@@ -4712,6 +4713,7 @@ else:
 
                         for idx, tender in enumerate(page_tenders):
                             tid = tender["id"]
+                            sl_no = start + idx + 1
                             department = tender.get("department", "N/A")
                             tender_id_val = tender.get("tender_number", "N/A")
                             # Kerala's own Reference No (captured into the
@@ -4726,8 +4728,9 @@ else:
                             end_date = tender.get("deadline", "N/A")
 
                             row_cols = st.columns(kerala_col_widths)
-                            k1, k2, k3, k4, k5, k6, k7, k8 = row_cols
-                            k1.markdown(f'<div class="tbl-data-row"></div><span class="td-dept-ap">{department[:40] if department else "N/A"}</span>', unsafe_allow_html=True)
+                            k0, k1, k2, k3, k4, k5, k6, k7, k8 = row_cols
+                            k0.markdown(f'<div class="tbl-data-row"></div><span class="td-slno">{sl_no}</span>', unsafe_allow_html=True)
+                            k1.markdown(f'<span class="td-dept-ap">{department[:40] if department else "N/A"}</span>', unsafe_allow_html=True)
                             k2.markdown(
                                 f'<div class="mono td-bid">{html.escape(str(tender_id_val))}</div>'
                                 f'<div class="mono" style="font-size:11px;color:#64748B;">{html.escape(str(ref_no))}</div>'
@@ -4760,12 +4763,13 @@ else:
                                     delete_tender(tid)
                                     st.rerun()
                 elif is_ap_view:
-                    ap_col_widths = [1.3, 0.8, 1.2, 0.9, 2.1, 1.1, 1.1, 1.1, 0.6, 0.6, 0.6]
+                    ap_col_widths = [0.5, 1.3, 0.8, 1.2, 0.9, 2.1, 1.1, 1.1, 1.1, 0.6, 0.6, 0.6]
                     with st.container():
                         st.markdown('<div class="table-card-marker"></div>', unsafe_allow_html=True)
                         header_cols = st.columns(ap_col_widths)
-                        ah1, ah2, ah3, ah4, ah5, ah6, ah7, ah8, ah9, ah10, ah11 = header_cols
-                        ah1.markdown('<div class="tbl-header-row"></div><span class="th-cell">Department Name</span>', unsafe_allow_html=True)
+                        ah0, ah1, ah2, ah3, ah4, ah5, ah6, ah7, ah8, ah9, ah10, ah11 = header_cols
+                        ah0.markdown('<div class="tbl-header-row"></div><span class="th-cell">Sl No</span>', unsafe_allow_html=True)
+                        ah1.markdown('<span class="th-cell">Department Name</span>', unsafe_allow_html=True)
                         ah2.markdown('<span class="th-cell">Tender ID</span>', unsafe_allow_html=True)
                         ah3.markdown('<span class="th-cell">Tender Notice Number</span>', unsafe_allow_html=True)
                         ah4.markdown('<span class="th-cell">Category</span>', unsafe_allow_html=True)
@@ -4779,6 +4783,7 @@ else:
 
                         for idx, tender in enumerate(page_tenders):
                             tid = tender["id"]
+                            sl_no = start + idx + 1
                             department = tender.get("department", "N/A")
                             tender_id_val = tender.get("tender_number", "N/A")
                             # The notice number is captured into the generic
@@ -4793,8 +4798,9 @@ else:
                             end_date = tender.get("deadline", "N/A")
 
                             row_cols = st.columns(ap_col_widths)
-                            a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11 = row_cols
-                            a1.markdown(f'<div class="tbl-data-row"></div><span class="td-dept-ap">{department[:40] if department else "N/A"}</span>', unsafe_allow_html=True)
+                            a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11 = row_cols
+                            a0.markdown(f'<div class="tbl-data-row"></div><span class="td-slno">{sl_no}</span>', unsafe_allow_html=True)
+                            a1.markdown(f'<span class="td-dept-ap">{department[:40] if department else "N/A"}</span>', unsafe_allow_html=True)
                             a2.markdown(
                                 f'<div class="mono td-bid">{tender_id_val}</div>'
                                 f'<span class="portal-chip {_plain_portal_chip_class}">{current_portal_filter}</span>',
