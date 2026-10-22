@@ -16,7 +16,7 @@ from rapidfuzz import fuzz
 from database.db import (
     get_all_tenders, update_tender_status,
     update_tender_pdfs, get_all_ceo_searches, get_learned_patterns,
-    get_kppp_criteria_list, get_gem_last_searched_at, get_gem_first_search_at,
+    get_kppp_criteria_list, get_gem_last_searched_at, get_gem_last_search_from,
     get_department_filters, add_department_filter, delete_department_filter,
     delete_tender, delete_pattern, delete_ceo_search, clear_tender_analysis,
     get_stats as _get_stats,
@@ -153,6 +153,28 @@ def _admin_field_input(f, default, key):
         index = options.index(default) if default in options else 0
         return st.selectbox(label, options, index=index, key=key)
     return st.text_input(label, value=default or "", key=key, placeholder=f.get("placeholder", ""))
+
+
+def _format_time_period(from_raw, to_raw):
+    """Renders the Admin DB Table's "Time Period" cell — the date range the
+    agent's MOST RECENT search run actually covered for that keyword/filter
+    (from_raw/to_raw are both 'YYYY-MM-DD HH24:MI:SS' strings straight out
+    of the database) — as 'DD-MM-YYYY hh:mm AM/PM to DD-MM-YYYY hh:mm
+    AM/PM', matching how the CEO described wanting to read it. Falls back
+    to the raw string (never raises) if a value doesn't parse, since a
+    slightly-off display beats a crashed admin page."""
+    from datetime import datetime as _dt
+
+    def _fmt(raw):
+        if not raw:
+            return None
+        try:
+            return _dt.strptime(raw.strip(), "%Y-%m-%d %H:%M:%S").strftime("%d-%m-%Y %I:%M %p")
+        except Exception:
+            return raw
+    if not from_raw:
+        return "Never searched"
+    return f"{_fmt(from_raw)} to {_fmt(to_raw) or _fmt(from_raw)}"
 
 
 def render_admin_page():
@@ -478,15 +500,14 @@ def render_admin_page():
                 st.info("No saved KPPP search filters yet.")
             else:
                 def _kppp_time_period(r):
-                    # created_at is stamped once, when the filter was first
-                    # saved (and so first searched) — never touched again —
-                    # paired here with last_searched_at for the span the
-                    # agent has actually been searching this filter over.
-                    first = r.get("created_at")
+                    # last_search_from is the window THIS filter's most
+                    # recent run actually searched from (see
+                    # update_kppp_last_searched) — falls back to created_at
+                    # for a filter that's only ever had its first-ever run
+                    # (last_search_from is still NULL at that point).
+                    first = r.get("last_search_from") or r.get("created_at")
                     last = r.get("last_searched_at")
-                    if not first:
-                        return "Never searched"
-                    return f"{first} to {last or first}"
+                    return _format_time_period(first, last)
                 df = pd.DataFrame([{
                     "Category": r.get("category") or "",
                     "Procuring Entity": r.get("procuring_entity") or "",
@@ -511,16 +532,14 @@ def render_admin_page():
                 st.info("No saved AP eProcurement keyword searches yet.")
             else:
                 def _ap_time_period(r):
-                    # first_searched_at is stamped once, the very first time
-                    # this keyword was searched — never touched again after
-                    # that (see save_ceo_search) — paired with searched_at
-                    # (the most recent run) for the span the agent has
-                    # actually been searching this keyword over.
-                    first = r.get("first_searched_at")
+                    # last_search_from is the window THIS keyword's most
+                    # recent run actually searched from (see
+                    # save_ceo_search) — falls back to first_searched_at for
+                    # a keyword that's only ever had its first-ever search
+                    # (last_search_from is still NULL at that point).
+                    first = r.get("last_search_from") or r.get("first_searched_at")
                     last = r.get("searched_at")
-                    if not first:
-                        return "Never searched"
-                    return f"{first} to {last or first}"
+                    return _format_time_period(first, last)
                 df = pd.DataFrame([{
                     "Keyword": r.get("keyword") or "",
                     "Times Searched": r.get("frequency"),
@@ -546,19 +565,18 @@ def render_admin_page():
                     kw = _kw_list(r).strip()
                     return get_gem_last_searched_at(kw) or "Never"
                 def _time_period(r):
-                    # The span the agent has actually been searching this
-                    # keyword over — from its one-time full/unlimited first
-                    # pass (first_full_search_at) up to its most recent
-                    # completed run (last_searched_at), the same two
-                    # timestamps get_gem_first_search_at/
-                    # get_gem_last_searched_at read off
-                    # gem_keyword_full_search_log.
+                    # The window THIS keyword's most recent run actually
+                    # searched — get_gem_last_search_from is what
+                    # last_searched_at WAS right before that run overwrote
+                    # it (see update_gem_last_searched). Falls back to
+                    # last_searched_at itself for a row that predates this
+                    # column (last_search_from still NULL there until its
+                    # next run) — otherwise an already-searched keyword
+                    # would misleadingly show "Never searched".
                     kw = _kw_list(r).strip()
-                    first = get_gem_first_search_at(kw)
                     last = get_gem_last_searched_at(kw)
-                    if not first:
-                        return "Never searched"
-                    return f"{first} to {last or first}"
+                    first = get_gem_last_search_from(kw) or last
+                    return _format_time_period(first, last)
                 df = pd.DataFrame([{
                     "Category": r.get("category") or "",
                     "Keywords": _kw_list(r),

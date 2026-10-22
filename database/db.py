@@ -94,14 +94,20 @@ def init_db():
         )
     """)
     # searched_at gets overwritten on every repeat search (it's "last
-    # searched"), so it alone can't answer "since when has this been
-    # searched" — needed for the Admin DB Table's "Time Period" column
-    # (AP's own saved keywords use this table; GeM's own equivalent lives
-    # in gem_keyword_full_search_log, which already tracks both ends).
-    # Backfilled from each row's own existing searched_at for rows that
-    # predate this column, rather than left NULL.
+    # searched"), so it alone can't answer what window of time the most
+    # RECENT search actually covered — needed for the Admin DB Table's
+    # "Time Period" column (AP's own saved keywords use this table; GeM's
+    # own equivalent lives in gem_keyword_full_search_log). first_searched_at
+    # is unused now (an earlier version of "Time Period" used it for the
+    # keyword's whole history instead of just its latest run) but is left
+    # in place rather than dropped — harmless, and dropping a column is
+    # needless extra risk for no benefit.
     c.execute("ALTER TABLE ceo_searches ADD COLUMN IF NOT EXISTS first_searched_at TEXT")
     c.execute("UPDATE ceo_searches SET first_searched_at = searched_at WHERE first_searched_at IS NULL")
+    # The start of the most recent run's own search window (see
+    # save_ceo_search) — only used for the Admin DB Table's "Time Period"
+    # display, nothing in the actual search logic reads it.
+    c.execute("ALTER TABLE ceo_searches ADD COLUMN IF NOT EXISTS last_search_from TEXT")
 
     # Table 2 - stores what agent learned from CEO
     c.execute("""
@@ -134,6 +140,10 @@ def init_db():
     """)
     # Safety net for an older install's table that predates last_searched_at.
     c.execute("ALTER TABLE gem_keyword_full_search_log ADD COLUMN IF NOT EXISTS last_searched_at TEXT")
+    # The start of the most recent run's own search window (see
+    # update_gem_last_searched) — only used for the Admin DB Table's "Time
+    # Period" display, nothing in the actual search logic reads it.
+    c.execute("ALTER TABLE gem_keyword_full_search_log ADD COLUMN IF NOT EXISTS last_search_from TEXT")
 
     # Table 2b - stores KPPP-specific search filters set by the CEO. KPPP has
     # no keyword search, so instead of a keyword this stores the actual
@@ -158,6 +168,10 @@ def init_db():
     # last_searched_at.
     c.execute("ALTER TABLE kppp_search_criteria ADD COLUMN IF NOT EXISTS tender_name TEXT")
     c.execute("ALTER TABLE kppp_search_criteria ADD COLUMN IF NOT EXISTS last_searched_at TEXT")
+    # The start of the most recent run's own search window (see
+    # update_kppp_last_searched) — only used for the Admin DB Table's "Time
+    # Period" display, nothing in the actual search logic reads it.
+    c.execute("ALTER TABLE kppp_search_criteria ADD COLUMN IF NOT EXISTS last_search_from TEXT")
 
     # Table 3 - stores all tenders found
     c.execute("""
@@ -757,18 +771,20 @@ def get_gem_last_searched_at(keyword: str):
     conn.close()
     return row["last_searched_at"] if row else None
 
-def get_gem_first_search_at(keyword: str):
-    """When this keyword's one-time full/unlimited pass first ran — None if
-    it's never been searched before. Paired with get_gem_last_searched_at()
-    for the Admin DB Table's "Time Period" column (the span the agent has
-    actually been searching this keyword over)."""
+def get_gem_last_search_from(keyword: str):
+    """The start of the MOST RECENT run's own search window for this
+    keyword (what last_searched_at was right before that run overwrote it)
+    — None if it's never been searched before. Paired with
+    get_gem_last_searched_at() for the Admin DB Table's "Time Period"
+    column: the date range the agent's last run actually covered, not the
+    keyword's whole history."""
     conn = get_conn()
     row = conn.execute(
-        "SELECT first_full_search_at FROM gem_keyword_full_search_log WHERE keyword=?",
+        "SELECT last_search_from FROM gem_keyword_full_search_log WHERE keyword=?",
         (keyword.lower().strip(),)
     ).fetchone()
     conn.close()
-    return row["first_full_search_at"] if row else None
+    return row["last_search_from"] if row else None
 
 def update_gem_last_searched(keyword: str):
     """Stamps 'now' as this keyword's last search time, run after every
@@ -777,12 +793,19 @@ def update_gem_last_searched(keyword: str):
     are never re-walked. Inserts the row if this was actually the
     first-ever search for the keyword (mark_gem_full_search_done runs
     alongside this in that case, so ON CONFLICT here just keeps the
-    first_full_search_at that call already set)."""
+    first_full_search_at that call already set).
+
+    Also stamps last_search_from with whatever last_searched_at WAS right
+    before this call overwrites it — i.e. the start of the window THIS run
+    just searched — purely for the Admin DB Table's "Time Period" display;
+    nothing in the actual search logic reads it back."""
     conn = get_conn()
     conn.execute(
-        """INSERT INTO gem_keyword_full_search_log (keyword, last_searched_at)
-           VALUES (?, to_char(now() AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI:SS'))
-           ON CONFLICT (keyword) DO UPDATE SET last_searched_at = to_char(now() AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI:SS')""",
+        """INSERT INTO gem_keyword_full_search_log (keyword, last_searched_at, last_search_from)
+           VALUES (?, to_char(now() AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI:SS'), to_char(now() AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI:SS'))
+           ON CONFLICT (keyword) DO UPDATE SET
+               last_search_from = gem_keyword_full_search_log.last_searched_at,
+               last_searched_at = to_char(now() AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI:SS')""",
         (keyword.lower().strip(),)
     )
     conn.commit()
@@ -792,15 +815,19 @@ def save_ceo_search(keyword: str, portal: str):
     conn = get_conn()
     c = conn.cursor()
     existing = c.execute(
-        "SELECT id, frequency FROM ceo_searches WHERE keyword=? AND portal=?",
+        "SELECT id, frequency, searched_at FROM ceo_searches WHERE keyword=? AND portal=?",
         (keyword.lower().strip(), portal)
     ).fetchone()
     if existing:
         # first_searched_at is deliberately left untouched here — it's the
         # ORIGINAL first-searched time, not the most recent one.
+        # last_search_from is set to whatever searched_at WAS before this
+        # call overwrites it — the start of the window THIS run just
+        # searched — for the Admin DB Table's "Time Period" column (AP
+        # only; GeM's own equivalent lives in gem_keyword_full_search_log).
         c.execute(
-            "UPDATE ceo_searches SET frequency=?, searched_at=? WHERE id=?",
-            (existing["frequency"] + 1, datetime.now().isoformat(), existing["id"])
+            "UPDATE ceo_searches SET frequency=?, last_search_from=?, searched_at=? WHERE id=?",
+            (existing["frequency"] + 1, existing["searched_at"], datetime.now().strftime("%Y-%m-%d %H:%M:%S"), existing["id"])
         )
     else:
         c.execute(
@@ -924,10 +951,18 @@ def update_kppp_last_searched(criteria_id: int):
     has no Start-Date filter field (its date-range inputs filter by tender
     closure date, a different field), so unlike GeM this is used to filter
     results client-side after fetching rather than to shape the request
-    itself — see _run_kppp_criteria_search in orchestrator.py."""
+    itself — see _run_kppp_criteria_search in orchestrator.py.
+
+    Also stamps last_search_from with whatever last_searched_at WAS right
+    before this call overwrites it — i.e. the start of the window THIS run
+    just searched — purely for the Admin DB Table's "Time Period" display;
+    nothing in the actual search logic reads it back."""
     conn = get_conn()
     conn.execute(
-        "UPDATE kppp_search_criteria SET last_searched_at = to_char(now() AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI:SS') WHERE id=?",
+        """UPDATE kppp_search_criteria SET
+               last_search_from = last_searched_at,
+               last_searched_at = to_char(now() AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI:SS')
+           WHERE id=?""",
         (criteria_id,)
     )
     conn.commit()
