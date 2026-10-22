@@ -655,6 +655,87 @@ def _search_kerala_portal(keywords: list, respect_stop_flag: bool = False):
         _state["tenders_found_today"] += found_count
     log(f"✅ [Kerala] Done. Found {found_count} new tenders")
 
+def on_tamilnadu_search(keyword: str):
+    """
+    CEO searched Tamil Nadu eTenders' own keyword box (Search with ID/
+    Title/Reference no) — same idea as on_kerala_search, since this is
+    the same NIC "GePNIC" platform Kerala's portal runs on: no CAPTCHA
+    for searching, only for document download (see
+    portals/tamilnadu.py). Saved the same way (ceo_searches +
+    learned_patterns, portal='TamilNadu') so Search History / Patterns
+    Learned show it too, and every future agent cycle (Start Agent, 2 AM)
+    re-runs it automatically alongside every other saved Tamil Nadu
+    keyword.
+    """
+    log(f"👀 CEO searched: '{keyword}' on Tamil Nadu eTenders")
+
+    save_ceo_search(keyword, "TamilNadu")
+    save_learned_patterns(
+        category=keyword.title(),
+        keywords=json.dumps([keyword]),
+        weight=1.0,
+        portal="TamilNadu"
+    )
+
+    threading.Thread(
+        target=_run_tamilnadu_search_then_check_relevant,
+        args=(keyword,),
+        daemon=True
+    ).start()
+
+def _run_tamilnadu_search_then_check_relevant(keyword: str):
+    """Wraps _search_tamilnadu_portal for a manual Tamil Nadu search
+    (on_tamilnadu_search only — Start Agent/2AM already call
+    run_relevant_keyword_matching themselves after their own Tamil Nadu
+    pass) so the CEO doesn't have to click Start Agent afterward just to
+    see this search's own results checked against the saved Relevant
+    Tenders keywords."""
+    if _state.get("status") in ("searching", "expanding"):
+        log(f"⏳ Search already in progress, skipping duplicate Tamil Nadu trigger for '{keyword}'")
+        return
+    with _lock:
+        _state["status"] = "searching"
+    try:
+        _search_tamilnadu_portal([keyword])
+        run_relevant_keyword_matching(scope="incremental")
+        with _lock:
+            _state["last_search"] = datetime.now().isoformat()
+        log(f"✅ Tamil Nadu search complete for '{keyword}'")
+    except Exception as e:
+        log(f"❌ Error searching Tamil Nadu for '{keyword}': {e}")
+    finally:
+        with _lock:
+            _state["status"] = "watching"
+
+def _search_tamilnadu_portal(keywords: list, respect_stop_flag: bool = False):
+    """Tamil Nadu eTenders' counterpart to _search_kerala_portal — same
+    reasoning applies: no AI expansion step, every result
+    search_tamilnadu_sync returns for a keyword is exactly what the live
+    portal's own search shows for that term, so every result is kept
+    as-is."""
+    should_stop = (lambda: not _state["running"]) if respect_stop_flag else None
+    from portals.tamilnadu import search_tamilnadu_sync
+
+    found_count = 0
+    for keyword in keywords:
+        if should_stop and should_stop():
+            log("🛑 [TamilNadu] Stop requested — ending search early")
+            break
+        try:
+            log(f"🔎 [TamilNadu] Searching: '{keyword}'")
+            tenders = search_tamilnadu_sync(keyword)
+            for tender in tenders:
+                tender_id = save_tender(tender)
+                if tender_id:
+                    found_count += 1
+                    log(f"📄 [TamilNadu] Found: {tender['title'][:60]}...")
+        except Exception as e:
+            log(f"⚠️ [TamilNadu] Error searching '{keyword}': {e}")
+
+    with _lock:
+        _state["tenders_found_today"] += found_count
+    log(f"✅ [TamilNadu] Done. Found {found_count} new tenders")
+
 def on_kppp_search(criteria: dict):
     """
     CEO submitted the KPPP-specific search form (category, procuring entity,
@@ -953,6 +1034,16 @@ def _scheduled_search():
                     log(f"🚀 Running {len(kerala_keywords)} scheduled Kerala eTenders searches...")
                     _search_kerala_portal(kerala_keywords, respect_stop_flag=True)
 
+            if searches:
+                # Same idea as the Kerala block just above — every saved
+                # Tamil Nadu keyword, re-run fresh on every nightly cycle.
+                tamilnadu_keywords = sorted({
+                    s["keyword"] for s in searches if s["portal"] == "TamilNadu"
+                })
+                if tamilnadu_keywords:
+                    log(f"🚀 Running {len(tamilnadu_keywords)} scheduled Tamil Nadu eTenders searches...")
+                    _search_tamilnadu_portal(tamilnadu_keywords, respect_stop_flag=True)
+
             # Nightly-only: download + analyze every new tender (not just
             # Relevant Tenders matches), capped at 100 — see
             # analyze_new_tenders_batch's docstring. Runs BEFORE the
@@ -1068,6 +1159,16 @@ def _run_full_catalog_search():
             if kerala_keywords:
                 log(f"🚀 Running {len(kerala_keywords)} Kerala eTenders searches...")
                 _search_kerala_portal(kerala_keywords, respect_stop_flag=True)
+
+        if searches:
+            # Same idea as the Kerala block just above — every saved
+            # Tamil Nadu keyword, re-run fresh on every Start Agent click.
+            tamilnadu_keywords = sorted({
+                s["keyword"] for s in searches if s["portal"] == "TamilNadu"
+            })
+            if tamilnadu_keywords:
+                log(f"🚀 Running {len(tamilnadu_keywords)} Tamil Nadu eTenders searches...")
+                _search_tamilnadu_portal(tamilnadu_keywords, respect_stop_flag=True)
 
         log("🎯 Checking Relevant Tenders keywords against today's new tenders...")
         run_relevant_keyword_matching(scope="incremental")
