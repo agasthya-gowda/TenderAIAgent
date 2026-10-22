@@ -2097,6 +2097,17 @@ st.markdown("""
        readable without blowing out the row height; .td-dept itself (used
        by the GeM/KPPP table) is untouched. */
     .td-dept-ap { font-weight: 600; color: #1E293B; font-size: 12px; line-height: 1.3; }
+    /* AP/Telangana table rows only (scoped via td-dept-ap, which only
+       ever appears in this one row) — their department names often wrap
+       to 3-4 lines, which ran straight into the next row's own wrapped
+       text with no visible gap between them. A thin bottom divider plus
+       a little breathing room keeps adjacent rows readable without
+       touching the GeM/KPPP table's own row spacing at all. */
+    div[data-testid="stHorizontalBlock"]:has(span.td-dept-ap) {
+        padding-bottom: 10px !important;
+        margin-bottom: 10px !important;
+        border-bottom: 1px solid #F1F5F9 !important;
+    }
     .td-qty { font-weight: 700; color: #0F172A; }
     .td-date { font-size: 11.5px; color: #475569; }
     .portal-chip {
