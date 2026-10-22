@@ -16,7 +16,7 @@ from rapidfuzz import fuzz
 from database.db import (
     get_all_tenders, update_tender_status,
     update_tender_pdfs, get_all_ceo_searches, get_learned_patterns,
-    get_kppp_criteria_list, get_gem_last_searched_at,
+    get_kppp_criteria_list, get_gem_last_searched_at, get_gem_first_search_at,
     get_department_filters, add_department_filter, delete_department_filter,
     delete_tender, delete_pattern, delete_ceo_search, clear_tender_analysis,
     get_stats as _get_stats,
@@ -522,9 +522,23 @@ def render_admin_page():
                     # search cutoff (see get_gem_last_searched_at).
                     kw = _kw_list(r).strip()
                     return get_gem_last_searched_at(kw) or "Never"
+                def _time_period(r):
+                    # The span the agent has actually been searching this
+                    # keyword over — from its one-time full/unlimited first
+                    # pass (first_full_search_at) up to its most recent
+                    # completed run (last_searched_at), the same two
+                    # timestamps get_gem_first_search_at/
+                    # get_gem_last_searched_at read off
+                    # gem_keyword_full_search_log.
+                    kw = _kw_list(r).strip()
+                    first = get_gem_first_search_at(kw)
+                    last = get_gem_last_searched_at(kw)
+                    if not first:
+                        return "Never searched"
+                    return f"{first} to {last or first}"
                 df = pd.DataFrame([{
                     "Category": r.get("category") or "",
-                    "Weight": r.get("weight"),
+                    "Time Period": _time_period(r),
                     "Keywords": _kw_list(r),
                     "Last Searched At": _last_searched(r),
                 } for r in gem_rows])

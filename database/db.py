@@ -748,6 +748,19 @@ def get_gem_last_searched_at(keyword: str):
     conn.close()
     return row["last_searched_at"] if row else None
 
+def get_gem_first_search_at(keyword: str):
+    """When this keyword's one-time full/unlimited pass first ran — None if
+    it's never been searched before. Paired with get_gem_last_searched_at()
+    for the Admin DB Table's "Time Period" column (the span the agent has
+    actually been searching this keyword over)."""
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT first_full_search_at FROM gem_keyword_full_search_log WHERE keyword=?",
+        (keyword.lower().strip(),)
+    ).fetchone()
+    conn.close()
+    return row["first_full_search_at"] if row else None
+
 def update_gem_last_searched(keyword: str):
     """Stamps 'now' as this keyword's last search time, run after every
     batch search (first-time or date-limited) — this is what the NEXT run
