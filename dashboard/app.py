@@ -530,7 +530,7 @@ def render_admin_page():
             st.caption("Every saved keyword/filter combination the agent replays on each auto-search cycle.")
         with dropdown_col:
             db_table_portal = st.selectbox(
-                "Portal", ["KPPP (KA)", "GeM", "Andhra Pradesh", "Telangana", "Kerala", "Tamil Nadu", "Maharashtra", "Goa", "Delhi"], key="admin_db_table_portal",
+                "Portal", ["KPPP (KA)", "GeM", "Andhra Pradesh", "Telangana", "Kerala", "Tamil Nadu", "Maharashtra", "Goa", "Delhi", "Rajasthan"], key="admin_db_table_portal",
                 label_visibility="collapsed",
             )
 
@@ -833,6 +833,43 @@ def render_admin_page():
                     "Time Period": _delhi_time_period(r),
                 } for r in delhi_rows])
                 st.dataframe(df, use_container_width=True, hide_index=True)
+        elif db_table_portal == "Rajasthan":
+            # Rajasthan's portal is the same NIC platform Kerala's/Tamil
+            # Nadu's/Maharashtra's/Goa's/Delhi's are on (confirmed live —
+            # see portals/rajasthan.py's own docstring), so the same "no
+            # stamped from/to window" situation and the same ceo_searches
+            # + "reuse KPPP's own shared from" Time Period fallback
+            # applies here too.
+            rajasthan_rows = [s for s in get_all_ceo_searches() if s.get("portal") == "Rajasthan"]
+            if not rajasthan_rows:
+                st.info("No saved Rajasthan keyword searches yet.")
+            else:
+                _kppp_rows_for_rajasthan = get_kppp_criteria_list()
+                _kppp_most_recent_rajasthan = max(
+                    (r for r in _kppp_rows_for_rajasthan if r.get("last_searched_at")),
+                    key=lambda r: r["last_searched_at"],
+                    default=None,
+                )
+                if _kppp_most_recent_rajasthan:
+                    _kppp_raw_from_rajasthan = _kppp_most_recent_rajasthan.get("last_search_from")
+                    _rajasthan_shared_from = (
+                        _shift_back_one_day(_kppp_raw_from_rajasthan) if _kppp_raw_from_rajasthan
+                        else _kppp_most_recent_rajasthan.get("created_at")
+                    )
+                else:
+                    _rajasthan_shared_from = None
+
+                def _rajasthan_time_period(r):
+                    last = r.get("searched_at")
+                    first = _rajasthan_shared_from or last
+                    return _format_time_period(first, last)
+                df = pd.DataFrame([{
+                    "Keyword": r.get("keyword") or "",
+                    "Times Searched": r.get("frequency"),
+                    "Last Searched At": r.get("searched_at") or "Never",
+                    "Time Period": _rajasthan_time_period(r),
+                } for r in rajasthan_rows])
+                st.dataframe(df, use_container_width=True, hide_index=True)
         else:
             # ceo_searches — not learned_patterns — is the real source of
             # truth for which GeM keywords the agent actually re-searches
@@ -1011,7 +1048,7 @@ from portals.data.kppp_options import (
 # and the native emoji glyph drift apart just enough that both become
 # visible at once. Plain text has nothing to mask, so there's no longer
 # anything to misalign.
-PORTAL_FILTER_OPTIONS = ["KPPP (KA)", "GeM", "Andhra Pradesh", "Telangana", "Kerala", "Tamil Nadu", "Maharashtra", "Goa", "Delhi"]
+PORTAL_FILTER_OPTIONS = ["KPPP (KA)", "GeM", "Andhra Pradesh", "Telangana", "Kerala", "Tamil Nadu", "Maharashtra", "Goa", "Delhi", "Rajasthan"]
 PORTAL_FILTER_DEFAULT = "KPPP (KA)"
 PORTAL_FILTER_MAP = {
     "GeM": "GeM",
@@ -1023,6 +1060,7 @@ PORTAL_FILTER_MAP = {
     "Maharashtra": "Maharashtra",
     "Goa": "Goa",
     "Delhi": "Delhi",
+    "Rajasthan": "Rajasthan",
 }
 
 # Each portal's own real-photo icon (Red Fort / Hampi chariot / Tirupati
@@ -1044,6 +1082,7 @@ _PORTAL_DROPDOWN_ICONS = [
     ("Maharashtra", "maharashtra_taj_hotel.webp"),
     ("Goa", "goa_beach.webp"),
     ("Delhi", "delhi_taj_mahal.webp"),
+    ("Rajasthan", "rajasthan_camel_desert.webp"),
 ]
 
 
@@ -2335,6 +2374,7 @@ st.markdown("""
     .portal-chip-maharashtra { background: #F0FDF4; color: #15803D; }
     .portal-chip-goa { background: #ECFEFF; color: #0E7490; }
     .portal-chip-delhi { background: #FDF4FF; color: #A21CAF; }
+    .portal-chip-rajasthan { background: #FFF1F2; color: #BE123C; }
     /* GeM's/KPPP's/AP's own sidebar search box icons are real images now
        (Red Fort / Hampi chariot / Tirupati idol), set further below
        alongside the base64 data they need — this just reserves the icon
@@ -2348,7 +2388,8 @@ st.markdown("""
     .st-key-tamilnadu_search_filters_expander span[data-testid="stExpanderIcon"],
     .st-key-maharashtra_search_filters_expander span[data-testid="stExpanderIcon"],
     .st-key-goa_search_filters_expander span[data-testid="stExpanderIcon"],
-    .st-key-delhi_search_filters_expander span[data-testid="stExpanderIcon"] {
+    .st-key-delhi_search_filters_expander span[data-testid="stExpanderIcon"],
+    .st-key-rajasthan_search_filters_expander span[data-testid="stExpanderIcon"] {
         width: 22px !important;
         height: 22px !important;
         /* Without this, the icon is a flex item competing for room with
@@ -3476,6 +3517,52 @@ with st.sidebar:
             else:
                 st.warning("Please enter a keyword first")
 
+    # Rajasthan's own icon is the desert camel caravan image the CEO
+    # picked — same pattern as Kerala's/Tamil Nadu's/Maharashtra's/Goa's/
+    # Delhi's icon blocks just above (same NIC platform).
+    _rajasthan_icon_path = os.path.join(os.path.dirname(__file__), "assets", "rajasthan_camel_desert.webp")
+    _rajasthan_icon_b64 = _load_asset_b64(_rajasthan_icon_path)
+    if _rajasthan_icon_b64:
+        st.markdown(
+            f"""
+            <div class="rajasthan-icon-css-marker"></div>
+            <style>
+            /* Same display:none layout fix as the AP/Telangana/Kerala/
+               Tamil Nadu/Maharashtra/Goa/Delhi icon blocks above — see
+               their own comment for why. */
+            div[data-testid="stElementContainer"]:has(.rajasthan-icon-css-marker) {{
+                display: none !important;
+            }}
+            .st-key-rajasthan_search_filters_expander span[data-testid="stExpanderIcon"] {{
+                font-size: 0 !important;
+                width: 22px !important;
+                height: 22px !important;
+                background-image: url('data:image/webp;base64,{_rajasthan_icon_b64}');
+                background-size: cover;
+                background-repeat: no-repeat;
+                background-position: center;
+                border-radius: 3px;
+            }}
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    # Rajasthan eProcurement has its own single free-text search —
+    # "Search with ID/Title/Reference no" on its own site — same shape as
+    # Kerala's/Tamil Nadu's/Maharashtra's/Goa's/Delhi's keyword boxes
+    # just above (same NIC platform).
+    with st.expander("Rajasthan Search Filters", expanded=False, icon="🐪", key="rajasthan_search_filters_expander"):
+        rajasthan_keyword_input = st.text_input("Search Tenders", placeholder="Enter keyword e.g. cctv", key="rajasthan_keyword_input")
+        if st.button("Search", icon=":material/search:", use_container_width=True, type="primary", key="rajasthan_search_btn"):
+            if rajasthan_keyword_input.strip():
+                from agent.orchestrator import on_rajasthan_search
+                on_rajasthan_search(rajasthan_keyword_input.strip())
+                log_activity(st.session_state.username, "KEYWORD_SEARCH_ADDED", f"Added Rajasthan eProcurement keyword search: '{rajasthan_keyword_input.strip()}'")
+                st.success(f"Searching for '{rajasthan_keyword_input}'...")
+            else:
+                st.warning("Please enter a keyword first")
+
     st.markdown("<div style='margin-top:16px;'></div>", unsafe_allow_html=True)
     st.markdown("### Other Sections")
 
@@ -3767,7 +3854,7 @@ def _chart_portal_toggle(key: str) -> str:
     # KPPP first so it's the default (st.selectbox defaults to its first
     # option).
     label = st.selectbox(
-        "Portal", ["KPPP (KA)", "GeM", "Andhra Pradesh", "Telangana", "Kerala", "Tamil Nadu", "Maharashtra", "Goa", "Delhi"],
+        "Portal", ["KPPP (KA)", "GeM", "Andhra Pradesh", "Telangana", "Kerala", "Tamil Nadu", "Maharashtra", "Goa", "Delhi", "Rajasthan"],
         key=key, label_visibility="collapsed",
     )
     if label and "KPPP" in label:
@@ -3786,6 +3873,8 @@ def _chart_portal_toggle(key: str) -> str:
         return "Goa"
     if label and "Delhi" in label:
         return "Delhi"
+    if label and "Rajasthan" in label:
+        return "Rajasthan"
     return "GeM"
 
 
@@ -4329,7 +4418,7 @@ else:
                             if fresh_files:
                                 downloaded_files = fresh_files
 
-                    if not downloaded_files and portal in ("KPPP", "AP", "Telangana", "Kerala", "TamilNadu", "Maharashtra", "Goa", "Delhi"):
+                    if not downloaded_files and portal in ("KPPP", "AP", "Telangana", "Kerala", "TamilNadu", "Maharashtra", "Goa", "Delhi", "Rajasthan"):
                         st.caption("📄 Documents will appear after analysis")
 
                     if downloaded_files:
@@ -4898,6 +4987,17 @@ else:
                         ]
                         dept_options = ["All Departments"] + [d[0] for d in delhi_counts]
                         st.selectbox("Department", dept_options, key="department_filter_delhi")
+                    elif current_portal == "Rajasthan":
+                        # Same data-driven approach as Kerala's/Tamil
+                        # Nadu's/Maharashtra's/Goa's/Delhi's dropdowns
+                        # just above, scoped to Rajasthan's own tenders/
+                        # department names and its own session key.
+                        rajasthan_counts = [
+                            d for d in get_department_counts("Rajasthan", top_n=10)
+                            if d[0] != "Others"
+                        ]
+                        dept_options = ["All Departments"] + [d[0] for d in rajasthan_counts]
+                        st.selectbox("Department", dept_options, key="department_filter_rajasthan")
                     else:
                         # GeM's dropdown is data-driven, not a saved list —
                         # the busiest departments right now, recomputed each
@@ -4927,6 +5027,8 @@ else:
                 department_filter_value = st.session_state.get("department_filter_goa", "All Departments")
             elif current_portal == "Delhi":
                 department_filter_value = st.session_state.get("department_filter_delhi", "All Departments")
+            elif current_portal == "Rajasthan":
+                department_filter_value = st.session_state.get("department_filter_rajasthan", "All Departments")
             else:
                 department_filter_value = st.session_state.get("department_filter_gem", "All Departments")
             tenders = fuzzy_filter_tenders(tenders, search_query)
@@ -4964,7 +5066,7 @@ else:
                 # layout (the else branch), which has no Notice Number/
                 # Category columns at all and names things differently.
                 # The GeM/KPPP block is completely untouched.
-                is_ap_view = current_portal_filter in ("AP", "Telangana", "Kerala", "TamilNadu", "Maharashtra", "Goa", "Delhi")
+                is_ap_view = current_portal_filter in ("AP", "Telangana", "Kerala", "TamilNadu", "Maharashtra", "Goa", "Delhi", "Rajasthan")
                 # Portal-specific chip color and widget-key prefix so this
                 # one shared block never collides between the portals it
                 # serves — add a new entry here (plus a .portal-chip-<name>
@@ -4977,13 +5079,15 @@ else:
                     "Maharashtra": "portal-chip-maharashtra",
                     "Goa": "portal-chip-goa",
                     "Delhi": "portal-chip-delhi",
+                    "Rajasthan": "portal-chip-rajasthan",
                 }
                 _plain_portal_chip_class = _plain_portal_chip_classes.get(current_portal_filter, "portal-chip-ap")
                 _plain_portal_key_prefix = current_portal_filter.lower()
 
-                if is_ap_view and current_portal_filter in ("Kerala", "TamilNadu", "Maharashtra", "Goa", "Delhi"):
-                    # Kerala's, Tamil Nadu's, Maharashtra's, Goa's and
-                    # Delhi's sites (all the same NIC platform) have no
+                if is_ap_view and current_portal_filter in ("Kerala", "TamilNadu", "Maharashtra", "Goa", "Delhi", "Rajasthan"):
+                    # Kerala's, Tamil Nadu's, Maharashtra's, Goa's,
+                    # Delhi's and Rajasthan's sites (all the same NIC
+                    # platform) have no
                     # Category/Estimated Value columns at all (confirmed
                     # live), and show a tender's two id numbers — its own
                     # internal Tender ID and its Tender
