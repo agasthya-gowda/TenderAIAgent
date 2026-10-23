@@ -3476,6 +3476,7 @@ with st.sidebar:
             else:
                 st.warning("Please enter a keyword first")
 
+    st.markdown("<div style='margin-top:16px;'></div>", unsafe_allow_html=True)
     st.markdown("### Other Sections")
 
     if st.session_state.user_role == "admin":
