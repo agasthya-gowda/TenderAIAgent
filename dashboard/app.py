@@ -760,21 +760,29 @@ def render_admin_page():
                 } for r in maharashtra_rows])
                 st.dataframe(df, use_container_width=True, hide_index=True)
         else:
-            gem_rows = [p for p in get_learned_patterns() if (p.get("portal") or "GeM") == "GeM"]
+            # ceo_searches — not learned_patterns — is the real source of
+            # truth for which GeM keywords the agent actually re-searches
+            # every cycle (see _scheduled_search/_run_full_catalog_search
+            # in agent/orchestrator.py: gem_keywords is built straight
+            # from ceo_searches). learned_patterns is only still updated
+            # for the Patterns Learned page/stats and was never read back
+            # for the recurring search list, so a keyword searched once
+            # from the sidebar box (e.g. "cctv camera"/"surveillance")
+            # was genuinely being re-searched daily while invisible here
+            # — confirmed live via the CEO's own search logs.
+            gem_rows = [s for s in get_all_ceo_searches() if s.get("portal") == "GeM"]
             if not gem_rows:
-                st.info("No saved GeM keyword patterns yet.")
+                st.info("No saved GeM keyword searches yet.")
             else:
-                def _kw_list(r):
-                    try:
-                        return ", ".join(json.loads(r["keywords"]))
-                    except Exception:
-                        return r.get("keywords") or ""
                 def _last_searched(r):
-                    # One keyword per row now (see the cleanup above), so
-                    # its own search-log entry is the real "last searched"
-                    # time the agent actually uses as this keyword's next
-                    # search cutoff (see get_gem_last_searched_at).
-                    kw = _kw_list(r).strip()
+                    # The dedicated GeM search-log entry (keyed by this
+                    # same keyword) is the real "last searched" time the
+                    # agent actually uses as this keyword's next search
+                    # cutoff (see get_gem_last_searched_at) — kept as the
+                    # source here rather than ceo_searches' own
+                    # searched_at, which the Patterns Learned
+                    # one-off-search flow stamps separately.
+                    kw = (r.get("keyword") or "").strip()
                     return get_gem_last_searched_at(kw) or "Never"
                 def _time_period(r):
                     # get_gem_last_search_from is the raw previous
@@ -782,19 +790,19 @@ def render_admin_page():
                     # the REAL cutoff the agent used (_search_portal feeds
                     # this same raw value through _parse_db_timestamp's
                     # 1-day shift before using it to filter results). No
-                    # raw_first yet (a row that predates this column, or a
-                    # keyword that's only ever had its first-ever/
-                    # full-pagination run — neither case used a real date
-                    # cutoff) falls back to when this keyword was added,
-                    # same idea as KPPP's created_at fallback below.
-                    kw = _kw_list(r).strip()
+                    # raw_first yet (a keyword that's only ever had its
+                    # first-ever/full-pagination run — that run used no
+                    # real date cutoff) falls back to showing the same
+                    # single timestamp for both ends, same as AP/
+                    # Telangana's own first-search fallback.
+                    kw = (r.get("keyword") or "").strip()
                     last = get_gem_last_searched_at(kw)
                     raw_first = get_gem_last_search_from(kw)
-                    first = _shift_back_one_day(raw_first) if raw_first and raw_first != last else (r.get("last_updated") or last)
+                    first = _shift_back_one_day(raw_first) if raw_first and raw_first != last else last
                     return _format_time_period(first, last)
                 df = pd.DataFrame([{
-                    "Category": r.get("category") or "",
-                    "Keywords": _kw_list(r),
+                    "Category": (r.get("keyword") or "").title(),
+                    "Keywords": r.get("keyword") or "",
                     "Last Searched At": _last_searched(r),
                     "Time Period": _time_period(r),
                 } for r in gem_rows])
