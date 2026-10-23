@@ -3476,6 +3476,8 @@ with st.sidebar:
             else:
                 st.warning("Please enter a keyword first")
 
+    st.markdown("### Other Sections")
+
     if st.session_state.user_role == "admin":
         if st.button("🛠️ Admin", use_container_width=True, key="btn_open_admin"):
             _open_sidebar_panel("show_admin")
