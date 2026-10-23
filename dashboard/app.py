@@ -60,6 +60,25 @@ def get_daily_trend(portal: str, days: int = 7):
     return _get_daily_trend(portal, days)
 
 
+@st.cache_data
+def _load_asset_b64(path: str) -> str:
+    """Base64-encodes a static asset (logo/portal icon) once per app
+    process instead of on every single rerun — Streamlit reruns this
+    whole script top-to-bottom on every click/dropdown change, and each
+    of the (now 6) portal icons plus the 3 logo spots were separately
+    reading their file off disk and re-encoding it every single time,
+    directly adding to the "page feels slower after each new portal"
+    lag the CEO reported. No ttl: these files never change while the
+    server process is running (a real icon swap needs a new deploy,
+    which restarts the process and clears this cache anyway)."""
+    try:
+        with open(path, "rb") as f:
+            import base64 as _b64_asset
+            return _b64_asset.b64encode(f.read()).decode()
+    except Exception:
+        return ""
+
+
 # ── ADMIN: generic insert/update/query CRUD section ────────
 # One reusable renderer instead of five near-identical blocks — the manager
 # asked that Chipscape's own credentials/turnover and any partner's
@@ -1151,13 +1170,8 @@ if not st.session_state.get("_just_logged_out") and not st.session_state.authent
 
 if not st.session_state.authenticated:
 
-    import base64 as _b64
     _logo_path = os.path.join(os.path.dirname(__file__), "assets", "chipscape_logo_transparent.png")
-    try:
-        with open(_logo_path, "rb") as _f:
-            _logo_b64 = _b64.b64encode(_f.read()).decode()
-    except Exception:
-        _logo_b64 = ""
+    _logo_b64 = _load_asset_b64(_logo_path)
 
     st.markdown(
         f"""
@@ -1301,13 +1315,8 @@ if not st.session_state.authenticated:
 
 # ── CHANGE PASSWORD ──────────────────────────────────────────
 def render_change_password_page():
-    import base64 as _b64
     _logo_path = os.path.join(os.path.dirname(__file__), "assets", "chipscape_logo_transparent.png")
-    try:
-        with open(_logo_path, "rb") as _f:
-            _logo_b64 = _b64.b64encode(_f.read()).decode()
-    except Exception:
-        _logo_b64 = ""
+    _logo_b64 = _load_asset_b64(_logo_path)
 
     st.markdown(
         f"""
@@ -1442,13 +1451,8 @@ def render_change_password_page():
 
 # ── CREATE USER (admin-only) ──────────────────────────────────
 def render_create_user_page():
-    import base64 as _b64
     _logo_path = os.path.join(os.path.dirname(__file__), "assets", "chipscape_logo_transparent.png")
-    try:
-        with open(_logo_path, "rb") as _f:
-            _logo_b64 = _b64.b64encode(_f.read()).decode()
-    except Exception:
-        _logo_b64 = ""
+    _logo_b64 = _load_asset_b64(_logo_path)
 
     st.markdown(
         f"""
@@ -2829,13 +2833,8 @@ def _render_sidebar_status_fragment():
 
 # ── SIDEBAR ───────────────────────────────────────────────
 with st.sidebar:
-    import base64 as _b64
     _sidebar_logo_path = os.path.join(os.path.dirname(__file__), "assets", "chipscape_logo_transparent.png")
-    try:
-        with open(_sidebar_logo_path, "rb") as _f:
-            _sidebar_logo_b64 = _b64.b64encode(_f.read()).decode()
-    except Exception:
-        _sidebar_logo_b64 = ""
+    _sidebar_logo_b64 = _load_asset_b64(_sidebar_logo_path)
 
     st.markdown(
         f"""
@@ -2879,11 +2878,7 @@ with st.sidebar:
     # fallback and this CSS paints the real image on top of that same
     # icon slot instead).
     _gem_icon_path = os.path.join(os.path.dirname(__file__), "assets", "gem_red_fort.webp")
-    try:
-        with open(_gem_icon_path, "rb") as _f:
-            _gem_icon_b64 = _b64.b64encode(_f.read()).decode()
-    except Exception:
-        _gem_icon_b64 = ""
+    _gem_icon_b64 = _load_asset_b64(_gem_icon_path)
     if _gem_icon_b64:
         st.markdown(
             f"""
@@ -2936,11 +2931,7 @@ with st.sidebar:
     # icon="🏛️" below is kept only as an invisible fallback and this CSS
     # paints the real image on top of that same icon slot instead).
     _kppp_icon_path = os.path.join(os.path.dirname(__file__), "assets", "kppp_hampi_chariot.webp")
-    try:
-        with open(_kppp_icon_path, "rb") as _f:
-            _kppp_icon_b64 = _b64.b64encode(_f.read()).decode()
-    except Exception:
-        _kppp_icon_b64 = ""
+    _kppp_icon_b64 = _load_asset_b64(_kppp_icon_path)
     if _kppp_icon_b64:
         st.markdown(
             f"""
@@ -3030,11 +3021,7 @@ with st.sidebar:
     # top of that same icon slot instead, same pattern already used for the
     # sidebar/login logos elsewhere in this file).
     _ap_icon_path = os.path.join(os.path.dirname(__file__), "assets", "ap_tirupati_icon.webp")
-    try:
-        with open(_ap_icon_path, "rb") as _f:
-            _ap_icon_b64 = _b64.b64encode(_f.read()).decode()
-    except Exception:
-        _ap_icon_b64 = ""
+    _ap_icon_b64 = _load_asset_b64(_ap_icon_path)
     if _ap_icon_b64:
         st.markdown(
             f"""
@@ -3087,11 +3074,7 @@ with st.sidebar:
     # icon= slot only accepts an emoji/material-icon name, not an arbitrary
     # image, so icon="🎬" below is kept only as an invisible fallback).
     _telangana_icon_path = os.path.join(os.path.dirname(__file__), "assets", "telangana_ramoji_gate.webp")
-    try:
-        with open(_telangana_icon_path, "rb") as _f:
-            _telangana_icon_b64 = _b64.b64encode(_f.read()).decode()
-    except Exception:
-        _telangana_icon_b64 = ""
+    _telangana_icon_b64 = _load_asset_b64(_telangana_icon_path)
     if _telangana_icon_b64:
         st.markdown(
             f"""
@@ -3134,11 +3117,7 @@ with st.sidebar:
     # Kerala's own icon is the tea plantation image the CEO picked — same
     # pattern as AP's/Telangana's icon blocks just above.
     _kerala_icon_path = os.path.join(os.path.dirname(__file__), "assets", "kerala_tea_plantation.webp")
-    try:
-        with open(_kerala_icon_path, "rb") as _f:
-            _kerala_icon_b64 = _b64.b64encode(_f.read()).decode()
-    except Exception:
-        _kerala_icon_b64 = ""
+    _kerala_icon_b64 = _load_asset_b64(_kerala_icon_path)
     if _kerala_icon_b64:
         st.markdown(
             f"""
@@ -3181,11 +3160,7 @@ with st.sidebar:
     # Tamil Nadu's own icon is the Adiyogi statue image the CEO picked —
     # same pattern as Kerala's icon block just above (same NIC platform).
     _tamilnadu_icon_path = os.path.join(os.path.dirname(__file__), "assets", "tamilnadu_adiyogi_statue.webp")
-    try:
-        with open(_tamilnadu_icon_path, "rb") as _f:
-            _tamilnadu_icon_b64 = _b64.b64encode(_f.read()).decode()
-    except Exception:
-        _tamilnadu_icon_b64 = ""
+    _tamilnadu_icon_b64 = _load_asset_b64(_tamilnadu_icon_path)
     if _tamilnadu_icon_b64:
         st.markdown(
             f"""
@@ -4293,14 +4268,10 @@ else:
             # wider.
             _portal_dropdown_icon_data = []
             for _name, _filename in _PORTAL_DROPDOWN_ICONS:
-                try:
-                    import base64 as _b64_dropdown
-                    _icon_path_dropdown = os.path.join(os.path.dirname(__file__), "assets", _filename)
-                    with open(_icon_path_dropdown, "rb") as _f:
-                        _icon_b64_dropdown = _b64_dropdown.b64encode(_f.read()).decode()
+                _icon_path_dropdown = os.path.join(os.path.dirname(__file__), "assets", _filename)
+                _icon_b64_dropdown = _load_asset_b64(_icon_path_dropdown)
+                if _icon_b64_dropdown:
                     _portal_dropdown_icon_data.append((_name, _icon_b64_dropdown))
-                except Exception:
-                    pass
             if _portal_dropdown_icon_data:
                 _portal_dropdown_icon_css = [
                     'div[data-testid="stColumn"]:has(.col-marker-portal) .react-aria-ComboBox { position: relative; }',
