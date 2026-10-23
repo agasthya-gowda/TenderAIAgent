@@ -3493,6 +3493,13 @@ with st.sidebar:
         _open_sidebar_panel("show_search_history")
         st.rerun()
 
+    # `with st.sidebar:` is just a context manager, not a Python scope —
+    # this module-level `state` is read again much further down (outside
+    # the sidebar block entirely, e.g. the main-content "search in
+    # progress" banner) and isn't actually tied to the status badge above
+    # at all, so it stays here even though the badge itself moved.
+    state = get_state()
+
     with st.container(key="sidebar_bottom_actions"):
         st.markdown("---")
 
