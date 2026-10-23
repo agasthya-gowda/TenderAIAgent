@@ -3002,6 +3002,14 @@ with st.sidebar:
             st.session_state.agent_started = False
             st.rerun()
 
+    # Renders the status badge (idle/watching/searching/...) + "search
+    # complete" toast and (only while a search is running) the periodic
+    # autorefresh that keeps them live — moved right under Start/Stop
+    # Agent, above the portal search boxes, so it's immediately visible
+    # whether the agent is idle/watching/searching without scrolling
+    # past every portal's expander first.
+    _render_sidebar_status_fragment()
+
     # GeM's own icon is the Red Fort image the CEO picked (same idea as
     # KPPP's Hampi chariot / AP's Tirupati image below — st.expander's
     # icon= slot only accepts an emoji/material-icon name, not an
@@ -3484,15 +3492,6 @@ with st.sidebar:
     if st.button(f"🔎 Search History ({get_stats()['ceo_searches']})", use_container_width=True, key="btn_open_search_history"):
         _open_sidebar_panel("show_search_history")
         st.rerun()
-
-    state = get_state()
-    status = state.get("status", "idle")
-
-    # Renders the status badge + "search complete" toast and (only while a
-    # search is running) the periodic autorefresh that keeps them live —
-    # moved into its own fragment so that autorefresh no longer reruns the
-    # entire page (see the fragment's definition above for why).
-    _render_sidebar_status_fragment()
 
     with st.container(key="sidebar_bottom_actions"):
         st.markdown("---")
