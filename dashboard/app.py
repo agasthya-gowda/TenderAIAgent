@@ -2953,7 +2953,7 @@ def _render_sidebar_status_fragment():
     }
     css_class = status_colors.get(status, "status-idle")
     st.markdown(f"""
-    <div style='margin-top:10px; margin-bottom:16px;'>
+    <div style='margin-top:0px; margin-bottom:16px;'>
         <span class='status-badge {css_class}'>● {status}</span>
     </div>
     """, unsafe_allow_html=True)
