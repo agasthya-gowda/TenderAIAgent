@@ -948,6 +948,15 @@ def analyze_tender(tender: dict) -> str:
         if new_files:
             update_downloaded_files(tender.get("id"), new_files)
             file_text = read_all_files(new_files)
+    elif tender.get("portal") == "Delhi" and tender.get("tender_number"):
+        # For Delhi eProcurement tenders — download documents now (on-demand)
+        print("[Analyzer] Downloading Delhi eProcurement documents for analysis...")
+        from portals.delhi import download_delhi_docs
+        from database.db import update_downloaded_files
+        new_files = download_delhi_docs(tender)
+        if new_files:
+            update_downloaded_files(tender.get("id"), new_files)
+            file_text = read_all_files(new_files)
 
     # Step 2 — Extract details using AI
     print("[Analyzer] Extracting details with AI...")

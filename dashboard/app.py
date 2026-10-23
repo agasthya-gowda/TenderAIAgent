@@ -530,7 +530,7 @@ def render_admin_page():
             st.caption("Every saved keyword/filter combination the agent replays on each auto-search cycle.")
         with dropdown_col:
             db_table_portal = st.selectbox(
-                "Portal", ["KPPP (KA)", "GeM", "Andhra Pradesh", "Telangana", "Kerala", "Tamil Nadu", "Maharashtra", "Goa"], key="admin_db_table_portal",
+                "Portal", ["KPPP (KA)", "GeM", "Andhra Pradesh", "Telangana", "Kerala", "Tamil Nadu", "Maharashtra", "Goa", "Delhi"], key="admin_db_table_portal",
                 label_visibility="collapsed",
             )
 
@@ -796,6 +796,43 @@ def render_admin_page():
                     "Time Period": _goa_time_period(r),
                 } for r in goa_rows])
                 st.dataframe(df, use_container_width=True, hide_index=True)
+        elif db_table_portal == "Delhi":
+            # Delhi's portal is the same NIC platform Kerala's/Tamil
+            # Nadu's/Maharashtra's/Goa's are on (confirmed live — see
+            # portals/delhi.py's own docstring), so the same "no stamped
+            # from/to window" situation and the same ceo_searches +
+            # "reuse KPPP's own shared from" Time Period fallback applies
+            # here too.
+            delhi_rows = [s for s in get_all_ceo_searches() if s.get("portal") == "Delhi"]
+            if not delhi_rows:
+                st.info("No saved Delhi keyword searches yet.")
+            else:
+                _kppp_rows_for_delhi = get_kppp_criteria_list()
+                _kppp_most_recent_delhi = max(
+                    (r for r in _kppp_rows_for_delhi if r.get("last_searched_at")),
+                    key=lambda r: r["last_searched_at"],
+                    default=None,
+                )
+                if _kppp_most_recent_delhi:
+                    _kppp_raw_from_delhi = _kppp_most_recent_delhi.get("last_search_from")
+                    _delhi_shared_from = (
+                        _shift_back_one_day(_kppp_raw_from_delhi) if _kppp_raw_from_delhi
+                        else _kppp_most_recent_delhi.get("created_at")
+                    )
+                else:
+                    _delhi_shared_from = None
+
+                def _delhi_time_period(r):
+                    last = r.get("searched_at")
+                    first = _delhi_shared_from or last
+                    return _format_time_period(first, last)
+                df = pd.DataFrame([{
+                    "Keyword": r.get("keyword") or "",
+                    "Times Searched": r.get("frequency"),
+                    "Last Searched At": r.get("searched_at") or "Never",
+                    "Time Period": _delhi_time_period(r),
+                } for r in delhi_rows])
+                st.dataframe(df, use_container_width=True, hide_index=True)
         else:
             # ceo_searches — not learned_patterns — is the real source of
             # truth for which GeM keywords the agent actually re-searches
@@ -974,7 +1011,7 @@ from portals.data.kppp_options import (
 # and the native emoji glyph drift apart just enough that both become
 # visible at once. Plain text has nothing to mask, so there's no longer
 # anything to misalign.
-PORTAL_FILTER_OPTIONS = ["KPPP (KA)", "GeM", "Andhra Pradesh", "Telangana", "Kerala", "Tamil Nadu", "Maharashtra", "Goa"]
+PORTAL_FILTER_OPTIONS = ["KPPP (KA)", "GeM", "Andhra Pradesh", "Telangana", "Kerala", "Tamil Nadu", "Maharashtra", "Goa", "Delhi"]
 PORTAL_FILTER_DEFAULT = "KPPP (KA)"
 PORTAL_FILTER_MAP = {
     "GeM": "GeM",
@@ -985,6 +1022,7 @@ PORTAL_FILTER_MAP = {
     "Tamil Nadu": "TamilNadu",
     "Maharashtra": "Maharashtra",
     "Goa": "Goa",
+    "Delhi": "Delhi",
 }
 
 # Each portal's own real-photo icon (Red Fort / Hampi chariot / Tirupati
@@ -1005,6 +1043,7 @@ _PORTAL_DROPDOWN_ICONS = [
     ("Tamil Nadu", "tamilnadu_adiyogi_statue.webp"),
     ("Maharashtra", "maharashtra_taj_hotel.webp"),
     ("Goa", "goa_beach.webp"),
+    ("Delhi", "delhi_taj_mahal.webp"),
 ]
 
 
@@ -2295,6 +2334,7 @@ st.markdown("""
     .portal-chip-tamilnadu { background: #FFF7ED; color: #C2410C; }
     .portal-chip-maharashtra { background: #F0FDF4; color: #15803D; }
     .portal-chip-goa { background: #ECFEFF; color: #0E7490; }
+    .portal-chip-delhi { background: #FDF4FF; color: #A21CAF; }
     /* GeM's/KPPP's/AP's own sidebar search box icons are real images now
        (Red Fort / Hampi chariot / Tirupati idol), set further below
        alongside the base64 data they need — this just reserves the icon
@@ -2307,7 +2347,8 @@ st.markdown("""
     .st-key-kerala_search_filters_expander span[data-testid="stExpanderIcon"],
     .st-key-tamilnadu_search_filters_expander span[data-testid="stExpanderIcon"],
     .st-key-maharashtra_search_filters_expander span[data-testid="stExpanderIcon"],
-    .st-key-goa_search_filters_expander span[data-testid="stExpanderIcon"] {
+    .st-key-goa_search_filters_expander span[data-testid="stExpanderIcon"],
+    .st-key-delhi_search_filters_expander span[data-testid="stExpanderIcon"] {
         width: 22px !important;
         height: 22px !important;
         /* Without this, the icon is a flex item competing for room with
@@ -3381,6 +3422,52 @@ with st.sidebar:
             else:
                 st.warning("Please enter a keyword first")
 
+    # Delhi's own icon is the Taj Mahal image the CEO picked — same
+    # pattern as Kerala's/Tamil Nadu's/Maharashtra's/Goa's icon blocks
+    # just above (same NIC platform).
+    _delhi_icon_path = os.path.join(os.path.dirname(__file__), "assets", "delhi_taj_mahal.webp")
+    _delhi_icon_b64 = _load_asset_b64(_delhi_icon_path)
+    if _delhi_icon_b64:
+        st.markdown(
+            f"""
+            <div class="delhi-icon-css-marker"></div>
+            <style>
+            /* Same display:none layout fix as the AP/Telangana/Kerala/
+               Tamil Nadu/Maharashtra/Goa icon blocks above — see their
+               own comment for why. */
+            div[data-testid="stElementContainer"]:has(.delhi-icon-css-marker) {{
+                display: none !important;
+            }}
+            .st-key-delhi_search_filters_expander span[data-testid="stExpanderIcon"] {{
+                font-size: 0 !important;
+                width: 22px !important;
+                height: 22px !important;
+                background-image: url('data:image/webp;base64,{_delhi_icon_b64}');
+                background-size: cover;
+                background-repeat: no-repeat;
+                background-position: center;
+                border-radius: 3px;
+            }}
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    # Delhi eProcurement has its own single free-text search — "Search
+    # with ID/Title/Reference no" on its own site — same shape as
+    # Kerala's/Tamil Nadu's/Maharashtra's/Goa's keyword boxes just above
+    # (same NIC platform).
+    with st.expander("Delhi Search Filters", expanded=False, icon="🕌", key="delhi_search_filters_expander"):
+        delhi_keyword_input = st.text_input("Search Tenders", placeholder="Enter keyword e.g. cctv", key="delhi_keyword_input")
+        if st.button("Search", icon=":material/search:", use_container_width=True, type="primary", key="delhi_search_btn"):
+            if delhi_keyword_input.strip():
+                from agent.orchestrator import on_delhi_search
+                on_delhi_search(delhi_keyword_input.strip())
+                log_activity(st.session_state.username, "KEYWORD_SEARCH_ADDED", f"Added Delhi eProcurement keyword search: '{delhi_keyword_input.strip()}'")
+                st.success(f"Searching for '{delhi_keyword_input}'...")
+            else:
+                st.warning("Please enter a keyword first")
+
     if st.session_state.user_role == "admin":
         if st.button("🛠️ Admin", use_container_width=True, key="btn_open_admin"):
             _open_sidebar_panel("show_admin")
@@ -3671,7 +3758,7 @@ def _chart_portal_toggle(key: str) -> str:
     # KPPP first so it's the default (st.selectbox defaults to its first
     # option).
     label = st.selectbox(
-        "Portal", ["KPPP (KA)", "GeM", "Andhra Pradesh", "Telangana", "Kerala", "Tamil Nadu", "Maharashtra", "Goa"],
+        "Portal", ["KPPP (KA)", "GeM", "Andhra Pradesh", "Telangana", "Kerala", "Tamil Nadu", "Maharashtra", "Goa", "Delhi"],
         key=key, label_visibility="collapsed",
     )
     if label and "KPPP" in label:
@@ -3688,6 +3775,8 @@ def _chart_portal_toggle(key: str) -> str:
         return "Maharashtra"
     if label and "Goa" in label:
         return "Goa"
+    if label and "Delhi" in label:
+        return "Delhi"
     return "GeM"
 
 
@@ -4231,7 +4320,7 @@ else:
                             if fresh_files:
                                 downloaded_files = fresh_files
 
-                    if not downloaded_files and portal in ("KPPP", "AP", "Telangana", "Kerala", "TamilNadu", "Maharashtra", "Goa"):
+                    if not downloaded_files and portal in ("KPPP", "AP", "Telangana", "Kerala", "TamilNadu", "Maharashtra", "Goa", "Delhi"):
                         st.caption("📄 Documents will appear after analysis")
 
                     if downloaded_files:
@@ -4789,6 +4878,17 @@ else:
                         ]
                         dept_options = ["All Departments"] + [d[0] for d in goa_counts]
                         st.selectbox("Department", dept_options, key="department_filter_goa")
+                    elif current_portal == "Delhi":
+                        # Same data-driven approach as Kerala's/Tamil
+                        # Nadu's/Maharashtra's/Goa's dropdowns just
+                        # above, scoped to Delhi's own tenders/
+                        # department names and its own session key.
+                        delhi_counts = [
+                            d for d in get_department_counts("Delhi", top_n=10)
+                            if d[0] != "Others"
+                        ]
+                        dept_options = ["All Departments"] + [d[0] for d in delhi_counts]
+                        st.selectbox("Department", dept_options, key="department_filter_delhi")
                     else:
                         # GeM's dropdown is data-driven, not a saved list —
                         # the busiest departments right now, recomputed each
@@ -4816,6 +4916,8 @@ else:
                 department_filter_value = st.session_state.get("department_filter_maharashtra", "All Departments")
             elif current_portal == "Goa":
                 department_filter_value = st.session_state.get("department_filter_goa", "All Departments")
+            elif current_portal == "Delhi":
+                department_filter_value = st.session_state.get("department_filter_delhi", "All Departments")
             else:
                 department_filter_value = st.session_state.get("department_filter_gem", "All Departments")
             tenders = fuzzy_filter_tenders(tenders, search_query)
@@ -4843,17 +4945,17 @@ else:
                 # ID, Tender Notice Number, Category, Name of Work,
                 # Estimated Value, Start/Closing Date) — no Qty/Location
                 # column, no generic "Bid Number"/"Item Name" naming.
-                # Kerala, Tamil Nadu, Maharashtra and Goa (all the same
-                # NIC platform — see portals/goa.py) share a second,
-                # narrower layout of their own instead (no Category/Value
-                # columns at all, Tender ID + Reference No combined in
-                # one cell). Rendered as shared dedicated blocks below,
-                # matching each live portal's own table exactly, rather
-                # than forcing them into the GeM/KPPP layout (the else
-                # branch), which has no Notice Number/Category columns at
-                # all and names things differently. The GeM/KPPP block is
-                # completely untouched.
-                is_ap_view = current_portal_filter in ("AP", "Telangana", "Kerala", "TamilNadu", "Maharashtra", "Goa")
+                # Kerala, Tamil Nadu, Maharashtra, Goa and Delhi (all the
+                # same NIC platform — see portals/delhi.py) share a
+                # second, narrower layout of their own instead (no
+                # Category/Value columns at all, Tender ID + Reference No
+                # combined in one cell). Rendered as shared dedicated
+                # blocks below, matching each live portal's own table
+                # exactly, rather than forcing them into the GeM/KPPP
+                # layout (the else branch), which has no Notice Number/
+                # Category columns at all and names things differently.
+                # The GeM/KPPP block is completely untouched.
+                is_ap_view = current_portal_filter in ("AP", "Telangana", "Kerala", "TamilNadu", "Maharashtra", "Goa", "Delhi")
                 # Portal-specific chip color and widget-key prefix so this
                 # one shared block never collides between the portals it
                 # serves — add a new entry here (plus a .portal-chip-<name>
@@ -4865,15 +4967,16 @@ else:
                     "TamilNadu": "portal-chip-tamilnadu",
                     "Maharashtra": "portal-chip-maharashtra",
                     "Goa": "portal-chip-goa",
+                    "Delhi": "portal-chip-delhi",
                 }
                 _plain_portal_chip_class = _plain_portal_chip_classes.get(current_portal_filter, "portal-chip-ap")
                 _plain_portal_key_prefix = current_portal_filter.lower()
 
-                if is_ap_view and current_portal_filter in ("Kerala", "TamilNadu", "Maharashtra", "Goa"):
-                    # Kerala's, Tamil Nadu's, Maharashtra's and Goa's
-                    # sites (all the same NIC platform) have no Category/
-                    # Estimated Value columns at all (confirmed live),
-                    # and show a tender's two id numbers — its own
+                if is_ap_view and current_portal_filter in ("Kerala", "TamilNadu", "Maharashtra", "Goa", "Delhi"):
+                    # Kerala's, Tamil Nadu's, Maharashtra's, Goa's and
+                    # Delhi's sites (all the same NIC platform) have no
+                    # Category/Estimated Value columns at all (confirmed
+                    # live), and show a tender's two id numbers — its own
                     # internal Tender ID and its Tender
                     # Number/Reference No — together as one unit rather
                     # than in separate columns the way AP/Telangana's two

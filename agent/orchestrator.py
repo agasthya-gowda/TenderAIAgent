@@ -896,6 +896,86 @@ def _search_goa_portal(keywords: list, respect_stop_flag: bool = False):
         _state["tenders_found_today"] += found_count
     log(f"✅ [Goa] Done. Found {found_count} new tenders")
 
+def on_delhi_search(keyword: str):
+    """
+    CEO searched Delhi eProcurement's own keyword box (Search with ID/
+    Title/Reference no) — same idea as on_kerala_search/on_goa_search,
+    since this is the same NIC "GePNIC" platform: no CAPTCHA for
+    searching, only for document download (see portals/delhi.py). Saved
+    the same way (ceo_searches + learned_patterns, portal='Delhi') so
+    Search History / Patterns Learned show it too, and every future
+    agent cycle (Start Agent, 2 AM) re-runs it automatically alongside
+    every other saved Delhi keyword.
+    """
+    log(f"👀 CEO searched: '{keyword}' on Delhi eProcurement")
+
+    save_ceo_search(keyword, "Delhi")
+    save_learned_patterns(
+        category=keyword.title(),
+        keywords=json.dumps([keyword]),
+        weight=1.0,
+        portal="Delhi"
+    )
+
+    threading.Thread(
+        target=_run_delhi_search_then_check_relevant,
+        args=(keyword,),
+        daemon=True
+    ).start()
+
+def _run_delhi_search_then_check_relevant(keyword: str):
+    """Wraps _search_delhi_portal for a manual Delhi search
+    (on_delhi_search only — Start Agent/2AM already call
+    run_relevant_keyword_matching themselves after their own Delhi pass)
+    so the CEO doesn't have to click Start Agent afterward just to see
+    this search's own results checked against the saved Relevant
+    Tenders keywords."""
+    if _state.get("status") in ("searching", "expanding"):
+        log(f"⏳ Search already in progress, skipping duplicate Delhi trigger for '{keyword}'")
+        return
+    with _lock:
+        _state["status"] = "searching"
+    try:
+        _search_delhi_portal([keyword])
+        run_relevant_keyword_matching(scope="incremental")
+        with _lock:
+            _state["last_search"] = datetime.now().isoformat()
+        log(f"✅ Delhi search complete for '{keyword}'")
+    except Exception as e:
+        log(f"❌ Error searching Delhi for '{keyword}': {e}")
+    finally:
+        with _lock:
+            _state["status"] = "watching"
+
+def _search_delhi_portal(keywords: list, respect_stop_flag: bool = False):
+    """Delhi eProcurement's counterpart to _search_kerala_portal/
+    _search_goa_portal — same reasoning applies: no AI expansion step,
+    every result search_delhi_sync returns for a keyword is exactly what
+    the live portal's own search shows for that term, so every result is
+    kept as-is."""
+    should_stop = (lambda: not _state["running"]) if respect_stop_flag else None
+    from portals.delhi import search_delhi_sync
+
+    found_count = 0
+    for keyword in keywords:
+        if should_stop and should_stop():
+            log("🛑 [Delhi] Stop requested — ending search early")
+            break
+        try:
+            log(f"🔎 [Delhi] Searching: '{keyword}'")
+            tenders = search_delhi_sync(keyword)
+            for tender in tenders:
+                tender_id = save_tender(tender)
+                if tender_id:
+                    found_count += 1
+                    log(f"📄 [Delhi] Found: {tender['title'][:60]}...")
+        except Exception as e:
+            log(f"⚠️ [Delhi] Error searching '{keyword}': {e}")
+
+    with _lock:
+        _state["tenders_found_today"] += found_count
+    log(f"✅ [Delhi] Done. Found {found_count} new tenders")
+
 def on_kppp_search(criteria: dict):
     """
     CEO submitted the KPPP-specific search form (category, procuring entity,
@@ -1226,6 +1306,17 @@ def _scheduled_search():
                     log(f"🚀 Running {len(goa_keywords)} scheduled Goa eProcurement searches...")
                     _search_goa_portal(goa_keywords, respect_stop_flag=True)
 
+            if searches:
+                # Same idea as the Kerala/Tamil Nadu/Maharashtra/Goa
+                # blocks just above — every saved Delhi keyword, re-run
+                # fresh on every nightly cycle.
+                delhi_keywords = sorted({
+                    s["keyword"] for s in searches if s["portal"] == "Delhi"
+                })
+                if delhi_keywords:
+                    log(f"🚀 Running {len(delhi_keywords)} scheduled Delhi eProcurement searches...")
+                    _search_delhi_portal(delhi_keywords, respect_stop_flag=True)
+
             # Nightly-only: download + analyze every new tender (not just
             # Relevant Tenders matches), capped at 100 — see
             # analyze_new_tenders_batch's docstring. Runs BEFORE the
@@ -1373,6 +1464,17 @@ def _run_full_catalog_search():
             if goa_keywords:
                 log(f"🚀 Running {len(goa_keywords)} Goa eProcurement searches...")
                 _search_goa_portal(goa_keywords, respect_stop_flag=True)
+
+        if searches:
+            # Same idea as the Kerala/Tamil Nadu/Maharashtra/Goa blocks
+            # just above — every saved Delhi keyword, re-run fresh on
+            # every Start Agent click.
+            delhi_keywords = sorted({
+                s["keyword"] for s in searches if s["portal"] == "Delhi"
+            })
+            if delhi_keywords:
+                log(f"🚀 Running {len(delhi_keywords)} Delhi eProcurement searches...")
+                _search_delhi_portal(delhi_keywords, respect_stop_flag=True)
 
         log("🎯 Checking Relevant Tenders keywords against today's new tenders...")
         run_relevant_keyword_matching(scope="incremental")
