@@ -7,10 +7,25 @@ load_dotenv()
 
 CAPSOLVER_KEY = os.getenv("CAPSOLVER_API_KEY", "")
 
+# Built once and reused for every CAPTCHA attempt, instead of rebuilding a
+# fresh ddddocr engine (which reloads its OCR model from scratch) on every
+# single call. KPPP alone retries up to 6 times per search/download, and
+# with the Claude vision step currently failing on every attempt (API
+# credit balance exhausted), this fallback was being hit constantly —
+# repeatedly recreating the engine is wasteful and was suspected of
+# occasionally triggering a native-level hang that froze the whole app.
+_ocr_engine = None
+
+def _get_ocr_engine():
+    global _ocr_engine
+    if _ocr_engine is None:
+        import ddddocr
+        _ocr_engine = ddddocr.DdddOcr(show_ad=False)
+    return _ocr_engine
+
 def solve_captcha_local(image_bytes: bytes) -> str:
     """Try to solve CAPTCHA locally using ddddocr (free)."""
     try:
-        import ddddocr
         from PIL import Image, ImageFilter, ImageEnhance
         import io
 
@@ -39,7 +54,7 @@ def solve_captcha_local(image_bytes: bytes) -> str:
         processed_bytes = buf.getvalue()
         
         # Solve with ddddocr
-        ocr = ddddocr.DdddOcr(show_ad=False)
+        ocr = _get_ocr_engine()
         result = ocr.classification(processed_bytes)
         
         # Clean result - keep only alphanumeric
