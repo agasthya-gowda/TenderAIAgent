@@ -20,6 +20,38 @@ from database.db import (
 )
 from agent.watcher import start_watching, register_callback
 
+# Confirmed live (2026-10-24): a portal search can occasionally hang
+# forever with no exception ever raised — e.g. a crashed headless
+# Chromium leaving Playwright's own browser.close() waiting on a dead
+# process with no timeout, or a stalled network call. Since every
+# portal in a full-catalog run executes one after another in the same
+# background thread, a single hung portal used to freeze every portal
+# queued after it permanently, with nothing in the logs explaining why.
+# This wraps one portal's search call in its own watchdog thread with a
+# hard ceiling: if it doesn't finish in time, the cycle logs it and
+# moves on to the next portal instead of hanging forever. The hung call
+# itself is left running in its own daemon thread (Python can't force-kill
+# a thread) — harmless since it does nothing but eventually time out or
+# finish on its own, and it never blocks the rest of the cycle again.
+_PORTAL_SEARCH_TIMEOUT_SECONDS = 180
+
+def _run_portal_search_with_timeout(label, fn, *args, **kwargs):
+    result = {}
+    def _runner():
+        try:
+            result["value"] = fn(*args, **kwargs)
+        except Exception as e:
+            result["error"] = e
+    t = threading.Thread(target=_runner, daemon=True, name=f"portal-search-{label}")
+    t.start()
+    t.join(timeout=_PORTAL_SEARCH_TIMEOUT_SECONDS)
+    if t.is_alive():
+        log(f"⏱️ [{label}] Search timed out after {_PORTAL_SEARCH_TIMEOUT_SECONDS}s — skipping for this cycle, moving to the next portal")
+        return None
+    if "error" in result:
+        raise result["error"]
+    return result.get("value")
+
 
 def _parse_kppp_published_date(value):
     """Parses whatever format KPPP's own results table prints its
@@ -1304,7 +1336,10 @@ def _scheduled_search():
                     # incremental (stop_before_date) afterwards" behavior;
                     # the singular form here would instead make every run,
                     # every night, re-walk every GeM page for every keyword.
-                    _search_portal("GeM", [kw], kw.title(), 15, respect_stop_flag=True, primary_keywords={kw})
+                    _run_portal_search_with_timeout(
+                        "GeM", _search_portal, "GeM", [kw], kw.title(), 15,
+                        respect_stop_flag=True, primary_keywords={kw}
+                    )
                 # Reset before the KPPP step below — _run_kppp_criteria_search
                 # refuses to run while status is "searching"/"expanding" (that
                 # guard exists to stop a manual KPPP search from colliding with
@@ -1317,7 +1352,9 @@ def _scheduled_search():
 
             if kppp_criteria_list:
                 log(f"🚀 Running {len(kppp_criteria_list)} scheduled KPPP searches...")
-                _run_kppp_criteria_search(kppp_criteria_list, respect_stop_flag=True)
+                _run_portal_search_with_timeout(
+                    "KPPP", _run_kppp_criteria_search, kppp_criteria_list, respect_stop_flag=True
+                )
 
                 from portals.kppp import backfill_kppp_nit_ids_sync
                 n_backfilled = backfill_kppp_nit_ids_sync()
@@ -1332,7 +1369,7 @@ def _scheduled_search():
                 })
                 if ap_keywords:
                     log(f"🚀 Running {len(ap_keywords)} scheduled AP eProcurement searches...")
-                    _search_ap_portal(ap_keywords, respect_stop_flag=True)
+                    _run_portal_search_with_timeout("AP", _search_ap_portal, ap_keywords, respect_stop_flag=True)
 
             if searches:
                 # Same idea as the AP block just above — every saved
@@ -1342,7 +1379,7 @@ def _scheduled_search():
                 })
                 if telangana_keywords:
                     log(f"🚀 Running {len(telangana_keywords)} scheduled Telangana eProcurement searches...")
-                    _search_telangana_portal(telangana_keywords, respect_stop_flag=True)
+                    _run_portal_search_with_timeout("Telangana", _search_telangana_portal, telangana_keywords, respect_stop_flag=True)
 
             if searches:
                 # Same idea as the AP/Telangana blocks just above — every
@@ -1352,7 +1389,7 @@ def _scheduled_search():
                 })
                 if kerala_keywords:
                     log(f"🚀 Running {len(kerala_keywords)} scheduled Kerala eTenders searches...")
-                    _search_kerala_portal(kerala_keywords, respect_stop_flag=True)
+                    _run_portal_search_with_timeout("Kerala", _search_kerala_portal, kerala_keywords, respect_stop_flag=True)
 
             if searches:
                 # Same idea as the Kerala block just above — every saved
@@ -1362,7 +1399,7 @@ def _scheduled_search():
                 })
                 if tamilnadu_keywords:
                     log(f"🚀 Running {len(tamilnadu_keywords)} scheduled Tamil Nadu eTenders searches...")
-                    _search_tamilnadu_portal(tamilnadu_keywords, respect_stop_flag=True)
+                    _run_portal_search_with_timeout("TamilNadu", _search_tamilnadu_portal, tamilnadu_keywords, respect_stop_flag=True)
 
             if searches:
                 # Same idea as the Kerala/Tamil Nadu blocks just above —
@@ -1373,7 +1410,7 @@ def _scheduled_search():
                 })
                 if maharashtra_keywords:
                     log(f"🚀 Running {len(maharashtra_keywords)} scheduled Maharashtra eTenders searches...")
-                    _search_maharashtra_portal(maharashtra_keywords, respect_stop_flag=True)
+                    _run_portal_search_with_timeout("Maharashtra", _search_maharashtra_portal, maharashtra_keywords, respect_stop_flag=True)
 
             if searches:
                 # Same idea as the Kerala/Tamil Nadu/Maharashtra blocks
@@ -1384,7 +1421,7 @@ def _scheduled_search():
                 })
                 if goa_keywords:
                     log(f"🚀 Running {len(goa_keywords)} scheduled Goa eProcurement searches...")
-                    _search_goa_portal(goa_keywords, respect_stop_flag=True)
+                    _run_portal_search_with_timeout("Goa", _search_goa_portal, goa_keywords, respect_stop_flag=True)
 
             if searches:
                 # Same idea as the Kerala/Tamil Nadu/Maharashtra/Goa
@@ -1395,7 +1432,7 @@ def _scheduled_search():
                 })
                 if delhi_keywords:
                     log(f"🚀 Running {len(delhi_keywords)} scheduled Delhi eProcurement searches...")
-                    _search_delhi_portal(delhi_keywords, respect_stop_flag=True)
+                    _run_portal_search_with_timeout("Delhi", _search_delhi_portal, delhi_keywords, respect_stop_flag=True)
 
             if searches:
                 # Same idea as the Kerala/Tamil Nadu/Maharashtra/Goa/Delhi
@@ -1406,7 +1443,7 @@ def _scheduled_search():
                 })
                 if rajasthan_keywords:
                     log(f"🚀 Running {len(rajasthan_keywords)} scheduled Rajasthan eProcurement searches...")
-                    _search_rajasthan_portal(rajasthan_keywords, respect_stop_flag=True)
+                    _run_portal_search_with_timeout("Rajasthan", _search_rajasthan_portal, rajasthan_keywords, respect_stop_flag=True)
 
             # Nightly-only: download + analyze every new tender (not just
             # Relevant Tenders matches), capped at 100 — see
@@ -1479,10 +1516,15 @@ def _run_full_catalog_search():
                 if not _state["running"]:
                     log("🛑 [GeM] Stop requested — ending search early")
                     break
-                _search_portal("GeM", [kw], kw.title(), 15, respect_stop_flag=True, primary_keywords={kw})
+                _run_portal_search_with_timeout(
+                    "GeM", _search_portal, "GeM", [kw], kw.title(), 15,
+                    respect_stop_flag=True, primary_keywords={kw}
+                )
 
         if kppp_criteria_list:
-            _run_kppp_criteria_search(kppp_criteria_list, respect_stop_flag=True)
+            _run_portal_search_with_timeout(
+                "KPPP", _run_kppp_criteria_search, kppp_criteria_list, respect_stop_flag=True
+            )
 
             # One-off (per tender) backfill for older KPPP tenders saved
             # before nit_id existed, so their documents can be downloaded
@@ -1502,7 +1544,7 @@ def _run_full_catalog_search():
             })
             if ap_keywords:
                 log(f"🚀 Running {len(ap_keywords)} AP eProcurement searches...")
-                _search_ap_portal(ap_keywords, respect_stop_flag=True)
+                _run_portal_search_with_timeout("AP", _search_ap_portal, ap_keywords, respect_stop_flag=True)
 
         if searches:
             # Same idea as the AP block just above — every saved Telangana
@@ -1512,7 +1554,7 @@ def _run_full_catalog_search():
             })
             if telangana_keywords:
                 log(f"🚀 Running {len(telangana_keywords)} Telangana eProcurement searches...")
-                _search_telangana_portal(telangana_keywords, respect_stop_flag=True)
+                _run_portal_search_with_timeout("Telangana", _search_telangana_portal, telangana_keywords, respect_stop_flag=True)
 
         if searches:
             # Same idea as the AP/Telangana blocks just above — every
@@ -1522,7 +1564,7 @@ def _run_full_catalog_search():
             })
             if kerala_keywords:
                 log(f"🚀 Running {len(kerala_keywords)} Kerala eTenders searches...")
-                _search_kerala_portal(kerala_keywords, respect_stop_flag=True)
+                _run_portal_search_with_timeout("Kerala", _search_kerala_portal, kerala_keywords, respect_stop_flag=True)
 
         if searches:
             # Same idea as the Kerala block just above — every saved
@@ -1532,7 +1574,7 @@ def _run_full_catalog_search():
             })
             if tamilnadu_keywords:
                 log(f"🚀 Running {len(tamilnadu_keywords)} Tamil Nadu eTenders searches...")
-                _search_tamilnadu_portal(tamilnadu_keywords, respect_stop_flag=True)
+                _run_portal_search_with_timeout("TamilNadu", _search_tamilnadu_portal, tamilnadu_keywords, respect_stop_flag=True)
 
         if searches:
             # Same idea as the Kerala/Tamil Nadu blocks just above —
@@ -1543,7 +1585,7 @@ def _run_full_catalog_search():
             })
             if maharashtra_keywords:
                 log(f"🚀 Running {len(maharashtra_keywords)} Maharashtra eTenders searches...")
-                _search_maharashtra_portal(maharashtra_keywords, respect_stop_flag=True)
+                _run_portal_search_with_timeout("Maharashtra", _search_maharashtra_portal, maharashtra_keywords, respect_stop_flag=True)
 
         if searches:
             # Same idea as the Kerala/Tamil Nadu/Maharashtra blocks just
@@ -1554,7 +1596,7 @@ def _run_full_catalog_search():
             })
             if goa_keywords:
                 log(f"🚀 Running {len(goa_keywords)} Goa eProcurement searches...")
-                _search_goa_portal(goa_keywords, respect_stop_flag=True)
+                _run_portal_search_with_timeout("Goa", _search_goa_portal, goa_keywords, respect_stop_flag=True)
 
         if searches:
             # Same idea as the Kerala/Tamil Nadu/Maharashtra/Goa blocks
@@ -1565,7 +1607,7 @@ def _run_full_catalog_search():
             })
             if delhi_keywords:
                 log(f"🚀 Running {len(delhi_keywords)} Delhi eProcurement searches...")
-                _search_delhi_portal(delhi_keywords, respect_stop_flag=True)
+                _run_portal_search_with_timeout("Delhi", _search_delhi_portal, delhi_keywords, respect_stop_flag=True)
 
         if searches:
             # Same idea as the Kerala/Tamil Nadu/Maharashtra/Goa/Delhi
@@ -1576,7 +1618,7 @@ def _run_full_catalog_search():
             })
             if rajasthan_keywords:
                 log(f"🚀 Running {len(rajasthan_keywords)} Rajasthan eProcurement searches...")
-                _search_rajasthan_portal(rajasthan_keywords, respect_stop_flag=True)
+                _run_portal_search_with_timeout("Rajasthan", _search_rajasthan_portal, rajasthan_keywords, respect_stop_flag=True)
 
         log("🎯 Checking Relevant Tenders keywords against today's new tenders...")
         run_relevant_keyword_matching(scope="incremental")
